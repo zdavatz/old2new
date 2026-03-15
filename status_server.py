@@ -270,7 +270,7 @@ setInterval(update, 30000);
                 with open(QUEUE_FILE) as f:
                     for entry in json.load(f):
                         if entry.get("title") == title or entry.get("id") == title:
-                            display_title = entry.get("title", title).replace('_', ' ')
+                            display_title = entry.get("display_title", entry.get("title", title)).replace('_', ' ')
                             break
             except Exception:
                 pass
