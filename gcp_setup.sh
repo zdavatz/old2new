@@ -4,15 +4,57 @@ set -e
 # --- Usage ---
 if [ -z "$1" ]; then
     echo "Usage: ./gcp_setup.sh <youtube-url> [project-id] [zone]"
+    echo "       ./gcp_setup.sh status [project-id] [zone]"
     echo ""
     echo "Example: ./gcp_setup.sh \"https://www.youtube.com/watch?v=xyz123\""
     echo "         ./gcp_setup.sh \"https://www.youtube.com/watch?v=xyz123\" old2new-davaz us-central1-a"
+    echo "         ./gcp_setup.sh status old2new-davaz"
     echo ""
     echo "Prerequisites:"
     echo "  - gcloud CLI installed (brew install --cask google-cloud-sdk)"
     echo "  - Authenticated (gcloud auth login)"
     echo "  - Project with billing enabled and GPUS_ALL_REGIONS quota >= 1"
     exit 1
+fi
+
+# Find gcloud early for status command
+GCLOUD=$(which gcloud 2>/dev/null || echo "/opt/homebrew/share/google-cloud-sdk/bin/gcloud")
+
+# --- Status command ---
+if [ "$1" = "status" ]; then
+    PROJECT="${2:-old2new-davaz}"
+    ZONE="${3:-us-central1-a}"
+    INSTANCE="old2new-gpu"
+    echo "=== Status: $PROJECT ==="
+    $GCLOUD compute ssh "$INSTANCE" --project="$PROJECT" --zone="$ZONE" --command='
+        echo "GPU: $(nvidia-smi --query-gpu=name,utilization.gpu,memory.used --format=csv,noheader 2>/dev/null || echo "N/A")"
+        echo ""
+        for job_dir in ~/jobs/*/; do
+            [ -d "$job_dir" ] || continue
+            video_id=$(basename "$job_dir")
+            total=$(ls "$job_dir/frames_in/" 2>/dev/null | wc -l)
+            done=$(ls "$job_dir/frames_out/" 2>/dev/null | wc -l)
+            if [ "$total" -gt 0 ] 2>/dev/null; then
+                pct=$((done * 100 / total))
+                echo "Video: $video_id"
+                echo "  Frames: $done / $total ($pct%)"
+            else
+                echo "Video: $video_id (extracting frames...)"
+            fi
+        done
+        echo ""
+        if ps aux | grep -v grep | grep enhance_gpu.py > /dev/null; then
+            echo "Process: RUNNING"
+        else
+            echo "Process: NOT RUNNING"
+        fi
+        echo ""
+        echo "Last log:"
+        tail -3 ~/enhance.log 2>/dev/null || echo "  (no log found)"
+        echo ""
+        echo "Disk: $(df -h ~ | tail -1 | awk "{print \$3 \" used / \" \$4 \" free\"}")"
+    '
+    exit 0
 fi
 
 URL="$1"
