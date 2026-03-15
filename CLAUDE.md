@@ -18,7 +18,7 @@ old2new enhances old Da Vaz videos using Real-ESRGAN AI upscaling + GFPGAN face 
 - **gcp_setup.sh** — One-command Google Cloud setup: pre-checks video size and disk needs → creates L4 GPU instance → installs all deps → downloads enhance_gpu.py → starts enhancement. Also supports `status` command with ETA.
 - **vast_batch.sh** — Batch processing of all 226 davaz.com videos on parallel vast.ai RTX 4090 instances. Embeds video list with titles from YouTube API. Greedy load-balancing across instances. Each instance runs a web status page on port 8080. Supports `test` (single video), `launch` (full batch), `status`, `download`, `destroy`.
 - **realesrgan/** — Auto-downloaded binary and models (gitignored). macOS ARM64 binary from github.com/xinntao/Real-ESRGAN
-- **jobs/<title>/** — Per-video working directories using movie titles (not video IDs), containing original video, extracted frames, upscaled frames, and final output (gitignored)
+- **jobs/<title>/** — Per-video working directories using movie titles (not video IDs). Files named after title: `<title>.mkv` (input), `<title>_4x.mkv` (output). Contains extracted frames in `frames_in/` and upscaled frames in `frames_out/` (gitignored)
 
 ## Important
 

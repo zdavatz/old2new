@@ -218,7 +218,7 @@ async function update() {
     </div>`;
 
     h += `<table><thead><tr>
-      <th>#</th><th>Title</th><th>Scale</th><th>Duration</th><th>Status</th><th>Progress</th><th>Compare</th>
+      <th>#</th><th>Title</th><th>Input</th><th>Output</th><th>Duration</th><th>Status</th><th>Progress</th><th>Compare</th>
     </tr></thead><tbody>`;
 
     const order = [...active, ...other, ...done, ...queued];
@@ -229,10 +229,13 @@ async function update() {
       const barColor = v.status === 'done' ? '#6ee7b7' : '#38bdf8';
       const ytUrl = 'https://www.youtube.com/watch?v=' + v.id;
       const compareLink = v.done_frames > 0 ? `<a href="/compare/${v.title}">view</a>` : '';
+      const inputName = v.title + '.mkv';
+      const outputName = v.title + '_' + v.scale + 'x.mkv';
       h += `<tr>
         <td>${i+1}</td>
         <td class="title-col"><a href="${ytUrl}" target="_blank">${v.title.replace(/_/g, ' ')}</a></td>
-        <td>${v.scale}x</td>
+        <td style="font-size:0.75rem;color:#94a3b8">${inputName}</td>
+        <td style="font-size:0.75rem;color:#6ee7b7">${outputName}</td>
         <td>${dur}</td>
         <td><span class="status status-${v.status}">${v.status}</span></td>
         <td><div class="bar-bg"><div class="bar-fg" style="width:${v.progress}%;background:${barColor}"></div>

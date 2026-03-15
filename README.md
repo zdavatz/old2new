@@ -116,7 +116,17 @@ python3 enhance_gpu.py "<youtube-url>" [scale] --job-name "Movie_Title"
 
 ### Output
 
-Enhanced videos are saved to `jobs/<title>/enhanced_<scale>x.mkv` (or `jobs/<video-id>/` if no `--job-name` given).
+Enhanced videos are saved as `jobs/<title>/<title>_<scale>x.mkv`. For example:
+
+```
+jobs/009_ChickenPick/
+  009_ChickenPick.mkv        # original downloaded video
+  009_ChickenPick_4x.mkv     # enhanced output
+  frames_in/                  # original extracted frames
+  frames_out/                 # upscaled frames
+```
+
+Without `--job-name`, the YouTube video ID is used as the directory and file name.
 
 The process is resumable — if interrupted, re-run the same command and it will skip already-completed steps (download, frame extraction, upscaled frames).
 
