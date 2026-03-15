@@ -35,11 +35,29 @@ if [ "$1" = "status" ]; then
             [ -d "$job_dir" ] || continue
             video_id=$(basename "$job_dir")
             total=$(ls "$job_dir/frames_in/" 2>/dev/null | wc -l)
-            done=$(ls "$job_dir/frames_out/" 2>/dev/null | wc -l)
+            done_frames=$(ls "$job_dir/frames_out/" 2>/dev/null | wc -l)
             if [ "$total" -gt 0 ] 2>/dev/null; then
-                pct=$((done * 100 / total))
-                echo "Video: $video_id"
-                echo "  Frames: $done / $total ($pct%)"
+                pct=$((done_frames * 100 / total))
+                remaining=$((total - done_frames))
+                # Extract fps from log
+                fps=$(grep -o "[0-9.]\+ fps" ~/enhance.log 2>/dev/null | tail -1 | awk "{print \$1}")
+                if [ -n "$fps" ] && [ "$fps" != "0" ] && [ "$done_frames" -gt 0 ]; then
+                    eta_min=$(echo "$remaining / $fps / 60" | bc 2>/dev/null)
+                    if [ -n "$eta_min" ] && [ "$eta_min" -gt 60 ] 2>/dev/null; then
+                        eta_h=$((eta_min / 60))
+                        eta_m=$((eta_min % 60))
+                        eta_str="${eta_h}h ${eta_m}m"
+                    elif [ -n "$eta_min" ] 2>/dev/null; then
+                        eta_str="${eta_min}m"
+                    else
+                        eta_str="calculating..."
+                    fi
+                    echo "Video: $video_id"
+                    echo "  Frames: $done_frames / $total ($pct%) | ${fps} fps | ETA: $eta_str"
+                else
+                    echo "Video: $video_id"
+                    echo "  Frames: $done_frames / $total ($pct%) | ETA: calculating..."
+                fi
             else
                 echo "Video: $video_id (extracting frames...)"
             fi
