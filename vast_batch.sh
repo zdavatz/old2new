@@ -1188,7 +1188,179 @@ cmd_list() {
 
 # ---------- Main ----------
 
+cmd_url() {
+    local url="$1"
+    local scale="${2:-4}"
+    ensure_state_dir
+
+    if [[ -z "$url" ]]; then
+        echo "Usage: ./vast_batch.sh <youtube-url> [scale]"
+        echo "  scale: 2 or 4 (default: 4)"
+        exit 1
+    fi
+
+    # Extract video ID
+    local vid
+    vid=$(echo "$url" | sed -n 's/.*[?&]v=\([^&]*\).*/\1/p')
+    if [[ -z "$vid" ]]; then
+        vid=$(echo "$url" | sed -n 's|.*/\([^/?]*\).*|\1|p')
+    fi
+    if [[ -z "$vid" ]]; then
+        echo "ERROR: Could not extract video ID from URL"
+        exit 1
+    fi
+
+    # Get video info via yt-dlp
+    log "Fetching video info..."
+    local video_info
+    video_info=$(yt-dlp --print "%(duration)s\t%(width)s\t%(title)s" "$url" 2>/dev/null)
+    if [[ -z "$video_info" ]]; then
+        echo "ERROR: Could not fetch video info. Check the URL."
+        exit 1
+    fi
+
+    local dur width raw_title
+    IFS=$'\t' read -r dur width raw_title <<< "$video_info"
+    dur="${dur%.*}"  # remove decimals
+
+    # Clean title for directory name
+    local title
+    title=$(echo "$raw_title" | sed 's/[^a-zA-Z0-9._-]/_/g' | sed 's/__*/_/g' | sed 's/^_//;s/_$//')
+
+    # Determine definition and recommend scale
+    local def="sd"
+    if [[ "$width" -ge 1280 ]]; then
+        def="hd"
+        if [[ "$scale" -eq 4 ]]; then
+            log "Video is HD (${width}px wide). Recommending 2x upscale."
+            scale=2
+        fi
+    fi
+
+    local dur_str
+    local h=$((dur / 3600))
+    local m=$(( (dur % 3600) / 60 ))
+    if [[ $h -gt 0 ]]; then
+        dur_str="${h}h ${m}m"
+    else
+        dur_str="${m}m"
+    fi
+
+    log "=== Single Video Enhancement ==="
+    log "Title:    $raw_title"
+    log "ID:       $vid"
+    log "Duration: $dur_str ($def, ${width}px)"
+    log "Scale:    ${scale}x"
+    log "Job name: $title"
+    log ""
+
+    if [[ ! -f "$HOME/.config/vastai/vast_api_key" ]]; then
+        echo "ERROR: No vast.ai API key found."
+        echo "Run: vastai set api-key YOUR_API_KEY"
+        exit 1
+    fi
+
+    # Check credit
+    local balance
+    balance=$(vastai show user --raw 2>/dev/null | python3 -c "import json,sys; d=json.load(sys.stdin); print(f'{d.get(\"balance\",0):.2f}')" 2>/dev/null || echo "?")
+    log "vast.ai credit: \$$balance"
+
+    # Write single-video assignment
+    echo -e "${vid}\t${scale}\t${title}\t${dur}" > "$ASSIGNMENTS_DIR/instance_0.txt"
+
+    # Generate onstart script
+    local video_list
+    video_list=$(cat "$ASSIGNMENTS_DIR/instance_0.txt")
+    local onstart_file="$STATE_DIR/onstart_url.sh"
+    generate_onstart_script "$video_list" > "$onstart_file"
+
+    # Search for cheapest RTX 4090
+    log "Searching for cheapest $GPU_NAME..."
+    local offers
+    offers=$(vastai search offers "gpu_name=$GPU_NAME num_gpus=$NUM_GPUS reliability>0.95 disk_space>=$DISK_GB inet_down>100 rented=False direct_port_count>=1" -o 'dph_total' --raw 2>/dev/null)
+
+    local available
+    available=$(echo "$offers" | python3 -c "import json,sys; d=json.load(sys.stdin); print(len(d))" 2>/dev/null || echo 0)
+
+    if [[ "$available" -eq 0 ]]; then
+        echo "No suitable RTX 4090 offers found. Try again later."
+        exit 1
+    fi
+
+    local offer_id price gpu
+    read -r offer_id price gpu <<< "$(echo "$offers" | python3 -c "
+import json, sys
+data = json.load(sys.stdin)
+data.sort(key=lambda x: x.get('dph_total', 999))
+d = data[0]
+print(f\"{d['id']}\t{d.get('dph_total',0):.4f}\t{d.get('gpu_name','?')}\")
+")"
+
+    log "Selected: $gpu @ \$$price/hr"
+
+    # Estimate
+    local est_seconds
+    if [[ "$scale" -eq 4 ]]; then
+        est_seconds=$((dur * 30))
+    else
+        est_seconds=$((dur * 15))
+    fi
+    local est_hours=$(echo "$est_seconds / 3600" | bc -l 2>/dev/null || echo "?")
+    local est_cost=$(echo "$est_hours * $price" | bc -l 2>/dev/null || echo "?")
+    log "Estimated: ~${est_hours%.*}h, ~\$${est_cost%.*}"
+    log ""
+
+    log "Creating instance..."
+    local result
+    result=$(vastai create instance "$offer_id" \
+        --image "$DOCKER_IMAGE" \
+        --disk "$DISK_GB" \
+        --ssh \
+        --direct \
+        --env "-p ${STATUS_PORT}:${STATUS_PORT}" \
+        --onstart "$onstart_file" \
+        --label "davaz-url" \
+        --raw 2>&1) || true
+
+    local instance_id
+    instance_id=$(echo "$result" | python3 -c "
+import json, sys
+try:
+    data = json.load(sys.stdin)
+    if isinstance(data, dict) and 'new_contract' in data:
+        print(data['new_contract'])
+    elif isinstance(data, dict) and 'id' in data:
+        print(data['id'])
+    else:
+        print(data)
+except:
+    print(sys.stdin.read().strip())
+" 2>/dev/null || echo "$result")
+
+    if [[ -n "$instance_id" && "$instance_id" != "null" ]]; then
+        echo "$instance_id" > "$STATE_DIR/instance_url.id"
+        log "Instance created: ID=$instance_id"
+    else
+        log "ERROR: Failed to create instance: $result"
+        exit 1
+    fi
+
+    echo ""
+    log "Enhancement started!"
+    log "  Video: $raw_title"
+    log "  Scale: ${scale}x"
+    log ""
+    log "Next steps:"
+    log "  1. ./vast_batch.sh status     — check progress + get dashboard URL"
+    log "  2. Open dashboard URL          — watch live progress + compare frames"
+    log "  3. ./vast_batch.sh download   — download the enhanced video when done"
+    log "  4. ./vast_batch.sh destroy    — clean up instance"
+}
+
 case "${1:-help}" in
+    http*|https*)
+        cmd_url "$1" "${2:-4}"
+        ;;
     test)
         cmd_test "${2:-}"
         ;;
@@ -1212,8 +1384,10 @@ case "${1:-help}" in
         ;;
     help|--help|-h)
         echo "Usage: $0 <command> [options]"
+        echo "       $0 <youtube-url> [scale]"
         echo ""
         echo "Commands:"
+        echo "  <youtube-url> [2|4]  Enhance a single YouTube video (scale: 2 or 4, default: 4)"
         echo "  test [VIDEO_ID]   Launch 1 instance with 1 video to check quality first"
         echo "  launch [N]        Launch N instances (default: 4) and start processing all"
         echo "  status            Show progress + web status page URLs"
