@@ -564,11 +564,11 @@ echo "Installing dependencies..."
 apt-get update -qq
 apt-get install -y -qq ffmpeg > /dev/null 2>&1
 
-pip install -q realesrgan yt-dlp "numpy<2" 2>/dev/null || {
+pip install -q realesrgan gfpgan yt-dlp "numpy<2" 2>/dev/null || {
     pip install -q "torchvision==0.15.2" "basicsr==1.4.2" 2>/dev/null
     pip uninstall -y opencv-python opencv-contrib-python 2>/dev/null || true
     pip install -q opencv-python-headless 2>/dev/null
-    pip install -q realesrgan yt-dlp "numpy<2" 2>/dev/null
+    pip install -q realesrgan gfpgan yt-dlp "numpy<2" 2>/dev/null
 }
 
 echo "Dependencies installed."

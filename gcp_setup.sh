@@ -208,7 +208,7 @@ pip uninstall -y opencv-python opencv-contrib-python 2>/dev/null
 pip install opencv-python-headless -q 2>&1 | tail -1
 
 # Install Real-ESRGAN and pinned deps
-pip install realesrgan yt-dlp "numpy<2" "torchvision==0.15.2" "basicsr==1.4.2" -q 2>&1 | tail -1
+pip install realesrgan gfpgan yt-dlp "numpy<2" "torchvision==0.15.2" "basicsr==1.4.2" -q 2>&1 | tail -1
 
 # Verify everything works
 echo ""

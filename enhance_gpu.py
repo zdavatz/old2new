@@ -1,13 +1,14 @@
 #!/usr/bin/env python3
 """
-Cloud GPU video enhancement using Real-ESRGAN with PyTorch/CUDA.
+Cloud GPU video enhancement using Real-ESRGAN + GFPGAN with PyTorch/CUDA.
 
 Usage on a cloud GPU instance (vast.ai, RunPod, etc.):
-    pip install realesrgan yt-dlp "numpy<2"
+    pip install realesrgan gfpgan yt-dlp "numpy<2"
     apt-get install -y ffmpeg
     python3 enhance_gpu.py <youtube-url> [scale]
 
 Scale: 2 or 4 (default: 4)
+Uses GFPGAN for face enhancement when faces are detected.
 """
 
 import os
@@ -128,7 +129,7 @@ def main():
 
     TOTAL = len(existing)
 
-    # --- Setup Real-ESRGAN model ---
+    # --- Setup Real-ESRGAN + GFPGAN models ---
     # RealESRGAN_x4plus model is always 4x internally; outscale handles 2x by downsampling
     print(f"\nLoading Real-ESRGAN model (output scale={SCALE}x)...")
     model = RRDBNet(num_in_ch=3, num_out_ch=3, num_feat=64, num_block=23, num_grow_ch=32, scale=4)
@@ -142,13 +143,41 @@ def main():
         half=True,
         gpu_id=0 if torch.cuda.is_available() else None
     )
-    print("Model loaded.")
+    print("Real-ESRGAN loaded.")
+
+    # Setup GFPGAN for face enhancement
+    face_enhancer = None
+    try:
+        from gfpgan import GFPGANer
+        face_enhancer = GFPGANer(
+            model_path="https://github.com/TencentARC/GFPGAN/releases/download/v1.3.0/GFPGANv1.4.pth",
+            upscale=SCALE,
+            arch='clean',
+            channel_multiplier=2,
+            bg_upsampler=upsampler
+        )
+        print("GFPGAN face enhancer loaded.")
+    except Exception as e:
+        print(f"GFPGAN not available ({e}), proceeding without face enhancement.")
+        print("Install with: pip install gfpgan")
+
+    def enhance_frame(img):
+        """Enhance a frame: uses GFPGAN if faces detected, otherwise Real-ESRGAN."""
+        if face_enhancer is not None:
+            _, _, output = face_enhancer.enhance(
+                img, has_aligned=False, only_center_face=False, paste_back=True
+            )
+            if output is not None:
+                return output
+        # Fallback to Real-ESRGAN only
+        output, _ = upsampler.enhance(img, outscale=SCALE)
+        return output
 
     # --- Benchmark first frame ---
     print("Benchmarking...")
     img = cv2.imread(existing[0], cv2.IMREAD_UNCHANGED)
     t0 = time.time()
-    output, _ = upsampler.enhance(img, outscale=SCALE)
+    output = enhance_frame(img)
     t1 = time.time()
     per_frame = t1 - t0
     total_est = per_frame * TOTAL
@@ -162,6 +191,10 @@ def main():
     # --- Process all frames ---
     done = len(glob.glob(f"{FRAMES_OUT}/frame_*.png"))
     print(f"\nUpscaling: {done}/{TOTAL} done, {TOTAL - done} remaining...")
+    if face_enhancer:
+        print("Face enhancement: ENABLED (GFPGAN)")
+    else:
+        print("Face enhancement: DISABLED")
     sys.stdout.flush()
     start = time.time()
 
@@ -172,7 +205,7 @@ def main():
             continue
 
         img = cv2.imread(fpath, cv2.IMREAD_UNCHANGED)
-        output, _ = upsampler.enhance(img, outscale=SCALE)
+        output = enhance_frame(img)
         cv2.imwrite(out_path, output)
 
         if (i + 1) % 100 == 0:
