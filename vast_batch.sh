@@ -1275,15 +1275,31 @@ cmd_url() {
     generate_onstart_script "$video_list" > "$onstart_file"
 
     # Search for cheapest RTX 4090
-    log "Searching for cheapest $GPU_NAME..."
+    # Calculate disk needs based on video resolution and duration
+    local needed_disk_gb=$DISK_GB
+    if [[ -n "$width" && -n "$dur" ]]; then
+        local height=$((width * 3 / 4))  # approximate
+        local fps=25
+        local total_frames=$((dur * fps))
+        local input_gb=$((total_frames * width * height * 3 / 3 / 1073741824))
+        local output_gb=$((total_frames * width * scale * height * scale * 3 / 3 / 1073741824))
+        needed_disk_gb=$((input_gb + output_gb + 10))
+        if [[ "$needed_disk_gb" -lt "$DISK_GB" ]]; then
+            needed_disk_gb=$DISK_GB
+        fi
+        log "Estimated disk needed: ${needed_disk_gb}GB"
+    fi
+
+    log "Searching for cheapest $GPU_NAME with >=${needed_disk_gb}GB disk..."
     local offers
-    offers=$(vastai search offers "gpu_name=$GPU_NAME num_gpus=$NUM_GPUS reliability>0.95 disk_space>=$DISK_GB inet_down>100 rented=False direct_port_count>=1" -o 'dph_total' --raw 2>/dev/null)
+    offers=$(vastai search offers "gpu_name=$GPU_NAME num_gpus=$NUM_GPUS reliability>0.95 disk_space>=$needed_disk_gb inet_down>100 rented=False direct_port_count>=1" -o 'dph_total' --raw 2>/dev/null)
 
     local available
     available=$(echo "$offers" | python3 -c "import json,sys; d=json.load(sys.stdin); print(len(d))" 2>/dev/null || echo 0)
 
     if [[ "$available" -eq 0 ]]; then
-        echo "No suitable RTX 4090 offers found. Try again later."
+        echo "No suitable RTX 4090 offers with >=${needed_disk_gb}GB disk found."
+        echo "Try a smaller video or lower scale."
         exit 1
     fi
 
