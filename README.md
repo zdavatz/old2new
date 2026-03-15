@@ -1,6 +1,6 @@
 # old2new
 
-Improve video quality of old Da Vaz movies using [Real-ESRGAN](https://github.com/xinntao/Real-ESRGAN) AI upscaling.
+Improve video quality of old Da Vaz movies using [Real-ESRGAN](https://github.com/xinntao/Real-ESRGAN) AI upscaling + [GFPGAN](https://github.com/TencentARC/GFPGAN) face enhancement.
 
 ## Requirements
 
@@ -30,7 +30,7 @@ The script will:
 5. Present enhancement options with time estimates:
    - **Option 1**: Minimal enhance (2x upscale)
    - **Option 2**: Maximum enhance (4x upscale)
-6. Extract frames, upscale with Real-ESRGAN, and reassemble with original audio
+6. Extract frames, upscale with Real-ESRGAN + GFPGAN face enhancement, and reassemble with original audio
 
 ### Google Cloud (one-command setup)
 
@@ -108,7 +108,7 @@ For processing individual videos, use `enhance_gpu.py` on a cloud GPU instance w
 
 ```bash
 # On a cloud instance with CUDA:
-pip install realesrgan yt-dlp "numpy<2" "torchvision==0.15.2" "basicsr==1.4.2" opencv-python-headless
+pip install realesrgan gfpgan yt-dlp "numpy<2" "torchvision==0.15.2" "basicsr==1.4.2" opencv-python-headless
 apt-get install -y ffmpeg
 python3 enhance_gpu.py "<youtube-url>" [scale]
 python3 enhance_gpu.py "<youtube-url>" [scale] --job-name "Movie_Title"
