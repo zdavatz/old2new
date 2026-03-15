@@ -26,48 +26,66 @@ The script will:
 1. Download the video via yt-dlp
 2. Detect your machine specs (chip, GPU cores, RAM)
 3. Benchmark one frame at 2x and 4x to estimate processing time
-4. Present enhancement options with time estimates:
+4. Check available disk space and warn if insufficient
+5. Present enhancement options with time estimates:
    - **Option 1**: Minimal enhance (2x upscale)
    - **Option 2**: Maximum enhance (4x upscale)
-5. Extract frames, upscale with Real-ESRGAN, and reassemble with original audio
+6. Extract frames, upscale with Real-ESRGAN, and reassemble with original audio
 
-### Cloud GPU (vast.ai / RunPod)
+### Google Cloud (one-command setup)
+
+The `gcp_setup.sh` script handles everything: creates a GPU instance, installs deps, and starts enhancement.
+
+```bash
+# Setup and run
+./gcp_setup.sh "<youtube-url>" [scale] [project-id] [zone]
+
+# Check progress
+./gcp_setup.sh status [project-id]
+```
+
+The script pre-checks video resolution and disk needs before creating the instance. If 4x upscale exceeds the 500GB GCP disk quota, it will suggest 2x instead.
+
+#### Examples
+
+```bash
+# 4x upscale (default)
+./gcp_setup.sh "https://www.youtube.com/watch?v=rX4ADnOa3G4"
+
+# 2x upscale (for HD source videos or limited disk)
+./gcp_setup.sh "https://www.youtube.com/watch?v=aefe1fn7Kf0" 2 old2new-davaz
+
+# Check status with ETA
+./gcp_setup.sh status old2new-davaz
+
+# Download result when done
+gcloud compute scp old2new-gpu:~/jobs/*/enhanced_*.mkv . --project=old2new-davaz --zone=us-central1-a
+
+# DELETE instance when done to stop billing!
+gcloud compute instances delete old2new-gpu --project=old2new-davaz --zone=us-central1-a
+```
+
+#### Prerequisites
+
+1. Install gcloud CLI: `brew install --cask google-cloud-sdk`
+2. Authenticate: `gcloud auth login`
+3. Create a project with billing enabled
+4. Request GPUS_ALL_REGIONS quota increase to 1
+
+### Cloud GPU (manual setup via vast.ai / RunPod)
 
 For faster processing, use `enhance_gpu.py` on a cloud GPU instance with CUDA + PyTorch:
 
 ```bash
 # On a cloud instance with CUDA:
-pip install realesrgan yt-dlp "numpy<2"
+pip install realesrgan yt-dlp "numpy<2" "torchvision==0.15.2" "basicsr==1.4.2" opencv-python-headless
 apt-get install -y ffmpeg
-python3 enhance_gpu.py
-```
-
-The Python script uses Real-ESRGAN via PyTorch/CUDA (no Vulkan needed).
-
-### Examples
-
-```bash
-# From YouTube URL
-./enhance.sh "https://www.youtube.com/watch?v=rX4ADnOa3G4"
-
-# From local file
-./enhance.sh ~/Downloads/my_video.mp4
-```
-
-### Long-running jobs
-
-For long videos, run in the background:
-
-```bash
-nohup ./enhance.sh 'https://www.youtube.com/watch?v=xyz' > enhance.log 2>&1 &
-
-# Monitor progress
-tail -f enhance.log
+python3 enhance_gpu.py "<youtube-url>" [scale]
 ```
 
 ### Output
 
-Enhanced videos are saved to `jobs/<video-id>/enhanced_<scale>x_<width>x<height>.mkv`.
+Enhanced videos are saved to `jobs/<video-id>/enhanced_<scale>x.mkv`.
 
 The process is resumable — if interrupted, re-run the same command and it will skip already-completed steps (download, frame extraction, upscaled frames).
 
@@ -78,50 +96,16 @@ The process is resumable — if interrupted, re-run the same command and it will
 | M5 (10 GPU cores) | ~10s | ~45h | — |
 | M3 Ultra (76 GPU cores) | ~1.5-2s | ~7-9h | — |
 | RTX 4090 (vast.ai, CUDA) | ~1s | ~4.5h | ~$1.25 |
-| L4 (Google Cloud, CUDA) | ~1.5s | ~7h | ~$5 |
+| L4 (Google Cloud, CUDA) | ~2s | ~9h | ~$6.30 |
 | H200 NVL (RunPod, CUDA) | ~1-1.5s | ~5-6h | ~$17-20 |
 
 ### Cloud GPU Providers
 
 - **[vast.ai](https://vast.ai)**: Cheapest option. RTX 4090 at ~$0.20-0.28/hr. CLI: `pipx install vastai`
 - **[RunPod](https://runpod.io)**: More GPU variety but often sold out. RTX 4090 at ~$0.34-0.59/hr. CLI: `pipx install runpod`
-- **[Google Cloud](https://cloud.google.com)**: Always available, but more expensive. L4 at ~$0.70/hr. CLI: `brew install --cask google-cloud-sdk`. Requires GPU quota request for new projects (GPUS_ALL_REGIONS).
+- **[Google Cloud](https://cloud.google.com)**: Always available. L4 at ~$0.70/hr. Use `gcp_setup.sh` for one-command setup. Requires GPUS_ALL_REGIONS quota for new projects.
 
 **Note**: On cloud instances, use the Python/CUDA approach (`enhance_gpu.py`) instead of the ncnn-vulkan binary, as Vulkan drivers are often not available in Docker containers.
-
-### Google Cloud Setup
-
-```bash
-# Install gcloud CLI
-brew install --cask google-cloud-sdk
-
-# Authenticate and set project
-gcloud auth login
-gcloud config set project <PROJECT_ID>
-
-# Enable Compute Engine and create L4 instance
-gcloud services enable compute.googleapis.com
-gcloud compute instances create old2new-gpu \
-  --zone=us-central1-a \
-  --machine-type=g2-standard-4 \
-  --accelerator=type=nvidia-l4,count=1 \
-  --image=pytorch-2-7-cu128-ubuntu-2204-nvidia-570-v20260305 \
-  --image-project=deeplearning-platform-release \
-  --boot-disk-size=200GB \
-  --maintenance-policy=TERMINATE \
-  --metadata="install-nvidia-driver=True"
-
-# SSH in and install deps
-gcloud compute ssh old2new-gpu --zone=us-central1-a
-pip install realesrgan yt-dlp "numpy<2" "torchvision==0.15.2" "basicsr==1.4.2" opencv-python-headless
-sudo apt-get install -y ffmpeg
-
-# Run enhancement
-python3 enhance_gpu.py "https://www.youtube.com/watch?v=VIDEO_ID" 4
-
-# Don't forget to delete when done!
-gcloud compute instances delete old2new-gpu --zone=us-central1-a
-```
 
 ## License
 
