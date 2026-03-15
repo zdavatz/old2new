@@ -123,10 +123,11 @@ def main():
     TOTAL = len(existing)
 
     # --- Setup Real-ESRGAN model ---
-    print(f"\nLoading Real-ESRGAN model (scale={SCALE})...")
-    model = RRDBNet(num_in_ch=3, num_out_ch=3, num_feat=64, num_block=23, num_grow_ch=32, scale=SCALE)
+    # RealESRGAN_x4plus model is always 4x internally; outscale handles 2x by downsampling
+    print(f"\nLoading Real-ESRGAN model (output scale={SCALE}x)...")
+    model = RRDBNet(num_in_ch=3, num_out_ch=3, num_feat=64, num_block=23, num_grow_ch=32, scale=4)
     upsampler = RealESRGANer(
-        scale=SCALE,
+        scale=4,
         model_path="https://github.com/xinntao/Real-ESRGAN/releases/download/v0.1.0/RealESRGAN_x4plus.pth",
         model=model,
         tile=0,
