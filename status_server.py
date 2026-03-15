@@ -84,7 +84,8 @@ class StatusHandler(http.server.BaseHTTPRequestHandler):
         videos = []
         for entry in queue:
             vid = entry["id"]
-            title = entry["title"]
+            title = entry["title"]  # used as directory name
+            display_title = entry.get("display_title", title).replace('_', ' ')
             scale = entry["scale"]
             duration = entry["duration"]
             job_dir = os.path.join(JOBS_DIR, title)
@@ -124,6 +125,7 @@ class StatusHandler(http.server.BaseHTTPRequestHandler):
             videos.append({
                 "id": vid,
                 "title": title,
+                "display_title": display_title,
                 "scale": scale,
                 "duration": duration,
                 "status": status,
@@ -233,7 +235,7 @@ async function update() {
       const outputName = v.title + '_' + v.scale + 'x.mkv';
       h += `<tr>
         <td>${i+1}</td>
-        <td class="title-col"><a href="${ytUrl}" target="_blank">${v.title.replace(/_/g, ' ')}</a></td>
+        <td class="title-col"><a href="${ytUrl}" target="_blank">${v.display_title || v.title.replace(/_/g, ' ')}</a></td>
         <td style="font-size:0.75rem;color:#94a3b8">${inputName}</td>
         <td style="font-size:0.75rem;color:#6ee7b7">${outputName}</td>
         <td>${dur}</td>
