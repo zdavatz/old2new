@@ -8,5 +8,9 @@ jobs/
 .vast_batch/
 enhanced_videos/
 
+# YouTube OAuth credentials (sensitive)
+client_secret.json
+youtube_token.json
+
 # Temp/test files
 *.zip
