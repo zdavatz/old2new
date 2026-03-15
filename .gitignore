@@ -1,0 +1,8 @@
+# Real-ESRGAN binary and models (downloaded at runtime)
+realesrgan/
+
+# Job working directories (frames, downloads)
+jobs/
+
+# Temp/test files
+*.zip
