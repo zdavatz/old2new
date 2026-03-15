@@ -1212,16 +1212,16 @@ cmd_url() {
 
     # Get video info via yt-dlp
     log "Fetching video info..."
-    local video_info
-    video_info=$(yt-dlp --print "%(duration)s\t%(width)s\t%(title)s" "$url" 2>/dev/null)
-    if [[ -z "$video_info" ]]; then
+    local dur width raw_title
+    dur=$(yt-dlp --print "%(duration)s" "$url" 2>/dev/null)
+    width=$(yt-dlp --print "%(width)s" "$url" 2>/dev/null)
+    raw_title=$(yt-dlp --print "%(title)s" "$url" 2>/dev/null)
+    if [[ -z "$dur" || -z "$raw_title" ]]; then
         echo "ERROR: Could not fetch video info. Check the URL."
         exit 1
     fi
-
-    local dur width raw_title
-    IFS=$'\t' read -r dur width raw_title <<< "$video_info"
     dur="${dur%.*}"  # remove decimals
+    width="${width:-0}"
 
     # Clean title for directory name
     local title
