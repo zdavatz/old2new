@@ -28,9 +28,11 @@ done
 
 # --- Usage ---
 if [ -z "$1" ]; then
-    echo "Usage: ./enhance.sh <youtube-url>"
+    echo "Usage: ./enhance.sh \"<youtube-url>\""
     echo ""
-    echo "Example: ./enhance.sh https://www.youtube.com/watch?v=xyz123"
+    echo "Example: ./enhance.sh \"https://www.youtube.com/watch?v=xyz123\""
+    echo ""
+    echo "NOTE: The URL must be quoted to prevent the shell from interpreting '?' as a glob."
     exit 1
 fi
 

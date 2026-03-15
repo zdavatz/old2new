@@ -16,8 +16,10 @@ Real-ESRGAN is downloaded automatically on first run.
 ### Local (macOS)
 
 ```bash
-./enhance.sh <youtube-url>
+./enhance.sh "<youtube-url>"
 ```
+
+**Important**: Always quote the URL to prevent the shell from interpreting `?` as a glob character.
 
 The script will:
 1. Download the video via yt-dlp
@@ -44,7 +46,7 @@ The Python script uses Real-ESRGAN via PyTorch/CUDA (no Vulkan needed).
 ### Example
 
 ```bash
-./enhance.sh https://www.youtube.com/watch?v=rX4ADnOa3G4
+./enhance.sh "https://www.youtube.com/watch?v=rX4ADnOa3G4"
 ```
 
 ### Long-running jobs

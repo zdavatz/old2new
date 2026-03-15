@@ -16,6 +16,10 @@ old2new enhances old Da Vaz videos using Real-ESRGAN AI upscaling. There are two
 - **realesrgan/** — Auto-downloaded binary and models (gitignored). macOS ARM64 binary from github.com/xinntao/Real-ESRGAN
 - **jobs/<video-id>/** — Per-video working directories containing original video, extracted frames, upscaled frames, and final output (gitignored)
 
+## Important
+
+- URLs passed to `enhance.sh` must be quoted (e.g., `./enhance.sh "https://..."`) because `?` in YouTube URLs is interpreted as a glob by zsh
+
 ## Key Details
 
 - Local: Real-ESRGAN ncnn-vulkan uses Vulkan for GPU compute — works on Apple Silicon (Metal via MoltenVK)
