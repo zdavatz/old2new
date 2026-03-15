@@ -1,0 +1,221 @@
+#!/usr/bin/env python3
+"""Lightweight status web server for vast.ai enhancement instances."""
+import http.server
+import json
+import os
+import glob
+import time
+from datetime import datetime, timedelta
+
+JOBS_DIR = os.path.expanduser("~/jobs")
+QUEUE_FILE = os.path.expanduser("~/video_queue.json")
+PORT = 8080
+
+class StatusHandler(http.server.BaseHTTPRequestHandler):
+    def log_message(self, format, *args):
+        pass  # suppress access logs
+
+    def do_GET(self):
+        if self.path == "/api/status":
+            self.send_json(self.get_status())
+        elif self.path == "/":
+            self.send_html(self.render_page())
+        else:
+            self.send_error(404)
+
+    def send_json(self, data):
+        body = json.dumps(data).encode()
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", len(body))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def send_html(self, html):
+        body = html.encode()
+        self.send_response(200)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Content-Length", len(body))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def get_status(self):
+        queue = []
+        if os.path.exists(QUEUE_FILE):
+            with open(QUEUE_FILE) as f:
+                queue = json.load(f)
+
+        videos = []
+        for entry in queue:
+            vid = entry["id"]
+            title = entry["title"]
+            scale = entry["scale"]
+            duration = entry["duration"]
+            job_dir = os.path.join(JOBS_DIR, title)
+
+            status = "queued"
+            progress = 0
+            total_frames = 0
+            done_frames = 0
+            eta = ""
+            enhanced_file = os.path.join(job_dir, f"enhanced_{scale}x.mkv")
+
+            if os.path.exists(enhanced_file):
+                status = "done"
+                progress = 100
+                size_mb = os.path.getsize(enhanced_file) / (1024*1024)
+                eta = f"{size_mb:.0f} MB"
+            elif os.path.isdir(os.path.join(job_dir, "frames_out")):
+                status = "upscaling"
+                frames_in = glob.glob(os.path.join(job_dir, "frames_in", "frame_*.png"))
+                frames_out = glob.glob(os.path.join(job_dir, "frames_out", "frame_*.png"))
+                total_frames = len(frames_in)
+                done_frames = len(frames_out)
+                if total_frames > 0:
+                    progress = round(done_frames / total_frames * 100, 1)
+            elif os.path.isdir(os.path.join(job_dir, "frames_in")):
+                status = "extracting"
+                frames_in = glob.glob(os.path.join(job_dir, "frames_in", "frame_*.png"))
+                total_frames = len(frames_in)
+                if total_frames > 0:
+                    status = "upscaling"
+            elif os.path.exists(os.path.join(job_dir, "original.mkv")):
+                status = "downloaded"
+
+            videos.append({
+                "id": vid,
+                "title": title,
+                "scale": scale,
+                "duration": duration,
+                "status": status,
+                "progress": progress,
+                "total_frames": total_frames,
+                "done_frames": done_frames,
+                "eta": eta,
+            })
+
+        # Read last lines of enhance.log
+        log_tail = ""
+        log_path = os.path.expanduser("~/enhance.log")
+        if os.path.exists(log_path):
+            with open(log_path, "rb") as f:
+                f.seek(0, 2)
+                size = f.tell()
+                f.seek(max(0, size - 4096))
+                log_tail = f.read().decode("utf-8", errors="replace")
+                log_tail = "\n".join(log_tail.split("\n")[-30:])
+
+        total = len(videos)
+        done = sum(1 for v in videos if v["status"] == "done")
+        active = [v for v in videos if v["status"] == "upscaling"]
+
+        return {
+            "total": total,
+            "done": done,
+            "active": active[0]["title"] if active else None,
+            "videos": videos,
+            "log_tail": log_tail,
+            "timestamp": datetime.now().isoformat(),
+        }
+
+    def render_page(self):
+        return """<!DOCTYPE html>
+<html><head>
+<meta charset="utf-8">
+<title>Da Vaz Video Enhancement</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta http-equiv="refresh" content="30">
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+         background: #0f172a; color: #e2e8f0; padding: 20px; }
+  h1 { font-size: 1.5rem; margin-bottom: 4px; color: #f8fafc; }
+  .subtitle { color: #94a3b8; margin-bottom: 20px; font-size: 0.9rem; }
+  .summary { display: flex; gap: 16px; margin-bottom: 24px; flex-wrap: wrap; }
+  .card { background: #1e293b; border-radius: 8px; padding: 16px 20px; min-width: 140px; }
+  .card .num { font-size: 2rem; font-weight: 700; color: #38bdf8; }
+  .card .label { color: #94a3b8; font-size: 0.85rem; }
+  table { width: 100%; border-collapse: collapse; background: #1e293b; border-radius: 8px; overflow: hidden; }
+  th { text-align: left; padding: 10px 12px; background: #334155; color: #94a3b8;
+       font-size: 0.8rem; text-transform: uppercase; letter-spacing: 0.05em; }
+  td { padding: 8px 12px; border-top: 1px solid #334155; font-size: 0.9rem; }
+  tr:hover { background: #1e3a5f; }
+  .bar-bg { background: #334155; border-radius: 4px; height: 20px; position: relative; overflow: hidden; min-width: 120px; }
+  .bar-fg { height: 100%; border-radius: 4px; transition: width 0.5s; }
+  .bar-text { position: absolute; top: 0; left: 8px; line-height: 20px; font-size: 0.75rem; font-weight: 600; }
+  .status { display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 0.75rem; font-weight: 600; }
+  .status-done { background: #065f46; color: #6ee7b7; }
+  .status-upscaling { background: #1e3a5f; color: #38bdf8; }
+  .status-extracting { background: #713f12; color: #fbbf24; }
+  .status-downloaded { background: #3b0764; color: #c084fc; }
+  .status-queued { background: #334155; color: #94a3b8; }
+  .log { background: #0f172a; border: 1px solid #334155; border-radius: 8px; padding: 12px;
+         font-family: monospace; font-size: 0.75rem; max-height: 300px; overflow-y: auto;
+         white-space: pre-wrap; color: #94a3b8; margin-top: 20px; }
+  .title-col { max-width: 350px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  a { color: #38bdf8; text-decoration: none; }
+  a:hover { text-decoration: underline; }
+</style>
+</head><body>
+<h1>Da Vaz Video Enhancement</h1>
+<p class="subtitle">Real-ESRGAN AI Upscaling &mdash; auto-refreshes every 30s</p>
+<div id="app">Loading...</div>
+<script>
+async function update() {
+  try {
+    const r = await fetch('/api/status');
+    const d = await r.json();
+    const app = document.getElementById('app');
+    const active = d.videos.filter(v => v.status === 'upscaling');
+    const done = d.videos.filter(v => v.status === 'done');
+    const queued = d.videos.filter(v => v.status === 'queued');
+    const other = d.videos.filter(v => !['done','upscaling','queued'].includes(v.status));
+
+    let h = `<div class="summary">
+      <div class="card"><div class="num">${d.total}</div><div class="label">Total Videos</div></div>
+      <div class="card"><div class="num" style="color:#6ee7b7">${done.length}</div><div class="label">Completed</div></div>
+      <div class="card"><div class="num" style="color:#38bdf8">${active.length}</div><div class="label">Upscaling Now</div></div>
+      <div class="card"><div class="num" style="color:#94a3b8">${queued.length}</div><div class="label">Queued</div></div>
+    </div>`;
+
+    h += `<table><thead><tr>
+      <th>#</th><th>Title</th><th>Scale</th><th>Duration</th><th>Status</th><th>Progress</th>
+    </tr></thead><tbody>`;
+
+    const order = [...active, ...other, ...done, ...queued];
+    order.forEach((v, i) => {
+      const dur = v.duration >= 3600
+        ? `${Math.floor(v.duration/3600)}:${String(Math.floor((v.duration%3600)/60)).padStart(2,'0')}:${String(v.duration%60).padStart(2,'0')}`
+        : `${Math.floor(v.duration/60)}:${String(v.duration%60).padStart(2,'0')}`;
+      const barColor = v.status === 'done' ? '#6ee7b7' : '#38bdf8';
+      const ytUrl = 'https://www.youtube.com/watch?v=' + v.id;
+      h += `<tr>
+        <td>${i+1}</td>
+        <td class="title-col"><a href="${ytUrl}" target="_blank">${v.title.replace(/_/g, ' ')}</a></td>
+        <td>${v.scale}x</td>
+        <td>${dur}</td>
+        <td><span class="status status-${v.status}">${v.status}</span></td>
+        <td><div class="bar-bg"><div class="bar-fg" style="width:${v.progress}%;background:${barColor}"></div>
+            <span class="bar-text">${v.status==='done' ? v.eta : v.progress > 0 ? v.done_frames+'/'+v.total_frames : ''}</span></div></td>
+      </tr>`;
+    });
+    h += '</tbody></table>';
+
+    if (d.log_tail) {
+      h += '<div class="log">' + d.log_tail.replace(/</g,'&lt;') + '</div>';
+    }
+    h += '<p style="margin-top:12px;color:#64748b;font-size:0.75rem">Updated: ' + d.timestamp + '</p>';
+    app.innerHTML = h;
+  } catch(e) {
+    document.getElementById('app').innerHTML = '<p>Error loading status: ' + e + '</p>';
+  }
+}
+update();
+setInterval(update, 30000);
+</script>
+</body></html>"""
+
+if __name__ == "__main__":
+    server = http.server.HTTPServer(("0.0.0.0", PORT), StatusHandler)
+    print(f"Status server running on port {PORT}")
+    server.serve_forever()

@@ -599,12 +599,9 @@ ONSTART_HEADER
     echo 'QUEUEJSON'
     echo ""
 
-    # Write and start the status server
-    echo "# Write and start status server"
-    echo 'cat > /root/status_server.py << '"'"'PYSERVER'"'"''
-    generate_status_server
-    echo 'PYSERVER'
-    echo ""
+    # Download and start the status server
+    echo "# Download and start status server"
+    echo 'curl -sL "https://raw.githubusercontent.com/zdavatz/old2new/main/status_server.py?$(date +%s)" -o /root/status_server.py'
     echo 'python3 /root/status_server.py &'
     echo 'echo "Status server started on port 8080"'
     echo ""
