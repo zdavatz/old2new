@@ -20,8 +20,44 @@ class StatusHandler(http.server.BaseHTTPRequestHandler):
             self.send_json(self.get_status())
         elif self.path == "/":
             self.send_html(self.render_page())
+        elif self.path.startswith("/compare/"):
+            # /compare/TITLE shows side-by-side frame comparison
+            title = self.path.split("/compare/", 1)[1].split("?")[0]
+            frame = self.path.split("frame=")[1] if "frame=" in self.path else None
+            self.send_html(self.render_compare(title, frame))
+        elif self.path.startswith("/frames/"):
+            # /frames/TITLE/in/frame_00000001.png or /frames/TITLE/out/frame_00000001.png
+            self.serve_frame()
         else:
             self.send_error(404)
+
+    def serve_frame(self):
+        """Serve frame images from jobs directory."""
+        import mimetypes
+        parts = self.path.split("/frames/", 1)[1].split("/", 2)
+        if len(parts) < 3:
+            self.send_error(404)
+            return
+        title, direction, filename = parts[0], parts[1], parts[2]
+        if direction == "in":
+            filepath = os.path.join(JOBS_DIR, title, "frames_in", filename)
+        elif direction == "out":
+            filepath = os.path.join(JOBS_DIR, title, "frames_out", filename)
+        else:
+            self.send_error(404)
+            return
+        if not os.path.exists(filepath):
+            self.send_error(404)
+            return
+        mime = mimetypes.guess_type(filepath)[0] or "application/octet-stream"
+        with open(filepath, "rb") as f:
+            data = f.read()
+        self.send_response(200)
+        self.send_header("Content-Type", mime)
+        self.send_header("Content-Length", len(data))
+        self.send_header("Cache-Control", "max-age=3600")
+        self.end_headers()
+        self.wfile.write(data)
 
     def send_json(self, data):
         body = json.dumps(data).encode()
@@ -179,7 +215,7 @@ async function update() {
     </div>`;
 
     h += `<table><thead><tr>
-      <th>#</th><th>Title</th><th>Scale</th><th>Duration</th><th>Status</th><th>Progress</th>
+      <th>#</th><th>Title</th><th>Scale</th><th>Duration</th><th>Status</th><th>Progress</th><th>Compare</th>
     </tr></thead><tbody>`;
 
     const order = [...active, ...other, ...done, ...queued];
@@ -189,6 +225,7 @@ async function update() {
         : `${Math.floor(v.duration/60)}:${String(v.duration%60).padStart(2,'0')}`;
       const barColor = v.status === 'done' ? '#6ee7b7' : '#38bdf8';
       const ytUrl = 'https://www.youtube.com/watch?v=' + v.id;
+      const compareLink = v.done_frames > 0 ? `<a href="/compare/${v.title}">view</a>` : '';
       h += `<tr>
         <td>${i+1}</td>
         <td class="title-col"><a href="${ytUrl}" target="_blank">${v.title.replace(/_/g, ' ')}</a></td>
@@ -197,6 +234,7 @@ async function update() {
         <td><span class="status status-${v.status}">${v.status}</span></td>
         <td><div class="bar-bg"><div class="bar-fg" style="width:${v.progress}%;background:${barColor}"></div>
             <span class="bar-text">${v.status==='done' ? v.eta : v.progress > 0 ? v.done_frames+'/'+v.total_frames : ''}</span></div></td>
+        <td>${compareLink}</td>
       </tr>`;
     });
     h += '</tbody></table>';
@@ -214,6 +252,81 @@ update();
 setInterval(update, 30000);
 </script>
 </body></html>"""
+
+    def render_compare(self, title, frame_param=None):
+        """Render side-by-side comparison of original vs enhanced frames."""
+        job_dir = os.path.join(JOBS_DIR, title)
+        frames_in = sorted(glob.glob(os.path.join(job_dir, "frames_in", "frame_*.png")))
+        frames_out = sorted(glob.glob(os.path.join(job_dir, "frames_out", "frame_*.png")))
+
+        # Find frames that exist in both in and out
+        out_names = {os.path.basename(f) for f in frames_out}
+        available = [f for f in frames_in if os.path.basename(f) in out_names]
+
+        if not available:
+            return "<html><body><h1>No frames available for comparison yet.</h1><p><a href='/'>Back</a></p></body></html>"
+
+        # Pick frame to show
+        total = len(available)
+        if frame_param and frame_param.isdigit():
+            idx = max(0, min(int(frame_param), total - 1))
+        else:
+            # Default: show a frame from ~20% into the video (more interesting than frame 1)
+            idx = min(total // 5, total - 1)
+
+        frame_name = os.path.basename(available[idx])
+        in_url = f"/frames/{title}/in/{frame_name}"
+        out_url = f"/frames/{title}/out/{frame_name}"
+
+        # Navigation
+        prev_idx = max(0, idx - 1)
+        next_idx = min(total - 1, idx + 1)
+        jump_10 = min(total - 1, idx + 10)
+        back_10 = max(0, idx - 10)
+
+        return f"""<!DOCTYPE html>
+<html><head>
+<meta charset="utf-8">
+<title>Compare: {title.replace('_', ' ')}</title>
+<style>
+  * {{ box-sizing: border-box; margin: 0; padding: 0; }}
+  body {{ font-family: -apple-system, sans-serif; background: #0f172a; color: #e2e8f0; padding: 20px; }}
+  h1 {{ font-size: 1.3rem; margin-bottom: 4px; }}
+  .nav {{ margin: 12px 0; display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }}
+  .nav a, .nav span {{ padding: 6px 12px; background: #1e293b; border-radius: 4px; color: #38bdf8;
+                       text-decoration: none; font-size: 0.85rem; }}
+  .nav a:hover {{ background: #334155; }}
+  .nav .current {{ background: #334155; color: #f8fafc; }}
+  .compare {{ display: flex; gap: 12px; margin-top: 12px; }}
+  .compare .panel {{ flex: 1; min-width: 0; }}
+  .compare .panel h2 {{ font-size: 0.9rem; color: #94a3b8; margin-bottom: 6px; }}
+  .compare img {{ width: 100%; height: auto; border-radius: 4px; border: 1px solid #334155; }}
+  a.back {{ color: #38bdf8; text-decoration: none; font-size: 0.85rem; }}
+</style>
+</head><body>
+<a class="back" href="/">&larr; Back to dashboard</a>
+<h1>{title.replace('_', ' ')}</h1>
+<div class="nav">
+  <a href="/compare/{title}?frame=0">First</a>
+  <a href="/compare/{title}?frame={back_10}">&laquo; -10</a>
+  <a href="/compare/{title}?frame={prev_idx}">&lsaquo; Prev</a>
+  <span class="current">Frame {idx + 1} / {total}</span>
+  <a href="/compare/{title}?frame={next_idx}">Next &rsaquo;</a>
+  <a href="/compare/{title}?frame={jump_10}">+10 &raquo;</a>
+  <a href="/compare/{title}?frame={total - 1}">Last</a>
+</div>
+<div class="compare">
+  <div class="panel">
+    <h2>Original ({frame_name})</h2>
+    <img src="{in_url}" alt="Original">
+  </div>
+  <div class="panel">
+    <h2>Enhanced ({frame_name})</h2>
+    <img src="{out_url}" alt="Enhanced">
+  </div>
+</div>
+</body></html>"""
+
 
 if __name__ == "__main__":
     server = http.server.HTTPServer(("0.0.0.0", PORT), StatusHandler)
