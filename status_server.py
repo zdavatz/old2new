@@ -261,6 +261,17 @@ setInterval(update, 30000);
 
     def render_compare(self, title, frame_param=None):
         """Render side-by-side comparison of original vs enhanced frames."""
+        # Look up display title from video_queue.json
+        display_title = title.replace('_', ' ')
+        if os.path.exists(QUEUE_FILE):
+            try:
+                with open(QUEUE_FILE) as f:
+                    for entry in json.load(f):
+                        if entry.get("title") == title or entry.get("id") == title:
+                            display_title = entry.get("title", title).replace('_', ' ')
+                            break
+            except Exception:
+                pass
         job_dir = os.path.join(JOBS_DIR, title)
         frames_in = sorted(glob.glob(os.path.join(job_dir, "frames_in", "frame_*.png")))
         frames_out = sorted(glob.glob(os.path.join(job_dir, "frames_out", "frame_*.png")))
@@ -293,7 +304,7 @@ setInterval(update, 30000);
         return f"""<!DOCTYPE html>
 <html><head>
 <meta charset="utf-8">
-<title>Compare: {title.replace('_', ' ')}</title>
+<title>Compare: {display_title}</title>
 <style>
   * {{ box-sizing: border-box; margin: 0; padding: 0; }}
   body {{ font-family: -apple-system, sans-serif; background: #0f172a; color: #e2e8f0; padding: 20px; }}
@@ -312,7 +323,7 @@ setInterval(update, 30000);
 </style>
 </head><body>
 <a class="back" href="/">&larr; Back to dashboard</a>
-<h1>{title.replace('_', ' ')}</h1>
+<h1>{display_title}</h1>
 <div class="nav">
   <a href="/compare/{title}?frame=0">First</a>
   <a href="/compare/{title}?frame={back_10}">&laquo; -10</a>
