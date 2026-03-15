@@ -151,21 +151,10 @@ def main():
     )
     print("Real-ESRGAN loaded.")
 
-    # Setup GFPGAN for face enhancement
+    # GFPGAN disabled: it halluccinates facial features and changes how people look.
+    # Not suitable for documentary footage where preserving real appearance matters.
+    # Real-ESRGAN alone provides good upscaling without altering faces.
     face_enhancer = None
-    try:
-        from gfpgan import GFPGANer
-        face_enhancer = GFPGANer(
-            model_path="https://github.com/TencentARC/GFPGAN/releases/download/v1.3.0/GFPGANv1.4.pth",
-            upscale=SCALE,
-            arch='clean',
-            channel_multiplier=2,
-            bg_upsampler=upsampler
-        )
-        print("GFPGAN face enhancer loaded.")
-    except Exception as e:
-        print(f"GFPGAN not available ({e}), proceeding without face enhancement.")
-        print("Install with: pip install gfpgan")
 
     # Track whether faces have been seen to avoid unnecessary detection
     faces_seen = [False]
