@@ -46,13 +46,14 @@ if [ -n "$EXISTING" ]; then
     if [ "$CONFIRM" = "y" ] || [ "$CONFIRM" = "Y" ]; then
         echo "Deleting existing instance..."
         "$GCLOUD" compute instances delete "$INSTANCE" --project="$PROJECT" --zone="$ZONE" --quiet
+        EXISTING=""
     else
         echo "Reusing existing instance."
     fi
 fi
 
 # --- Create instance if needed ---
-if [ -z "$EXISTING" ] || [ "$CONFIRM" = "y" ] || [ "$CONFIRM" = "Y" ]; then
+if [ -z "$EXISTING" ]; then
     echo "Creating GPU instance..."
     "$GCLOUD" compute instances create "$INSTANCE" \
         --project="$PROJECT" \
@@ -68,18 +69,21 @@ if [ -z "$EXISTING" ] || [ "$CONFIRM" = "y" ] || [ "$CONFIRM" = "Y" ]; then
     sleep 30
 fi
 
-# --- Setup function ---
+SSH_CMD="$GCLOUD compute ssh $INSTANCE --project=$PROJECT --zone=$ZONE"
+
+# --- Install dependencies ---
 echo ""
 echo "Installing dependencies..."
-"$GCLOUD" compute ssh "$INSTANCE" --project="$PROJECT" --zone="$ZONE" --command='
+$SSH_CMD --command='
 set -e
 
-# Install Python deps (uninstall opencv-python first to avoid libGL conflict)
-pip uninstall -y opencv-python -q 2>/dev/null
-pip install realesrgan yt-dlp "numpy<2" "torchvision==0.15.2" "basicsr==1.4.2" opencv-python-headless -q 2>&1 | tail -1
+# Install system deps for OpenCV and ffmpeg
+sudo apt-get update -qq
+sudo apt-get install -y -qq libgl1 libglib2.0-0 > /dev/null 2>&1
 
-# Install static ffmpeg (apt version has broken deps on DL images)
+# Install static ffmpeg (apt version has broken deps on GCP DL images)
 if ! command -v ffprobe &>/dev/null; then
+    echo "Installing ffmpeg..."
     wget -q https://johnvansickle.com/ffmpeg/releases/ffmpeg-release-amd64-static.tar.xz -O /tmp/ffmpeg.tar.xz
     tar xf /tmp/ffmpeg.tar.xz -C /tmp
     sudo cp /tmp/ffmpeg-*-amd64-static/ffmpeg /usr/local/bin/
@@ -87,37 +91,58 @@ if ! command -v ffprobe &>/dev/null; then
     rm -rf /tmp/ffmpeg*
 fi
 
-# Verify
-python3 -c "from basicsr.archs.rrdbnet_arch import RRDBNet; print(\"Python deps OK\")"
+# Uninstall conflicting opencv versions, install headless
+pip uninstall -y opencv-python opencv-contrib-python 2>/dev/null
+pip install opencv-python-headless -q 2>&1 | tail -1
+
+# Install Real-ESRGAN and pinned deps
+pip install realesrgan yt-dlp "numpy<2" "torchvision==0.15.2" "basicsr==1.4.2" -q 2>&1 | tail -1
+
+# Verify everything works
+echo ""
+python3 -c "
+import cv2
+from basicsr.archs.rrdbnet_arch import RRDBNet
+import torch
+print(f\"Python deps OK (torch={torch.__version__}, CUDA={torch.cuda.is_available()})\")
+"
 ffprobe -version 2>&1 | head -1
 nvidia-smi --query-gpu=name,memory.total --format=csv,noheader
+echo ""
 echo "SETUP DONE"
 '
 
-# --- Upload and run script ---
+# --- Download and run enhancement ---
 echo ""
 echo "Downloading enhance script..."
-"$GCLOUD" compute ssh "$INSTANCE" --project="$PROJECT" --zone="$ZONE" --command='
+$SSH_CMD --command='
 wget -q https://raw.githubusercontent.com/zdavatz/old2new/main/enhance_gpu.py -O ~/enhance_gpu.py
 echo "Script downloaded"
 '
 
 echo ""
 echo "Starting enhancement..."
-"$GCLOUD" compute ssh "$INSTANCE" --project="$PROJECT" --zone="$ZONE" --command="
+$SSH_CMD --command="
 export PATH=/usr/local/bin:\$HOME/.local/bin:\$PATH
 nohup python3 -u ~/enhance_gpu.py \"$URL\" 4 > ~/enhance.log 2>&1 &
-echo \"Enhancement started (PID: \$!)\"
+sleep 2
+if ps aux | grep -v grep | grep enhance_gpu.py > /dev/null; then
+    echo \"Enhancement started successfully\"
+else
+    echo \"ERROR: Enhancement failed to start. Check log:\"
+    cat ~/enhance.log
+    exit 1
+fi
 "
 
 echo ""
 echo "=== Setup Complete ==="
 echo ""
 echo "Monitor progress:"
-echo "  $GCLOUD compute ssh $INSTANCE --project=$PROJECT --zone=$ZONE --command='tail -20 ~/enhance.log'"
+echo "  $SSH_CMD --command='tail -20 ~/enhance.log'"
 echo ""
 echo "Check frame count:"
-echo "  $GCLOUD compute ssh $INSTANCE --project=$PROJECT --zone=$ZONE --command='ls ~/jobs/*/frames_out/ | wc -l'"
+echo "  $SSH_CMD --command='ls ~/jobs/*/frames_out/ 2>/dev/null | wc -l'"
 echo ""
 echo "Download result when done:"
 echo "  $GCLOUD compute scp $INSTANCE:~/jobs/*/enhanced_*.mkv . --project=$PROJECT --zone=$ZONE"
