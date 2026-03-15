@@ -72,24 +72,48 @@ gcloud compute instances delete old2new-gpu --project=old2new-davaz --zone=us-ce
 3. Create a project with billing enabled
 4. Request GPUS_ALL_REGIONS quota increase to 1
 
-### Batch Processing (vast.ai — all davaz.com videos)
+### Single Video (vast.ai — any YouTube URL)
 
-The `vast_batch.sh` script processes all 226 davaz.com videos in parallel on multiple vast.ai RTX 4090 instances. Each instance runs a web status page showing live per-video progress.
+Enhance any YouTube video with one command on a vast.ai RTX 4090:
 
 ```bash
 # One-time setup
-pip install vastai
+pipx install vastai
 vastai set api-key YOUR_KEY
 
+# Enhance a video
+./vast_batch.sh "https://www.youtube.com/watch?v=d6ph7n4k35Y"
+
+# Monitor (shows dashboard URL)
+./vast_batch.sh status
+
+# Download when done
+./vast_batch.sh download
+
+# Clean up
+./vast_batch.sh destroy
+```
+
+The script auto-detects HD videos and recommends 2x upscale. You can also specify the scale:
+
+```bash
+./vast_batch.sh "https://www.youtube.com/watch?v=d6ph7n4k35Y" 2
+```
+
+### Batch Processing (vast.ai — all 226 davaz.com videos)
+
+The `vast_batch.sh` script also processes all 226 davaz.com videos in parallel on multiple RTX 4090 instances:
+
+```bash
 # Test with a single video first to check quality
 ./vast_batch.sh test
-./vast_batch.sh status          # get status page URL
+./vast_batch.sh status          # get dashboard URL
 ./vast_batch.sh download        # download when done
 ./vast_batch.sh destroy         # clean up test instance
 
 # Launch full batch (4 parallel instances, ~15 days, ~$490)
 ./vast_batch.sh launch 4
-./vast_batch.sh status          # monitor + open status page URLs in browser
+./vast_batch.sh status          # monitor + open dashboard URLs in browser
 ./vast_batch.sh download        # download completed videos
 ./vast_batch.sh destroy         # clean up when done
 
