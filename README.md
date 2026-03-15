@@ -17,9 +17,10 @@ Real-ESRGAN is downloaded automatically on first run.
 
 ```bash
 ./enhance.sh "<youtube-url>"
+./enhance.sh /path/to/video.mp4
 ```
 
-**Important**: Always quote the URL to prevent the shell from interpreting `?` as a glob character.
+**Important**: Always quote YouTube URLs to prevent the shell from interpreting `?` as a glob character. Local file paths don't need quoting (unless they contain spaces).
 
 The script will:
 1. Download the video via yt-dlp
@@ -43,10 +44,14 @@ python3 enhance_gpu.py
 
 The Python script uses Real-ESRGAN via PyTorch/CUDA (no Vulkan needed).
 
-### Example
+### Examples
 
 ```bash
+# From YouTube URL
 ./enhance.sh "https://www.youtube.com/watch?v=rX4ADnOa3G4"
+
+# From local file
+./enhance.sh ~/Downloads/my_video.mp4
 ```
 
 ### Long-running jobs

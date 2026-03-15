@@ -11,7 +11,7 @@ old2new enhances old Da Vaz videos using Real-ESRGAN AI upscaling. There are two
 
 ## Architecture
 
-- **enhance.sh** — macOS script: download (yt-dlp) → detect hardware → benchmark → interactive menu → extract frames (ffmpeg) → upscale (Real-ESRGAN ncnn-vulkan) → reassemble (ffmpeg)
+- **enhance.sh** — macOS script: accepts YouTube URL or local video file → detect hardware → benchmark → interactive menu → extract frames (ffmpeg) → upscale (Real-ESRGAN ncnn-vulkan) → reassemble (ffmpeg)
 - **enhance_gpu.py** — Cloud GPU script: same pipeline but uses PyTorch/CUDA for upscaling. Used on vast.ai and RunPod instances.
 - **realesrgan/** — Auto-downloaded binary and models (gitignored). macOS ARM64 binary from github.com/xinntao/Real-ESRGAN
 - **jobs/<video-id>/** — Per-video working directories containing original video, extracted frames, upscaled frames, and final output (gitignored)

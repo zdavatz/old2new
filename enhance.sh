@@ -28,28 +28,17 @@ done
 
 # --- Usage ---
 if [ -z "$1" ]; then
-    echo "Usage: ./enhance.sh \"<youtube-url>\""
+    echo "Usage: ./enhance.sh \"<youtube-url-or-file>\""
     echo ""
-    echo "Example: ./enhance.sh \"https://www.youtube.com/watch?v=xyz123\""
+    echo "Examples:"
+    echo "  ./enhance.sh \"https://www.youtube.com/watch?v=xyz123\""
+    echo "  ./enhance.sh /path/to/video.mp4"
     echo ""
-    echo "NOTE: The URL must be quoted to prevent the shell from interpreting '?' as a glob."
+    echo "NOTE: YouTube URLs must be quoted to prevent the shell from interpreting '?' as a glob."
     exit 1
 fi
 
-URL="$1"
-
-# --- Extract video ID ---
-VIDEO_ID=$(echo "$URL" | sed -n 's/.*[?&]v=\([^&]*\).*/\1/p')
-if [ -z "$VIDEO_ID" ]; then
-    VIDEO_ID=$(echo "$URL" | sed -n 's|.*/\([^/?]*\).*|\1|p')
-fi
-if [ -z "$VIDEO_ID" ]; then
-    echo "Error: Could not extract video ID from URL"
-    exit 1
-fi
-
-WORKDIR="$SCRIPT_DIR/jobs/$VIDEO_ID"
-mkdir -p "$WORKDIR"
+ARG="$1"
 
 echo "=== Davaz Video Enhancement ==="
 echo ""
@@ -64,20 +53,54 @@ echo "GPU Cores: ${GPU_CORES:-unknown}"
 echo "RAM: ${RAM:-unknown} GB"
 echo ""
 
-# --- Step 1: Download video ---
-INPUT="$WORKDIR/original.mkv"
-if [ -f "$INPUT" ]; then
-    echo "Video already downloaded."
-else
-    echo "Downloading video..."
-    yt-dlp -o "$WORKDIR/original.%(ext)s" --merge-output-format mkv "$URL"
-    if [ ! -f "$INPUT" ]; then
-        DOWNLOADED=$(ls "$WORKDIR"/original.* 2>/dev/null | head -1)
-        if [ -n "$DOWNLOADED" ]; then
-            mv "$DOWNLOADED" "$INPUT"
+# --- Determine input: local file or YouTube URL ---
+if [ -f "$ARG" ]; then
+    # Local file: use filename (without extension) as job ID
+    VIDEO_ID=$(basename "$ARG" | sed 's/\.[^.]*$//')
+    WORKDIR="$SCRIPT_DIR/jobs/$VIDEO_ID"
+    mkdir -p "$WORKDIR"
+    INPUT="$WORKDIR/original.mkv"
+    if [ -f "$INPUT" ]; then
+        echo "Video already copied to workspace."
+    else
+        echo "Copying local file to workspace..."
+        EXT="${ARG##*.}"
+        if [ "$EXT" = "mkv" ]; then
+            cp "$ARG" "$INPUT"
         else
-            echo "Error: Download failed"
-            exit 1
+            echo "Converting to MKV..."
+            ffmpeg -i "$ARG" -c copy "$INPUT"
+        fi
+    fi
+else
+    # YouTube URL: extract video ID and download
+    URL="$ARG"
+    VIDEO_ID=$(echo "$URL" | sed -n 's/.*[?&]v=\([^&]*\).*/\1/p')
+    if [ -z "$VIDEO_ID" ]; then
+        VIDEO_ID=$(echo "$URL" | sed -n 's|.*/\([^/?]*\).*|\1|p')
+    fi
+    if [ -z "$VIDEO_ID" ]; then
+        echo "Error: Could not extract video ID from URL"
+        exit 1
+    fi
+
+    WORKDIR="$SCRIPT_DIR/jobs/$VIDEO_ID"
+    mkdir -p "$WORKDIR"
+    INPUT="$WORKDIR/original.mkv"
+
+    if [ -f "$INPUT" ]; then
+        echo "Video already downloaded."
+    else
+        echo "Downloading video..."
+        yt-dlp -o "$WORKDIR/original.%(ext)s" --merge-output-format mkv "$URL"
+        if [ ! -f "$INPUT" ]; then
+            DOWNLOADED=$(ls "$WORKDIR"/original.* 2>/dev/null | head -1)
+            if [ -n "$DOWNLOADED" ]; then
+                mv "$DOWNLOADED" "$INPUT"
+            else
+                echo "Error: Download failed"
+                exit 1
+            fi
         fi
     fi
 fi
