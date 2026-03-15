@@ -52,7 +52,7 @@ def main():
     # --- GPU info ---
     if torch.cuda.is_available():
         print(f"GPU: {torch.cuda.get_device_name(0)}")
-        print(f"VRAM: {torch.cuda.get_device_properties(0).total_mem / 1024**3:.0f} GB")
+        print(f"VRAM: {torch.cuda.get_device_properties(0).total_memory / 1024**3:.0f} GB")
     else:
         print("WARNING: CUDA not available, running on CPU (very slow)")
 
@@ -73,6 +73,41 @@ def main():
             else:
                 print("Error: Download failed")
                 sys.exit(1)
+
+    # --- Check disk space ---
+    result = subprocess.run(["ffprobe", "-v", "quiet", "-select_streams", "v:0",
+        "-show_entries", "stream=width,height,r_frame_rate",
+        "-show_entries", "format=duration",
+        "-of", "default=noprint_wrappers=1", INPUT], capture_output=True, text=True)
+    info = dict(line.split("=") for line in result.stdout.strip().split("\n") if "=" in line)
+    src_w = int(info.get("width", 0))
+    src_h = int(info.get("height", 0))
+    duration = float(info.get("duration", 0))
+    fps_parts = info.get("r_frame_rate", "25/1").split("/")
+    fps_val = int(fps_parts[0]) / int(fps_parts[1]) if len(fps_parts) == 2 else float(fps_parts[0])
+    total_frames = int(duration * fps_val)
+
+    # Estimate: input frame ~1MB per 960x720, output frame ~10MB at 4x
+    input_frame_size = (src_w * src_h * 3) / (1024 * 1024)  # uncompressed estimate
+    output_frame_size = (src_w * SCALE * src_h * SCALE * 3) / (1024 * 1024)
+    # PNG compression ~3-5x, use conservative 3x
+    est_input_gb = (total_frames * input_frame_size / 3) / 1024
+    est_output_gb = (total_frames * output_frame_size / 3) / 1024
+    est_total_gb = est_input_gb + est_output_gb + 5  # +5GB for video, model, etc.
+
+    statvfs = os.statvfs(WORKDIR)
+    avail_gb = (statvfs.f_frsize * statvfs.f_bavail) / (1024**3)
+
+    print(f"\nVideo: {src_w}x{src_h} @ {fps_val:.0f}fps, {duration:.0f}s ({total_frames} frames)")
+    print(f"Estimated disk needed: {est_total_gb:.0f} GB (input: {est_input_gb:.0f} GB + output: {est_output_gb:.0f} GB)")
+    print(f"Available disk space:  {avail_gb:.0f} GB")
+
+    if est_total_gb > avail_gb:
+        print(f"\nERROR: Not enough disk space! Need ~{est_total_gb:.0f} GB but only {avail_gb:.0f} GB available.")
+        print(f"Resize disk to at least {int(est_total_gb * 1.2)} GB and retry.")
+        sys.exit(1)
+
+    print()
 
     # --- Extract frames ---
     existing = sorted(glob.glob(f"{FRAMES_IN}/frame_*.png"))

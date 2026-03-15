@@ -91,6 +91,27 @@ TOTAL_FRAMES=$(( DURATION * FPS ))
 
 echo ""
 echo "Video: ${SRC_W}x${SRC_H} @ ${FPS}fps, ${DURATION}s (~${TOTAL_FRAMES} frames)"
+
+# --- Check disk space ---
+INPUT_FRAME_MB=$(echo "$SRC_W * $SRC_H * 3 / 1024 / 1024 / 3" | bc -l)
+OUTPUT_4X_FRAME_MB=$(echo "$SRC_W * 4 * $SRC_H * 4 * 3 / 1024 / 1024 / 3" | bc -l)
+EST_INPUT_GB=$(echo "$TOTAL_FRAMES * $INPUT_FRAME_MB / 1024" | bc -l | xargs printf "%.0f")
+EST_OUTPUT_GB=$(echo "$TOTAL_FRAMES * $OUTPUT_4X_FRAME_MB / 1024" | bc -l | xargs printf "%.0f")
+EST_TOTAL_GB=$(( EST_INPUT_GB + EST_OUTPUT_GB + 5 ))
+AVAIL_GB=$(df -g "$WORKDIR" 2>/dev/null | tail -1 | awk '{print $4}' || df -BG "$WORKDIR" | tail -1 | awk '{print $4}' | tr -d 'G')
+
+echo "Estimated disk needed: ~${EST_TOTAL_GB} GB (input: ${EST_INPUT_GB} GB + output: ${EST_OUTPUT_GB} GB)"
+echo "Available disk space:  ${AVAIL_GB} GB"
+
+if [ "$EST_TOTAL_GB" -gt "$AVAIL_GB" ] 2>/dev/null; then
+    echo ""
+    echo "WARNING: May not have enough disk space!"
+    echo "Need ~${EST_TOTAL_GB} GB but only ${AVAIL_GB} GB available."
+    read -p "Continue anyway? [y/N] " DISK_CONFIRM
+    if [ "$DISK_CONFIRM" != "y" ] && [ "$DISK_CONFIRM" != "Y" ]; then
+        exit 1
+    fi
+fi
 echo ""
 
 # --- Benchmark: upscale one frame at 2x and 4x ---
