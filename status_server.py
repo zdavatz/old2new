@@ -28,8 +28,41 @@ class StatusHandler(http.server.BaseHTTPRequestHandler):
         elif self.path.startswith("/frames/"):
             # /frames/TITLE/in/frame_00000001.png or /frames/TITLE/out/frame_00000001.png
             self.serve_frame()
+        elif self.path.startswith("/download/"):
+            # /download/TITLE serves the enhanced video file
+            self.serve_video()
         else:
             self.send_error(404)
+
+    def serve_video(self):
+        """Serve enhanced video file for download."""
+        title = self.path.split("/download/", 1)[1]
+        job_dir = os.path.join(JOBS_DIR, title)
+        # Find the enhanced video file (try both naming schemes)
+        filepath = None
+        for pattern in [f"{title}_*x.mkv", "enhanced_*x.mkv", f"{title}_*x.mp4", "*.mkv"]:
+            matches = glob.glob(os.path.join(job_dir, pattern))
+            # Exclude original input
+            matches = [m for m in matches if "enhanced" in os.path.basename(m) or "_2x" in os.path.basename(m) or "_4x" in os.path.basename(m)]
+            if matches:
+                filepath = matches[0]
+                break
+        if not filepath or not os.path.exists(filepath):
+            self.send_error(404, "Enhanced video not found")
+            return
+        filename = os.path.basename(filepath)
+        filesize = os.path.getsize(filepath)
+        self.send_response(200)
+        self.send_header("Content-Type", "video/x-matroska")
+        self.send_header("Content-Length", filesize)
+        self.send_header("Content-Disposition", f'attachment; filename="{filename}"')
+        self.end_headers()
+        with open(filepath, "rb") as f:
+            while True:
+                chunk = f.read(1024 * 1024)  # 1MB chunks
+                if not chunk:
+                    break
+                self.wfile.write(chunk)
 
     def serve_frame(self):
         """Serve frame images from jobs directory."""
@@ -265,11 +298,14 @@ async function update() {
       const compareLink = v.done_frames > 0 ? `<a href="/compare/${v.title}">view</a>` : '';
       const inputName = v.title + '.mkv';
       const outputName = v.title + '_' + v.scale + 'x.mkv';
+      const outputCell = v.status === 'done'
+        ? `<a href="/download/${v.title}" style="color:#6ee7b7">${outputName}</a>`
+        : outputName;
       h += `<tr>
         <td>${i+1}</td>
         <td class="title-col"><a href="${ytUrl}" target="_blank">${v.display_title || v.title.replace(/_/g, ' ')}</a></td>
         <td style="font-size:0.75rem;color:#94a3b8">${inputName}</td>
-        <td style="font-size:0.75rem;color:#6ee7b7">${outputName}</td>
+        <td style="font-size:0.75rem">${outputCell}</td>
         <td>${dur}</td>
         <td><span class="status status-${v.status}">${v.status}</span></td>
         <td><div class="bar-bg"><div class="bar-fg" style="width:${v.progress}%;background:${barColor}"></div>
