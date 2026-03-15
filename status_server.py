@@ -306,7 +306,8 @@ setInterval(update, 30000);
   .compare {{ display: flex; gap: 12px; margin-top: 12px; }}
   .compare .panel {{ flex: 1; min-width: 0; }}
   .compare .panel h2 {{ font-size: 0.9rem; color: #94a3b8; margin-bottom: 6px; }}
-  .compare img {{ width: 100%; height: auto; border-radius: 4px; border: 1px solid #334155; }}
+  .compare img {{ width: 100%; height: auto; border-radius: 4px; border: 1px solid #334155; cursor: pointer; }}
+  .compare img:hover {{ border-color: #38bdf8; }}
   a.back {{ color: #38bdf8; text-decoration: none; font-size: 0.85rem; }}
 </style>
 </head><body>
@@ -324,11 +325,11 @@ setInterval(update, 30000);
 <div class="compare">
   <div class="panel">
     <h2>Original ({frame_name})</h2>
-    <img src="{in_url}" alt="Original">
+    <a href="{in_url}" target="_blank"><img src="{in_url}" alt="Original"></a>
   </div>
   <div class="panel">
     <h2>Enhanced ({frame_name})</h2>
-    <img src="{out_url}" alt="Enhanced">
+    <a href="{out_url}" target="_blank"><img src="{out_url}" alt="Enhanced"></a>
   </div>
 </div>
 </body></html>"""
