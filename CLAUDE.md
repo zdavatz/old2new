@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-old2new enhances old Da Vaz videos using Real-ESRGAN AI upscaling + GFPGAN face enhancement. There are two approaches depending on the environment:
+old2new enhances old Da Vaz videos using Real-ESRGAN AI upscaling. There are two approaches depending on the environment:
 
 1. **Local (macOS)**: `enhance.sh` — uses Real-ESRGAN ncnn-vulkan binary (Vulkan/Metal)
 2. **Cloud GPU**: `enhance_gpu.py` — uses Real-ESRGAN Python package (PyTorch/CUDA)
@@ -38,8 +38,9 @@ old2new enhances old Da Vaz videos using Real-ESRGAN AI upscaling + GFPGAN face 
 - Both scripts check disk space before starting and abort with clear error if insufficient
 - Processing is resumable: each step checks for existing output before re-running
 - The `realesrgan-x4plus` model is used for both 2x and 4x upscaling (general-purpose, best for real-world content)
-- GFPGAN (v1.4) enhances faces automatically when detected. Uses adaptive detection: checks every 50 frames when no faces present, every frame when faces are active. No speed impact on scenery-only footage.
+- GFPGAN is DISABLED — it hallucinates facial features and changes how people look. Not suitable for documentary footage. Real-ESRGAN alone provides good upscaling.
 - Video reassembly uses libx264 with CRF 18 (visually lossless) and copies original audio stream
+- Web dashboard (`status_server.py`) shows progress bars, input/output filenames, and side-by-side frame comparison. On vast.ai, use `bore.pub` tunnel for HTTP access (direct ports often blocked by host firewall).
 
 ## Cloud GPU Deployment
 
@@ -60,4 +61,5 @@ The `realesrgan` package has version conflicts on many cloud images:
 ## Dependencies
 
 Local (Homebrew): `yt-dlp`, `ffmpeg`, `bc`
-Cloud (pip/apt): `realesrgan`, `gfpgan`, `yt-dlp`, `numpy<2`, `torchvision==0.15.2`, `basicsr==1.4.2`, `opencv-python-headless`, `ffmpeg` (static binary on GCP)
+Cloud (pip/apt): `realesrgan`, `yt-dlp`, `numpy<2`, `torchvision==0.15.2`, `basicsr==1.4.2`, `opencv-python-headless`, `ffmpeg` (static binary on GCP)
+Dashboard: `bore` (for vast.ai HTTP tunneling, installed from github.com/ekzhang/bore)
