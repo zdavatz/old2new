@@ -28,6 +28,10 @@ if [ "$1" = "status" ]; then
     ZONE="${3:-us-central1-a}"
     INSTANCE="old2new-gpu"
     echo "=== Status: $PROJECT ==="
+
+    # Get external IP for dashboard URL
+    EXTERNAL_IP=$($GCLOUD compute instances describe "$INSTANCE" --project="$PROJECT" --zone="$ZONE" --format="value(networkInterfaces[0].accessConfigs[0].natIP)" 2>/dev/null)
+
     $GCLOUD compute ssh "$INSTANCE" --project="$PROJECT" --zone="$ZONE" --command='
         echo "GPU: $(nvidia-smi --query-gpu=name,utilization.gpu,memory.used --format=csv,noheader 2>/dev/null || echo "N/A")"
         echo ""
@@ -73,7 +77,24 @@ if [ "$1" = "status" ]; then
         tail -3 ~/enhance.log 2>/dev/null || echo "  (no log found)"
         echo ""
         echo "Disk: $(df -h ~ | tail -1 | awk "{print \$3 \" used / \" \$4 \" free\"}")"
+
+        # Check which port dashboard is on
+        DASH_PORT=$(ss -tlnp 2>/dev/null | grep -oP "(?<=:)(808[0-9])" | head -1)
+        if [ -n "$DASH_PORT" ]; then
+            echo ""
+            echo "Dashboard port: $DASH_PORT"
+        fi
     '
+
+    # Show dashboard URL with external IP
+    DASH_PORT=$(ssh -i ~/.ssh/google_compute_engine -o StrictHostKeyChecking=no -o ConnectTimeout=5 "$(whoami)@$EXTERNAL_IP" 'ss -tlnp 2>/dev/null | grep -oP "(?<=:)(808[0-9])" | head -1' 2>/dev/null)
+    if [ -n "$EXTERNAL_IP" ] && [ -n "$DASH_PORT" ]; then
+        echo ""
+        echo "Dashboard: http://$EXTERNAL_IP:$DASH_PORT/"
+    elif [ -n "$EXTERNAL_IP" ]; then
+        echo ""
+        echo "Instance IP: $EXTERNAL_IP (no dashboard detected)"
+    fi
     exit 0
 fi
 
