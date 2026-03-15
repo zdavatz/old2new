@@ -1330,7 +1330,7 @@ print(f\"{d['id']}\t{d.get('dph_total',0):.4f}\t{d.get('gpu_name','?')}\")
     local result
     result=$(vastai create instance "$offer_id" \
         --image "$DOCKER_IMAGE" \
-        --disk "$DISK_GB" \
+        --disk "$needed_disk_gb" \
         --ssh \
         --direct \
         --env "-p ${STATUS_PORT}:${STATUS_PORT}" \
