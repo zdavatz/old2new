@@ -51,7 +51,10 @@ def main():
     WORKDIR = os.path.join(os.path.expanduser("~"), "jobs", dir_name)
     FRAMES_IN = f"{WORKDIR}/frames_in"
     FRAMES_OUT = f"{WORKDIR}/frames_out"
-    INPUT = f"{WORKDIR}/original.mkv"
+    INPUT = f"{WORKDIR}/{dir_name}.mkv"
+    # Backwards compat: use original.mkv if it exists
+    if not os.path.exists(INPUT) and os.path.exists(f"{WORKDIR}/original.mkv"):
+        INPUT = f"{WORKDIR}/original.mkv"
 
     os.makedirs(FRAMES_IN, exist_ok=True)
     os.makedirs(FRAMES_OUT, exist_ok=True)
@@ -71,10 +74,13 @@ def main():
         print("Video already downloaded.")
     else:
         print("Downloading video...")
-        subprocess.run(["yt-dlp", "-o", f"{WORKDIR}/original.%(ext)s",
+        subprocess.run(["yt-dlp", "-o", f"{WORKDIR}/{dir_name}.%(ext)s",
                         "--merge-output-format", "mkv", URL], check=True)
         if not os.path.exists(INPUT):
-            files = glob.glob(f"{WORKDIR}/original.*")
+            # yt-dlp may produce different filename, find it
+            files = [f for f in glob.glob(f"{WORKDIR}/*.mkv") if "enhanced" not in f]
+            if not files:
+                files = [f for f in glob.glob(f"{WORKDIR}/*.*") if "enhanced" not in os.path.basename(f) and not os.path.isdir(f)]
             if files:
                 os.rename(files[0], INPUT)
             else:
@@ -249,7 +255,7 @@ def main():
         "-show_entries", "stream=codec_type", "-of", "csv=p=0", INPUT],
         capture_output=True, text=True)
 
-    output_file = f"{WORKDIR}/enhanced_{SCALE}x.mkv"
+    output_file = f"{WORKDIR}/{dir_name}_{SCALE}x.mkv"
     if src_info.stdout.strip():
         subprocess.run(["ffmpeg", "-framerate", str(fps), "-i", f"{FRAMES_OUT}/frame_%08d.png",
             "-i", INPUT, "-map", "0:v", "-map", "1:a",

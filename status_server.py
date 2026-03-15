@@ -94,7 +94,10 @@ class StatusHandler(http.server.BaseHTTPRequestHandler):
             total_frames = 0
             done_frames = 0
             eta = ""
-            enhanced_file = os.path.join(job_dir, f"enhanced_{scale}x.mkv")
+            # Check both new naming (title_4x.mkv) and old naming (enhanced_4x.mkv)
+            enhanced_file = os.path.join(job_dir, f"{title}_{scale}x.mkv")
+            if not os.path.exists(enhanced_file):
+                enhanced_file = os.path.join(job_dir, f"enhanced_{scale}x.mkv")
 
             if os.path.exists(enhanced_file):
                 status = "done"

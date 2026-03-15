@@ -633,7 +633,7 @@ for entry in "${VIDEOS[@]}"; do
     echo "=========================================="
 
     # Check if already completed
-    if [[ -f "/root/jobs/$title/enhanced_${scale}x.mkv" ]]; then
+    if [[ -f "/root/jobs/$title/${title}_${scale}x.mkv" ]] || [[ -f "/root/jobs/$title/enhanced_${scale}x.mkv" ]]; then
         echo "Already completed, skipping."
         continue
     fi
