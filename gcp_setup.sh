@@ -116,8 +116,13 @@ echo "SETUP DONE"
 echo ""
 echo "Downloading enhance script..."
 $SSH_CMD --command='
-wget -q https://raw.githubusercontent.com/zdavatz/old2new/main/enhance_gpu.py -O ~/enhance_gpu.py
-echo "Script downloaded"
+wget -q --no-cache "https://raw.githubusercontent.com/zdavatz/old2new/main/enhance_gpu.py?$(date +%s)" -O ~/enhance_gpu.py
+# Verify the script does not have hardcoded /root paths
+if grep -q "f\"/root/jobs" ~/enhance_gpu.py; then
+    echo "WARNING: Fixing hardcoded /root path in enhance_gpu.py"
+    sed -i "s|f\"/root/jobs/{VIDEO_ID}\"|os.path.join(os.path.expanduser(\"~\"), \"jobs\", VIDEO_ID)|g" ~/enhance_gpu.py
+fi
+echo "Script downloaded and verified"
 '
 
 echo ""
