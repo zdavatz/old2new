@@ -3,11 +3,13 @@ set -e
 
 # --- Usage ---
 if [ -z "$1" ]; then
-    echo "Usage: ./gcp_setup.sh <youtube-url> [project-id] [zone]"
+    echo "Usage: ./gcp_setup.sh <youtube-url> [scale] [project-id] [zone]"
     echo "       ./gcp_setup.sh status [project-id] [zone]"
     echo ""
+    echo "  scale: 2 or 4 (default: 4)"
+    echo ""
     echo "Example: ./gcp_setup.sh \"https://www.youtube.com/watch?v=xyz123\""
-    echo "         ./gcp_setup.sh \"https://www.youtube.com/watch?v=xyz123\" old2new-davaz us-central1-a"
+    echo "         ./gcp_setup.sh \"https://www.youtube.com/watch?v=xyz123\" 2 old2new-davaz"
     echo "         ./gcp_setup.sh status old2new-davaz"
     echo ""
     echo "Prerequisites:"
@@ -58,20 +60,70 @@ if [ "$1" = "status" ]; then
 fi
 
 URL="$1"
-PROJECT="${2:-old2new-davaz}"
-ZONE="${3:-us-central1-a}"
+SCALE="${2:-4}"
+PROJECT="${3:-old2new-davaz}"
+ZONE="${4:-us-central1-a}"
 INSTANCE="old2new-gpu"
 MACHINE_TYPE="g2-standard-4"
 GPU_TYPE="nvidia-l4"
 IMAGE="pytorch-2-7-cu128-ubuntu-2204-nvidia-570-v20260305"
-DISK_SIZE="200GB"
 
-# Find gcloud
-GCLOUD=$(which gcloud 2>/dev/null || echo "/opt/homebrew/share/google-cloud-sdk/bin/gcloud")
 if [ ! -x "$GCLOUD" ]; then
     echo "Error: gcloud CLI not found. Install with: brew install --cask google-cloud-sdk"
     exit 1
 fi
+
+# --- Estimate disk size from video before creating instance ---
+echo "Checking video properties..."
+if command -v yt-dlp &>/dev/null; then
+    VIDEO_INFO=$(yt-dlp --print "%(duration)s %(width)s %(height)s %(fps)s" "$URL" 2>/dev/null)
+    if [ -n "$VIDEO_INFO" ]; then
+        VID_DURATION=$(echo "$VIDEO_INFO" | awk '{print $1}')
+        VID_WIDTH=$(echo "$VIDEO_INFO" | awk '{print $2}')
+        VID_HEIGHT=$(echo "$VIDEO_INFO" | awk '{print $3}')
+        VID_FPS=$(echo "$VIDEO_INFO" | awk '{print $4}' | cut -d. -f1)
+        VID_FPS=${VID_FPS:-25}
+        TOTAL_FRAMES=$(( ${VID_DURATION%.*} * VID_FPS ))
+        INPUT_GB=$(echo "$TOTAL_FRAMES * $VID_WIDTH * $VID_HEIGHT * 3 / 3 / 1073741824" | bc)
+        OUTPUT_GB=$(echo "$TOTAL_FRAMES * $VID_WIDTH * $SCALE * $VID_HEIGHT * $SCALE * 3 / 3 / 1073741824" | bc)
+        NEEDED_GB=$(( INPUT_GB + OUTPUT_GB + 10 ))
+        # GCP SSD quota is 500GB max by default
+        if [ "$NEEDED_GB" -gt 500 ]; then
+            echo ""
+            echo "WARNING: This video needs ~${NEEDED_GB}GB disk at ${SCALE}x upscale."
+            echo "  Source: ${VID_WIDTH}x${VID_HEIGHT}, ${VID_DURATION}s, ~${TOTAL_FRAMES} frames"
+            echo "  Output: $((VID_WIDTH * SCALE))x$((VID_HEIGHT * SCALE))"
+            echo "  GCP default SSD quota: 500GB"
+            echo ""
+            # Suggest 2x if 4x is too large
+            if [ "$SCALE" -eq 4 ]; then
+                OUTPUT_2X_GB=$(echo "$TOTAL_FRAMES * $VID_WIDTH * 2 * $VID_HEIGHT * 2 * 3 / 3 / 1073741824" | bc)
+                NEEDED_2X_GB=$(( INPUT_GB + OUTPUT_2X_GB + 10 ))
+                echo "  At 2x upscale: ~${NEEDED_2X_GB}GB needed ($((VID_WIDTH * 2))x$((VID_HEIGHT * 2)))"
+                echo ""
+                read -p "Switch to 2x upscale? [Y/n] " SWITCH
+                if [ "$SWITCH" != "n" ] && [ "$SWITCH" != "N" ]; then
+                    SCALE=2
+                    NEEDED_GB=$NEEDED_2X_GB
+                    echo "Switched to 2x upscale."
+                fi
+            fi
+        fi
+        # Cap at 500, minimum 200
+        DISK_GB=$(( NEEDED_GB > 500 ? 500 : (NEEDED_GB < 200 ? 200 : NEEDED_GB) ))
+        DISK_SIZE="${DISK_GB}GB"
+        echo "Video: ${VID_WIDTH}x${VID_HEIGHT} @ ${VID_FPS}fps, ${VID_DURATION}s (~${TOTAL_FRAMES} frames)"
+        echo "Scale: ${SCALE}x -> $((VID_WIDTH * SCALE))x$((VID_HEIGHT * SCALE))"
+        echo "Estimated disk: ~${NEEDED_GB}GB (using ${DISK_SIZE})"
+    else
+        echo "Could not fetch video info, using default 200GB disk."
+        DISK_SIZE="200GB"
+    fi
+else
+    echo "yt-dlp not installed locally, using default 200GB disk."
+    DISK_SIZE="200GB"
+fi
+echo ""
 
 echo "=== old2new Google Cloud GPU Setup ==="
 echo "Project:  $PROJECT"
@@ -171,7 +223,7 @@ echo ""
 echo "Starting enhancement..."
 $SSH_CMD --command="
 export PATH=/usr/local/bin:\$HOME/.local/bin:\$PATH
-nohup python3 -u ~/enhance_gpu.py \"$URL\" 4 > ~/enhance.log 2>&1 &
+nohup python3 -u ~/enhance_gpu.py \"$URL\" $SCALE > ~/enhance.log 2>&1 &
 sleep 2
 if ps aux | grep -v grep | grep enhance_gpu.py > /dev/null; then
     echo \"Enhancement started successfully\"
