@@ -4,5 +4,9 @@ realesrgan/
 # Job working directories (frames, downloads)
 jobs/
 
+# vast.ai batch state
+.vast_batch/
+enhanced_videos/
+
 # Temp/test files
 *.zip

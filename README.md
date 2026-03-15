@@ -72,20 +72,51 @@ gcloud compute instances delete old2new-gpu --project=old2new-davaz --zone=us-ce
 3. Create a project with billing enabled
 4. Request GPUS_ALL_REGIONS quota increase to 1
 
+### Batch Processing (vast.ai — all davaz.com videos)
+
+The `vast_batch.sh` script processes all 226 davaz.com videos in parallel on multiple vast.ai RTX 4090 instances. Each instance runs a web status page showing live per-video progress.
+
+```bash
+# One-time setup
+pip install vastai
+vastai set api-key YOUR_KEY
+
+# Test with a single video first to check quality
+./vast_batch.sh test
+./vast_batch.sh status          # get status page URL
+./vast_batch.sh download        # download when done
+./vast_batch.sh destroy         # clean up test instance
+
+# Launch full batch (4 parallel instances, ~15 days, ~$490)
+./vast_batch.sh launch 4
+./vast_batch.sh status          # monitor + open status page URLs in browser
+./vast_batch.sh download        # download completed videos
+./vast_batch.sh destroy         # clean up when done
+
+# List all 226 videos
+./vast_batch.sh list
+```
+
+- SD videos get 4x upscale, HD videos get 2x
+- Job directories use movie titles (e.g., `~/jobs/CAMBODIA_DUST_of_LIFE/`)
+- Greedy load-balancing distributes videos evenly across instances
+- Each instance has a web dashboard on port 8080 with progress bars and log tail
+
 ### Cloud GPU (manual setup via vast.ai / RunPod)
 
-For faster processing, use `enhance_gpu.py` on a cloud GPU instance with CUDA + PyTorch:
+For processing individual videos, use `enhance_gpu.py` on a cloud GPU instance with CUDA + PyTorch:
 
 ```bash
 # On a cloud instance with CUDA:
 pip install realesrgan yt-dlp "numpy<2" "torchvision==0.15.2" "basicsr==1.4.2" opencv-python-headless
 apt-get install -y ffmpeg
 python3 enhance_gpu.py "<youtube-url>" [scale]
+python3 enhance_gpu.py "<youtube-url>" [scale] --job-name "Movie_Title"
 ```
 
 ### Output
 
-Enhanced videos are saved to `jobs/<video-id>/enhanced_<scale>x.mkv`.
+Enhanced videos are saved to `jobs/<title>/enhanced_<scale>x.mkv` (or `jobs/<video-id>/` if no `--job-name` given).
 
 The process is resumable — if interrupted, re-run the same command and it will skip already-completed steps (download, frame extraction, upscaled frames).
 
@@ -101,7 +132,7 @@ The process is resumable — if interrupted, re-run the same command and it will
 
 ### Cloud GPU Providers
 
-- **[vast.ai](https://vast.ai)**: Cheapest option. RTX 4090 at ~$0.20-0.28/hr. CLI: `pipx install vastai`
+- **[vast.ai](https://vast.ai)**: Cheapest option. RTX 4090 at ~$0.34/hr. CLI: `pip install vastai`. Use `vast_batch.sh` for automated batch processing.
 - **[RunPod](https://runpod.io)**: More GPU variety but often sold out. RTX 4090 at ~$0.34-0.59/hr. CLI: `pipx install runpod`
 - **[Google Cloud](https://cloud.google.com)**: Always available. L4 at ~$0.70/hr. Use `gcp_setup.sh` for one-command setup. Requires GPUS_ALL_REGIONS quota for new projects.
 

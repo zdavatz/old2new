@@ -24,12 +24,17 @@ def main():
 
     # --- Args ---
     if len(sys.argv) < 2:
-        print("Usage: python3 enhance_gpu.py <youtube-url> [scale]")
+        print("Usage: python3 enhance_gpu.py <youtube-url> [scale] [--job-name NAME]")
         print("  scale: 2 or 4 (default: 4)")
+        print("  --job-name: custom directory name under ~/jobs/ (default: video ID)")
         sys.exit(1)
 
     URL = sys.argv[1]
-    SCALE = int(sys.argv[2]) if len(sys.argv) > 2 else 4
+    SCALE = int(sys.argv[2]) if len(sys.argv) > 2 and not sys.argv[2].startswith("-") else 4
+    JOB_NAME = None
+    for i, arg in enumerate(sys.argv):
+        if arg == "--job-name" and i + 1 < len(sys.argv):
+            JOB_NAME = sys.argv[i + 1]
 
     # --- Extract video ID ---
     import re
@@ -41,7 +46,8 @@ def main():
         sys.exit(1)
     VIDEO_ID = match.group(1)
 
-    WORKDIR = os.path.join(os.path.expanduser("~"), "jobs", VIDEO_ID)
+    dir_name = JOB_NAME if JOB_NAME else VIDEO_ID
+    WORKDIR = os.path.join(os.path.expanduser("~"), "jobs", dir_name)
     FRAMES_IN = f"{WORKDIR}/frames_in"
     FRAMES_OUT = f"{WORKDIR}/frames_out"
     INPUT = f"{WORKDIR}/original.mkv"
