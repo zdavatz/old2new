@@ -150,6 +150,26 @@ class StatusHandler(http.server.BaseHTTPRequestHandler):
         done = sum(1 for v in videos if v["status"] == "done")
         active = [v for v in videos if v["status"] == "upscaling"]
 
+        # Aggregate frame stats
+        total_frames_all = sum(v["total_frames"] for v in videos)
+        done_frames_all = sum(v["done_frames"] for v in videos)
+        overall_pct = round(done_frames_all / total_frames_all * 100, 1) if total_frames_all > 0 else 0
+
+        # Extract fps from log for ETA
+        import re
+        fps = 0
+        eta_str = ""
+        if log_tail:
+            fps_matches = re.findall(r'([\d.]+)\s+fps', log_tail)
+            if fps_matches:
+                fps = float(fps_matches[-1])
+                remaining = total_frames_all - done_frames_all
+                if fps > 0:
+                    eta_secs = remaining / fps
+                    eta_h = int(eta_secs // 3600)
+                    eta_m = int((eta_secs % 3600) // 60)
+                    eta_str = f"{eta_h}h {eta_m}m" if eta_h > 0 else f"{eta_m}m"
+
         return {
             "total": total,
             "done": done,
@@ -157,6 +177,11 @@ class StatusHandler(http.server.BaseHTTPRequestHandler):
             "videos": videos,
             "log_tail": log_tail,
             "timestamp": datetime.now().isoformat(),
+            "total_frames": total_frames_all,
+            "done_frames": done_frames_all,
+            "overall_pct": overall_pct,
+            "fps": fps,
+            "eta": eta_str,
         }
 
     def render_page(self):
@@ -212,11 +237,18 @@ async function update() {
     const queued = d.videos.filter(v => v.status === 'queued');
     const other = d.videos.filter(v => !['done','upscaling','queued'].includes(v.status));
 
+    const fpsStr = d.fps > 0 ? d.fps.toFixed(1) + ' fps' : '—';
+    const etaStr = d.eta || '—';
+    const framesStr = d.done_frames + ' / ' + d.total_frames;
+
     let h = `<div class="summary">
       <div class="card"><div class="num">${d.total}</div><div class="label">Total Videos</div></div>
       <div class="card"><div class="num" style="color:#6ee7b7">${done.length}</div><div class="label">Completed</div></div>
       <div class="card"><div class="num" style="color:#38bdf8">${active.length}</div><div class="label">Upscaling Now</div></div>
       <div class="card"><div class="num" style="color:#94a3b8">${queued.length}</div><div class="label">Queued</div></div>
+      <div class="card"><div class="num" style="font-size:1.2rem">${framesStr}</div><div class="label">Frames (${d.overall_pct}%)</div></div>
+      <div class="card"><div class="num">${fpsStr}</div><div class="label">Speed</div></div>
+      <div class="card"><div class="num">${etaStr}</div><div class="label">ETA</div></div>
     </div>`;
 
     h += `<table><thead><tr>
