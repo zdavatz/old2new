@@ -161,15 +161,31 @@ def main():
         print(f"GFPGAN not available ({e}), proceeding without face enhancement.")
         print("Install with: pip install gfpgan")
 
-    def enhance_frame(img):
-        """Enhance a frame: uses GFPGAN if faces detected, otherwise Real-ESRGAN."""
+    # Track whether faces have been seen to avoid unnecessary detection
+    faces_seen = [False]
+    frames_since_face = [0]
+    FACE_CHECK_INTERVAL = 50  # only check for faces every N frames if none seen recently
+
+    def enhance_frame(img, frame_num=0):
+        """Enhance a frame: uses GFPGAN if faces likely, otherwise Real-ESRGAN only."""
         if face_enhancer is not None:
-            _, _, output = face_enhancer.enhance(
-                img, has_aligned=False, only_center_face=False, paste_back=True
-            )
-            if output is not None:
-                return output
-        # Fallback to Real-ESRGAN only
+            # If faces were seen recently, always try GFPGAN
+            # Otherwise only check every FACE_CHECK_INTERVAL frames to avoid overhead
+            should_check = faces_seen[0] or (frame_num % FACE_CHECK_INTERVAL == 0)
+            if should_check:
+                _, restored_faces, output = face_enhancer.enhance(
+                    img, has_aligned=False, only_center_face=False, paste_back=True
+                )
+                if output is not None:
+                    if restored_faces:
+                        faces_seen[0] = True
+                        frames_since_face[0] = 0
+                    else:
+                        frames_since_face[0] += 1
+                        if frames_since_face[0] > 200:
+                            faces_seen[0] = False
+                    return output
+        # Real-ESRGAN only (no face detection overhead)
         output, _ = upsampler.enhance(img, outscale=SCALE)
         return output
 
@@ -177,7 +193,7 @@ def main():
     print("Benchmarking...")
     img = cv2.imread(existing[0], cv2.IMREAD_UNCHANGED)
     t0 = time.time()
-    output = enhance_frame(img)
+    output = enhance_frame(img, frame_num=0)
     t1 = time.time()
     per_frame = t1 - t0
     total_est = per_frame * TOTAL
@@ -205,7 +221,7 @@ def main():
             continue
 
         img = cv2.imread(fpath, cv2.IMREAD_UNCHANGED)
-        output = enhance_frame(img)
+        output = enhance_frame(img, frame_num=i)
         cv2.imwrite(out_path, output)
 
         if (i + 1) % 100 == 0:
