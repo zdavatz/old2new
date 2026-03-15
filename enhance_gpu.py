@@ -41,7 +41,7 @@ def main():
         sys.exit(1)
     VIDEO_ID = match.group(1)
 
-    WORKDIR = f"/root/jobs/{VIDEO_ID}"
+    WORKDIR = os.path.join(os.path.expanduser("~"), "jobs", VIDEO_ID)
     FRAMES_IN = f"{WORKDIR}/frames_in"
     FRAMES_OUT = f"{WORKDIR}/frames_out"
     INPUT = f"{WORKDIR}/original.mkv"
