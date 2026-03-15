@@ -33,11 +33,21 @@ old2new enhances old Da Vaz videos using Real-ESRGAN AI upscaling. There are two
 
 ## Cloud GPU Deployment
 
-- **vast.ai**: Use `ubuntu:22.04` or `pytorch/pytorch` image. Install deps via pip/apt. SSH access via `vastai` CLI.
-- **RunPod**: Use `runpod/pytorch` or `nvidia/cuda` image. SSH access via RunPod CLI or API.
+- **vast.ai**: Use `pytorch/pytorch:2.1.0-cuda12.1-cudnn8-runtime` image. SSH access via `vastai` CLI. Cheapest option (~$0.28/hr for RTX 4090). Request >=200GB disk for long videos.
+- **RunPod**: Use `runpod/pytorch` image. SSH access via RunPod API. Often sold out on weekends.
+- **Google Cloud**: Use `pytorch-2-7-cu128-ubuntu-2204-nvidia-570` deep learning image with `g2-standard-4` + L4 GPU. Requires GPUS_ALL_REGIONS quota increase for new projects. Always available but more expensive (~$0.70/hr for L4).
 - API keys stored in `~/.zshrc` as `VAST_API_KEY` and `RUNPOD_API_KEY`
+- Google Cloud auth via `gcloud auth login` (account: zdavatz@ywesee.com, project: old2new-490311)
+
+## Cloud Python Dependency Fixes
+
+The `realesrgan` package has version conflicts on many cloud images:
+- `numpy<2` required (numpy 2.x breaks basicsr)
+- `torchvision==0.15.2` and `basicsr==1.4.2` needed if torchvision is too new (missing `functional_tensor`)
+- `opencv-python-headless` needed on headless servers (avoids libGL dependency)
+- On Ubuntu 22.04 base images, install `libgl1` or use `opencv-python-headless`
 
 ## Dependencies
 
 Local (Homebrew): `yt-dlp`, `ffmpeg`, `bc`
-Cloud (pip/apt): `realesrgan`, `yt-dlp`, `numpy<2`, `ffmpeg`, `bc`
+Cloud (pip/apt): `realesrgan`, `yt-dlp`, `numpy<2`, `torchvision==0.15.2`, `basicsr==1.4.2`, `ffmpeg`

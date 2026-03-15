@@ -77,15 +77,51 @@ The process is resumable — if interrupted, re-run the same command and it will
 |----------|-----------|---------------------------|------|
 | M5 (10 GPU cores) | ~10s | ~45h | — |
 | M3 Ultra (76 GPU cores) | ~1.5-2s | ~7-9h | — |
-| RTX 4090 (vast.ai, CUDA) | ~3s | ~13h | ~$2.85 |
+| RTX 4090 (vast.ai, CUDA) | ~1s | ~4.5h | ~$1.25 |
+| L4 (Google Cloud, CUDA) | ~1.5s | ~7h | ~$5 |
 | H200 NVL (RunPod, CUDA) | ~1-1.5s | ~5-6h | ~$17-20 |
 
 ### Cloud GPU Providers
 
-- **[vast.ai](https://vast.ai)**: Cheapest option. RTX 4090 at ~$0.20-0.28/hr. CLI: `pip install vastai`
-- **[RunPod](https://runpod.io)**: More GPU variety, higher availability for premium GPUs. RTX 4090 at ~$0.34-0.59/hr. CLI: `pip install runpod`
+- **[vast.ai](https://vast.ai)**: Cheapest option. RTX 4090 at ~$0.20-0.28/hr. CLI: `pipx install vastai`
+- **[RunPod](https://runpod.io)**: More GPU variety but often sold out. RTX 4090 at ~$0.34-0.59/hr. CLI: `pipx install runpod`
+- **[Google Cloud](https://cloud.google.com)**: Always available, but more expensive. L4 at ~$0.70/hr. CLI: `brew install --cask google-cloud-sdk`. Requires GPU quota request for new projects (GPUS_ALL_REGIONS).
 
 **Note**: On cloud instances, use the Python/CUDA approach (`enhance_gpu.py`) instead of the ncnn-vulkan binary, as Vulkan drivers are often not available in Docker containers.
+
+### Google Cloud Setup
+
+```bash
+# Install gcloud CLI
+brew install --cask google-cloud-sdk
+
+# Authenticate and set project
+gcloud auth login
+gcloud config set project <PROJECT_ID>
+
+# Enable Compute Engine and create L4 instance
+gcloud services enable compute.googleapis.com
+gcloud compute instances create old2new-gpu \
+  --zone=us-central1-a \
+  --machine-type=g2-standard-4 \
+  --accelerator=type=nvidia-l4,count=1 \
+  --image=pytorch-2-7-cu128-ubuntu-2204-nvidia-570-v20260305 \
+  --image-project=deeplearning-platform-release \
+  --boot-disk-size=200GB \
+  --maintenance-policy=TERMINATE \
+  --metadata="install-nvidia-driver=True"
+
+# SSH in and install deps
+gcloud compute ssh old2new-gpu --zone=us-central1-a
+pip install realesrgan yt-dlp "numpy<2" "torchvision==0.15.2" "basicsr==1.4.2" opencv-python-headless
+sudo apt-get install -y ffmpeg
+
+# Run enhancement
+python3 enhance_gpu.py "https://www.youtube.com/watch?v=VIDEO_ID" 4
+
+# Don't forget to delete when done!
+gcloud compute instances delete old2new-gpu --zone=us-central1-a
+```
 
 ## License
 
