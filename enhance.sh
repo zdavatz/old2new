@@ -83,7 +83,7 @@ else
 fi
 
 # --- Get video info ---
-eval "$(ffprobe -v quiet -print_format flat -show_streams -select_streams v:0 "$INPUT" 2>/dev/null | grep -E 'width|height|r_frame_rate')"
+eval "$(ffprobe -v quiet -print_format flat -show_streams -select_streams v:0 "$INPUT" 2>/dev/null | grep -E 'width|height|r_frame_rate' | sed 's/\./_/g')"
 SRC_W="${streams_stream_0_width}"
 SRC_H="${streams_stream_0_height}"
 FPS_FRAC="${streams_stream_0_r_frame_rate}"

@@ -19,6 +19,7 @@ old2new enhances old Da Vaz videos using Real-ESRGAN AI upscaling. There are two
 ## Important
 
 - URLs passed to `enhance.sh` must be quoted (e.g., `./enhance.sh "https://..."`) because `?` in YouTube URLs is interpreted as a glob by zsh
+- `ffprobe -print_format flat` outputs dots in variable names (e.g., `streams.stream.0.width`), which must be converted to underscores via `sed 's/\./_/g'` before `eval` in bash
 
 ## Key Details
 
