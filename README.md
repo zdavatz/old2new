@@ -123,10 +123,12 @@ Enhance videos on TensorDock GPU instances (SSH VMs with RTX 4090, auto-sized di
 ```
 
 - **Auto disk sizing**: estimates disk needs from video resolution × duration × scale before creating the instance
-- RTX 4090 at ~$0.33-0.40/hr (Ottawa, Winnipeg, Tallinn, etc.)
+- RTX 4090 at ~$0.33-0.40/hr, RTX 5090 at ~$0.45-0.54/hr
+- RTX 5090 support: `GPU_MODEL=geforcertx5090-pcie-32gb ./tensordock_batch.sh test VIDEO_ID`
+- 16 vCPUs / 32GB RAM for fast parallel frame extraction
 - Direct SSH access (user `user`, not root)
 - Web dashboard with progress bars accessible via port-forwarded URL
-- Cloud-init auto-installs all dependencies (PyTorch, Real-ESRGAN, ffmpeg)
+- Cloud-init auto-installs all dependencies (PyTorch, Real-ESRGAN, ffmpeg; auto-detects Blackwell GPUs for CUDA 12.8)
 
 ### Batch Processing (vast.ai — all 226 davaz.com videos)
 
@@ -222,7 +224,7 @@ After the pre-flight check, a **pre-download disk estimate** fetches video metad
 ### Cloud GPU Providers
 
 - **[vast.ai](https://vast.ai)**: Cheapest option. RTX 4090 at ~$0.34/hr, RTX 5090 at ~$0.34/hr, A100 80GB at ~$0.66/hr. CLI: `pip install vastai`. Use `vast_batch.sh` for automated batch processing.
-- **[TensorDock](https://tensordock.com)**: SSH VMs with auto-sized disk. RTX 4090 at ~$0.33-0.40/hr. API key auth. Use `tensordock_batch.sh` for automated deployment. Auto-calculates disk needs per video.
+- **[TensorDock](https://tensordock.com)**: SSH VMs with auto-sized disk. RTX 4090 at ~$0.33-0.40/hr, RTX 5090 at ~$0.45-0.54/hr. API key auth. Use `tensordock_batch.sh` for automated deployment. Auto-calculates disk needs per video. 16 vCPUs for fast extraction.
 - **[RunPod](https://runpod.io)**: More GPU variety but often sold out. RTX 4090 at ~$0.34-0.59/hr. CLI: `pipx install runpod`
 - **[Google Cloud](https://cloud.google.com)**: Always available. L4 at ~$0.70/hr. Use `gcp_setup.sh` for one-command setup. Requires GPUS_ALL_REGIONS quota for new projects.
 

@@ -30,12 +30,15 @@ OUTPUT_DIR="${OUTPUT_DIR:-$SCRIPT_DIR/enhanced_videos}"
 TD_API="https://dashboard.tensordock.com/api/v2"
 TD_KEY="${TENSORDOCK_API_KEY:-}"
 
-# GPU config
-GPU_MODEL="geforcertx4090-pcie-24gb"
-GPU_DISPLAY="RTX 4090"
+# GPU config (override with env: GPU_MODEL=geforcertx5090-pcie-32gb ./tensordock_batch.sh ...)
+GPU_MODEL="${GPU_MODEL:-geforcertx4090-pcie-24gb}"
+GPU_DISPLAY="${GPU_DISPLAY:-RTX 4090}"
+if [[ "$GPU_MODEL" == *5090* ]]; then
+    GPU_DISPLAY="RTX 5090"
+fi
 NUM_GPUS=1
-VCPUS=4
-RAM_GB=16
+VCPUS=16   # more vCPUs = faster frame extraction (parallel ffmpeg workers)
+RAM_GB=32  # more RAM for parallel I/O pipeline
 STORAGE_GB=250  # default, overridden by estimate_disk_gb()
 OS_IMAGE="ubuntu2404"
 
@@ -506,7 +509,14 @@ PIP="pip install --break-system-packages -q"
 $PIP --ignore-installed typing_extensions 2>&1 || true
 
 # Install PyTorch with CUDA first (not bundled with base Ubuntu)
-$PIP torch torchvision --index-url https://download.pytorch.org/whl/cu121 2>&1 || true
+# Detect GPU arch to pick correct CUDA version
+GPU_ARCH=$(nvidia-smi --query-gpu=compute_cap --format=csv,noheader 2>/dev/null | head -1 | tr -d '.')
+if [ "${GPU_ARCH:-0}" -ge 120 ]; then
+    echo "Blackwell GPU detected (sm_${GPU_ARCH}) — using PyTorch with CUDA 12.8"
+    $PIP torch torchvision --index-url https://download.pytorch.org/whl/cu128 2>&1 || true
+else
+    $PIP torch torchvision --index-url https://download.pytorch.org/whl/cu121 2>&1 || true
+fi
 
 # Install realesrgan and deps
 $PIP realesrgan yt-dlp "numpy==1.26.4" "basicsr==1.4.2" 2>&1 || true
