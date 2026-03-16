@@ -156,27 +156,65 @@ def main():
     if len(existing) > 0:
         print(f"Frames already extracted: {len(existing)}")
     else:
-        print(f"Extracting ~{total_frames} frames...")
-        sys.stdout.flush()
-        import threading
-        proc = subprocess.Popen(["ffmpeg", "-i", INPUT, "-qscale:v", "2",
-                        f"{FRAMES_IN}/frame_%08d.png"],
-                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        # Monitor frame extraction progress
-        extract_start = time.time()
-        while proc.poll() is None:
-            time.sleep(5)
-            count = len(glob.glob(f"{FRAMES_IN}/frame_*.png"))
-            if count > 0 and total_frames > 0:
-                pct = count * 100 // total_frames
-                elapsed = time.time() - extract_start
-                fps_extract = count / elapsed if elapsed > 0 else 0
-                remaining = (total_frames - count) / fps_extract if fps_extract > 0 else 0
-                print(f"  Extracting: {count}/{total_frames} ({pct}%) | {fps_extract:.0f} fps | ~{remaining/60:.0f}m remaining")
-                sys.stdout.flush()
-        existing = sorted(glob.glob(f"{FRAMES_IN}/frame_*.png"))
-        extract_elapsed = time.time() - extract_start
-        print(f"Extracted {len(existing)} frames in {extract_elapsed:.0f}s")
+        cpu_count = os.cpu_count() or 1
+        num_workers = min(max(cpu_count // 2, 1), 16)  # Use half of CPUs, max 16 workers
+
+        if num_workers > 1 and duration > 30:
+            # Parallel extraction: split video into segments, extract in parallel
+            print(f"Extracting ~{total_frames} frames using {num_workers} parallel workers...")
+            sys.stdout.flush()
+            segment_dur = duration / num_workers
+            procs = []
+            for i in range(num_workers):
+                start_time = i * segment_dur
+                start_frame = int(i * segment_dur * fps_val) + 1  # 1-indexed for ffmpeg output
+                cmd = ["ffmpeg", "-ss", f"{start_time:.3f}", "-i", INPUT,
+                       "-t", f"{segment_dur:.3f}", "-qscale:v", "2",
+                       f"{FRAMES_IN}/frame_%08d_w{i:02d}.png"]
+                p = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                procs.append((i, p, start_frame))
+
+            extract_start = time.time()
+            # Wait for all workers
+            for i, p, _ in procs:
+                p.wait()
+
+            # Rename files to sequential frame_XXXXXXXX.png
+            print("Renaming frames to sequential order...")
+            sys.stdout.flush()
+            all_frames = []
+            for i in range(num_workers):
+                worker_frames = sorted(glob.glob(f"{FRAMES_IN}/frame_*_w{i:02d}.png"))
+                all_frames.extend(worker_frames)
+
+            for idx, old_path in enumerate(all_frames, 1):
+                new_path = os.path.join(FRAMES_IN, f"frame_{idx:08d}.png")
+                os.rename(old_path, new_path)
+
+            existing = sorted(glob.glob(f"{FRAMES_IN}/frame_*.png"))
+            extract_elapsed = time.time() - extract_start
+            print(f"Extracted {len(existing)} frames in {extract_elapsed:.0f}s ({num_workers} workers)")
+        else:
+            # Single-process extraction (short video or single CPU)
+            print(f"Extracting ~{total_frames} frames...")
+            sys.stdout.flush()
+            proc = subprocess.Popen(["ffmpeg", "-i", INPUT, "-qscale:v", "2",
+                            f"{FRAMES_IN}/frame_%08d.png"],
+                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            extract_start = time.time()
+            while proc.poll() is None:
+                time.sleep(5)
+                count = len(glob.glob(f"{FRAMES_IN}/frame_*.png"))
+                if count > 0 and total_frames > 0:
+                    pct = count * 100 // total_frames
+                    elapsed = time.time() - extract_start
+                    fps_extract = count / elapsed if elapsed > 0 else 0
+                    remaining = (total_frames - count) / fps_extract if fps_extract > 0 else 0
+                    print(f"  Extracting: {count}/{total_frames} ({pct}%) | {fps_extract:.0f} fps | ~{remaining/60:.0f}m remaining")
+                    sys.stdout.flush()
+            existing = sorted(glob.glob(f"{FRAMES_IN}/frame_*.png"))
+            extract_elapsed = time.time() - extract_start
+            print(f"Extracted {len(existing)} frames in {extract_elapsed:.0f}s")
 
     TOTAL = len(existing)
 
