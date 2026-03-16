@@ -121,24 +121,32 @@ def main():
     fps_val = int(fps_parts[0]) / int(fps_parts[1]) if len(fps_parts) == 2 else float(fps_parts[0])
     total_frames = int(duration * fps_val)
 
-    # Estimate: input frame ~1MB per 960x720, output frame ~10MB at 4x
+    # Estimate disk needs — only count what still needs to be written
     input_frame_size = (src_w * src_h * 3) / (1024 * 1024)  # uncompressed estimate
     output_frame_size = (src_w * SCALE * src_h * SCALE * 3) / (1024 * 1024)
     # PNG compression ~3-5x, use conservative 3x
-    est_input_gb = (total_frames * input_frame_size / 3) / 1024
-    est_output_gb = (total_frames * output_frame_size / 3) / 1024
-    est_total_gb = est_input_gb + est_output_gb + 5  # +5GB for video, model, etc.
+    existing_input = len(glob.glob(f"{FRAMES_IN}/frame_*.png"))
+    existing_output = len(glob.glob(f"{FRAMES_OUT}/frame_*.png"))
+    remaining_input = max(0, total_frames - existing_input)
+    remaining_output = max(0, total_frames - existing_output)
+    est_input_gb = (remaining_input * input_frame_size / 3) / 1024
+    est_output_gb = (remaining_output * output_frame_size / 3) / 1024
+    est_remaining_gb = est_input_gb + est_output_gb + 5  # +5GB for video, model, etc.
 
     statvfs = os.statvfs(WORKDIR)
     avail_gb = (statvfs.f_frsize * statvfs.f_bavail) / (1024**3)
 
     print(f"\nVideo: {src_w}x{src_h} @ {fps_val:.0f}fps, {duration:.0f}s ({total_frames} frames)")
-    print(f"Estimated disk needed: {est_total_gb:.0f} GB (input: {est_input_gb:.0f} GB + output: {est_output_gb:.0f} GB)")
-    print(f"Available disk space:  {avail_gb:.0f} GB")
+    print(f"Disk still needed: ~{est_remaining_gb:.0f} GB (input: {est_input_gb:.0f} GB + output: {est_output_gb:.0f} GB)")
+    print(f"Available disk space: {avail_gb:.0f} GB")
+    if existing_input > 0:
+        print(f"Already extracted: {existing_input} frames")
+    if existing_output > 0:
+        print(f"Already upscaled: {existing_output} frames")
 
-    if est_total_gb > avail_gb:
-        print(f"\nERROR: Not enough disk space! Need ~{est_total_gb:.0f} GB but only {avail_gb:.0f} GB available.")
-        print(f"Resize disk to at least {int(est_total_gb * 1.2)} GB and retry.")
+    if est_remaining_gb > avail_gb:
+        print(f"\nERROR: Not enough disk space! Need ~{est_remaining_gb:.0f} GB but only {avail_gb:.0f} GB available.")
+        print(f"Resize disk to at least {int(est_remaining_gb * 1.2)} GB and retry.")
         sys.exit(1)
 
     print()
