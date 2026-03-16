@@ -188,11 +188,29 @@ class StatusHandler(http.server.BaseHTTPRequestHandler):
         done_frames_all = sum(v["done_frames"] for v in videos)
         overall_pct = round(done_frames_all / total_frames_all * 100, 1) if total_frames_all > 0 else 0
 
-        # Extract fps from log for ETA
+        # Extract speed info from log
         import re
         fps = 0
         eta_str = ""
+        dl_speed = ""
+        dl_progress = ""
         if log_tail:
+            # Download speed from speed test
+            dl_speed_match = re.findall(r'Download speed:\s*([\d.]+)\s*Mbps', log_tail)
+            if dl_speed_match:
+                dl_speed = f"{dl_speed_match[-1]} Mbps"
+
+            # Video download progress (yt-dlp output)
+            dl_pct_matches = re.findall(r'\[download\]\s+([\d.]+)%\s+of\s+[\d.]+\w+\s+at\s+([\d.]+\w+/s)', log_tail)
+            if dl_pct_matches:
+                dl_progress = f"{dl_pct_matches[-1][0]}% at {dl_pct_matches[-1][1]}"
+
+            # Video download completed
+            dl_done_match = re.findall(r'Downloaded\s+([\d.]+)\s*MB\s+in\s+([\d.]+)s\s+\(([\d.]+)\s*Mbps\)', log_tail)
+            if dl_done_match:
+                dl_speed = f"{dl_done_match[-1][2]} Mbps (actual)"
+                dl_progress = ""
+
             fps_matches = re.findall(r'([\d.]+)\s+fps', log_tail)
             if fps_matches:
                 fps = float(fps_matches[-1])
@@ -215,6 +233,8 @@ class StatusHandler(http.server.BaseHTTPRequestHandler):
             "overall_pct": overall_pct,
             "fps": fps,
             "eta": eta_str,
+            "dl_speed": dl_speed,
+            "dl_progress": dl_progress,
         }
 
     def render_page(self):
@@ -273,6 +293,7 @@ async function update() {
     const fpsStr = d.fps > 0 ? d.fps.toFixed(1) + ' fps' : '—';
     const etaStr = d.eta || '—';
     const framesStr = d.done_frames + ' / ' + d.total_frames;
+    const dlStr = d.dl_progress || d.dl_speed || '—';
 
     let h = `<div class="summary">
       <div class="card"><div class="num">${d.total}</div><div class="label">Total Videos</div></div>
@@ -280,8 +301,9 @@ async function update() {
       <div class="card"><div class="num" style="color:#38bdf8">${active.length}</div><div class="label">Upscaling Now</div></div>
       <div class="card"><div class="num" style="color:#94a3b8">${queued.length}</div><div class="label">Queued</div></div>
       <div class="card"><div class="num" style="font-size:1.2rem">${framesStr}</div><div class="label">Frames (${d.overall_pct}%)</div></div>
-      <div class="card"><div class="num">${fpsStr}</div><div class="label">Speed</div></div>
+      <div class="card"><div class="num">${fpsStr}</div><div class="label">GPU Speed</div></div>
       <div class="card"><div class="num">${etaStr}</div><div class="label">ETA</div></div>
+      <div class="card"><div class="num" style="font-size:1rem">${dlStr}</div><div class="label">Download</div></div>
     </div>`;
 
     h += `<table><thead><tr>
