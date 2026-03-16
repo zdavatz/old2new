@@ -322,18 +322,20 @@ estimate_disk_gb() {
         height=$(echo "$info" | python3 -c "import json,sys; d=json.load(sys.stdin); print(d.get('height',480))" 2>/dev/null || echo 480)
         fps=$(echo "$info" | python3 -c "import json,sys; d=json.load(sys.stdin); print(int(d.get('fps',25)))" 2>/dev/null || echo 25)
 
-        # Same formula as enhance_gpu.py: frame_size * total_frames / PNG_compression
+        # Same formula as enhance_gpu.py pre-download check:
+        # PNG compression ~2.5x (conservative), then 10% safety margin + 5GB overhead
         local total_frames=$(( duration * fps ))
         local input_bytes=$(( width * height * 3 ))
         local output_bytes=$(( width * scale * height * scale * 3 ))
-        # PNG compression ~3x; need both input + output frames
-        local input_gb=$(( total_frames * input_bytes / 3 / 1073741824 ))
-        local output_gb=$(( total_frames * output_bytes / 3 / 1073741824 ))
-        local video_gb=$(( input_gb + output_gb + 5 ))  # +5GB for video file, model, etc.
+        # Use *10/25 instead of /2.5 for integer math
+        local input_gb=$(( total_frames * input_bytes * 10 / 25 / 1073741824 ))
+        local output_gb=$(( total_frames * output_bytes * 10 / 25 / 1073741824 ))
+        # 10% safety (matching enhance_gpu.py) + 5GB overhead
+        local video_gb=$(( (input_gb + output_gb) * 110 / 100 + 5 ))
         if [[ $video_gb -gt $max_gb ]]; then
             max_gb=$video_gb
         fi
-        log "  $title: ${width}x${height} @ ${fps}fps, ${duration}s, ${scale}x → ~${video_gb}GB disk"
+        log "  $title: ${width}x${height} @ ${fps}fps, ${duration}s, ${scale}x → ~${video_gb}GB disk" >&2
     done <<< "$video_list"
     # Add overhead: ~30GB OS/deps, ~5GB model, ~2-5GB video download, 20% safety margin
     # The filesystem also reserves ~5% for root, so request more than raw content needs
@@ -374,13 +376,17 @@ for loc in locations:
                     'gpu_price': gpu['price_per_hr'],
                     'max_gpus': gpu['max_count'],
                     'max_storage': gpu['resources']['max_storage_gb'],
+                    'max_vcpus': gpu['resources']['max_vcpus'],
+                    'max_ram': gpu['resources']['max_ram_gb'],
                     'dedicated_ip': gpu['network_features']['dedicated_ip_available'],
                     'pricing': gpu['pricing'],
                 })
 best.sort(key=lambda x: x['gpu_price'])
 for b in best:
-    total = b['gpu_price'] + b['pricing']['per_vcpu_hr'] * $VCPUS + b['pricing']['per_gb_ram_hr'] * $RAM_GB + b['pricing']['per_gb_storage_hr'] * $STORAGE_GB
-    print(f\"{b['id']}\t{b['city']}, {b['state']}, {b['country']}\t\${total:.3f}/hr\t{b['max_storage']}GB\t{b['dedicated_ip']}\")
+    vcpus = min($VCPUS, b['max_vcpus']) if b['max_vcpus'] > 0 else $VCPUS
+    ram = min($RAM_GB, b['max_ram']) if b['max_ram'] > 0 else $RAM_GB
+    total = b['gpu_price'] + b['pricing']['per_vcpu_hr'] * vcpus + b['pricing']['per_gb_ram_hr'] * ram + b['pricing']['per_gb_storage_hr'] * $STORAGE_GB
+    print(f\"{b['id']}\t{b['city']}, {b['state']}, {b['country']}\t\${total:.3f}/hr\t{b['max_storage']}GB\t{b['dedicated_ip']}\t{vcpus}\t{ram}\")
 "
 }
 
@@ -389,6 +395,8 @@ create_instance() {
     local name="$1"
     local location_id="$2"
     local cloud_init_script="$3"
+    local use_vcpus="${4:-$VCPUS}"
+    local use_ram="${5:-$RAM_GB}"
     local ssh_key
     ssh_key=$(get_ssh_key)
 
@@ -416,8 +424,8 @@ data = {
             'type': 'virtualmachine',
             'image': '$OS_IMAGE',
             'resources': {
-                'vcpu_count': $VCPUS,
-                'ram_gb': $RAM_GB,
+                'vcpu_count': $use_vcpus,
+                'ram_gb': $use_ram,
                 'storage_gb': $STORAGE_GB,
                 'gpus': {
                     '$GPU_MODEL': {
@@ -432,8 +440,6 @@ data = {
             ],
             'ssh_key': ssh_key,
             'cloud_init': {
-                'package_update': True,
-                'packages': ['ffmpeg', 'curl', 'git', 'python3-pip'],
                 'write_files': [
                     {
                         'path': '/root/setup.sh',
@@ -472,6 +478,13 @@ set -e
 export DEBIAN_FRONTEND=noninteractive
 
 echo "=== Setup started at $(date) ==="
+
+# Install minimal system packages (no apt update — saves 3-5 min on throwaway instances)
+echo "Installing system packages..."
+apt-get install -y --no-install-recommends python3-pip ffmpeg 2>/dev/null || {
+    # Only run apt-get update if install fails (package cache missing)
+    apt-get update -qq && apt-get install -y --no-install-recommends python3-pip ffmpeg
+}
 
 # Install Python dependencies
 echo "Installing Python dependencies..."
@@ -550,7 +563,8 @@ SETUP_HEADER
         else
             echo ','
         fi
-        printf '  {"id": "%s", "scale": %s, "title": "%s", "duration": %s}' "$vid" "$scale" "$title" "$duration"
+        local display_title="${title//_/ }"
+        printf '  {"id": "%s", "scale": %s, "title": "%s", "display_title": "%s", "duration": %s}' "$vid" "$scale" "$title" "$display_title" "$duration"
     done <<< "$video_list"
     echo ''
     echo ']'
@@ -746,7 +760,7 @@ cmd_launch() {
     fi
 
     local idx=0
-    while IFS=$'\t' read -r location_id location_name price storage dedicated; do
+    while IFS=$'\t' read -r location_id location_name price storage dedicated loc_vcpus loc_ram; do
         [[ $idx -ge $num_instances ]] && break
 
         local assignment_file="$ASSIGNMENTS_DIR/instance_${idx}.txt"
@@ -757,10 +771,10 @@ cmd_launch() {
         local setup_file="$STATE_DIR/setup_${idx}.sh"
         generate_setup_script "$video_list" "$instance_name" "$location_name" "$price" "pending" > "$setup_file"
 
-        log "Creating instance $idx at $location_name ($price)..."
+        log "Creating instance $idx at $location_name ($price, ${loc_vcpus} vCPUs)..."
 
         local result
-        result=$(create_instance "$instance_name" "$location_id" "$(cat "$setup_file")")
+        result=$(create_instance "$instance_name" "$location_id" "$(cat "$setup_file")" "$loc_vcpus" "$loc_ram")
 
         local instance_id
         instance_id=$(echo "$result" | python3 -c "
@@ -862,10 +876,10 @@ cmd_test() {
         exit 1
     fi
 
-    local location_id location_name price
-    IFS=$'\t' read -r location_id location_name price _ _ <<< "$(echo "$locations" | head -1)"
+    local location_id location_name price _storage _dedicated loc_vcpus loc_ram
+    IFS=$'\t' read -r location_id location_name price _storage _dedicated loc_vcpus loc_ram <<< "$(echo "$locations" | head -1)"
 
-    log "Selected: $location_name @ $price"
+    log "Selected: $location_name @ $price (${loc_vcpus} vCPUs, ${loc_ram}GB RAM)"
     log ""
 
     # Generate setup script with metadata
@@ -876,7 +890,7 @@ cmd_test() {
 
     log "Creating test instance..."
     local result
-    result=$(create_instance "davaz-test" "$location_id" "$(cat "$setup_file")")
+    result=$(create_instance "davaz-test" "$location_id" "$(cat "$setup_file")" "$loc_vcpus" "$loc_ram")
 
     local instance_id
     instance_id=$(echo "$result" | python3 -c "
