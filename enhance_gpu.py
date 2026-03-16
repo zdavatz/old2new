@@ -268,6 +268,11 @@ def main():
     )
     print("Real-ESRGAN loaded.")
 
+    # Suppress verbose tile progress output from Real-ESRGAN
+    import logging
+    logging.getLogger('basicsr').setLevel(logging.WARNING)
+    logging.getLogger('realesrgan').setLevel(logging.WARNING)
+
     # GFPGAN disabled: it halluccinates facial features and changes how people look.
     # Not suitable for documentary footage where preserving real appearance matters.
     # Real-ESRGAN alone provides good upscaling without altering faces.
@@ -336,7 +341,7 @@ def main():
         output = enhance_frame(img, frame_num=i)
         cv2.imwrite(out_path, output)
 
-        if (i + 1) % 100 == 0:
+        if (i + 1) % 10 == 0:
             elapsed = time.time() - start
             processed = i + 1 - done
             fps = processed / elapsed if elapsed > 0 else 0
