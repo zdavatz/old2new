@@ -148,11 +148,27 @@ def main():
     if len(existing) > 0:
         print(f"Frames already extracted: {len(existing)}")
     else:
-        print("Extracting frames...")
-        subprocess.run(["ffmpeg", "-i", INPUT, "-qscale:v", "2",
-                        f"{FRAMES_IN}/frame_%08d.png"], check=True, capture_output=True)
+        print(f"Extracting ~{total_frames} frames...")
+        sys.stdout.flush()
+        import threading
+        proc = subprocess.Popen(["ffmpeg", "-i", INPUT, "-qscale:v", "2",
+                        f"{FRAMES_IN}/frame_%08d.png"],
+                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        # Monitor frame extraction progress
+        extract_start = time.time()
+        while proc.poll() is None:
+            time.sleep(5)
+            count = len(glob.glob(f"{FRAMES_IN}/frame_*.png"))
+            if count > 0 and total_frames > 0:
+                pct = count * 100 // total_frames
+                elapsed = time.time() - extract_start
+                fps_extract = count / elapsed if elapsed > 0 else 0
+                remaining = (total_frames - count) / fps_extract if fps_extract > 0 else 0
+                print(f"  Extracting: {count}/{total_frames} ({pct}%) | {fps_extract:.0f} fps | ~{remaining/60:.0f}m remaining")
+                sys.stdout.flush()
         existing = sorted(glob.glob(f"{FRAMES_IN}/frame_*.png"))
-        print(f"Extracted {len(existing)} frames")
+        extract_elapsed = time.time() - extract_start
+        print(f"Extracted {len(existing)} frames in {extract_elapsed:.0f}s")
 
     TOTAL = len(existing)
 
