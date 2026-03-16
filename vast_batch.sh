@@ -799,10 +799,15 @@ cmd_launch() {
     local offer_ids
     offer_ids=$(echo "$offers" | python3 -c "
 import json, sys
+DISK_GB = $DISK_GB
 data = json.load(sys.stdin)
-data.sort(key=lambda x: x.get('dph_total', 999))
+# Calculate real cost including storage for requested disk
+for d in data:
+    stor = d.get('storage_cost', 0) or 0
+    d['real_dph'] = d.get('dph_base', d.get('dph_total', 0)) + stor * DISK_GB / 730
+data.sort(key=lambda x: x.get('real_dph', 999))
 for d in data[:$num_instances]:
-    print(f\"{d['id']}\t{d.get('dph_total',0):.4f}\t{d.get('gpu_name','?')}\")
+    print(f\"{d['id']}\t{d.get('real_dph',0):.4f}\t{d.get('gpu_name','?')}\")
 ")
 
     log "Selected offers:"
@@ -945,13 +950,17 @@ cmd_test() {
     local offer_id price gpu
     read -r offer_id price gpu <<< "$(echo "$offers" | python3 -c "
 import json, sys
+DISK_GB = $DISK_GB
 data = json.load(sys.stdin)
-data.sort(key=lambda x: x.get('dph_total', 999))
+for d in data:
+    stor = d.get('storage_cost', 0) or 0
+    d['real_dph'] = d.get('dph_base', d.get('dph_total', 0)) + stor * DISK_GB / 730
+data.sort(key=lambda x: x.get('real_dph', 999))
 d = data[0]
-print(f\"{d['id']}\t{d.get('dph_total',0):.4f}\t{d.get('gpu_name','?')}\")
+print(f\"{d['id']}\t{d.get('real_dph',0):.4f}\t{d.get('gpu_name','?')}\")
 ")"
 
-    log "Selected: $gpu @ \$$price/hr"
+    log "Selected: $gpu @ \$$price/hr (incl. storage for ${DISK_GB}GB)"
 
     # Estimate cost for this single video
     # Rough: 30fps * duration * 1s/frame for 4x, 0.5s for 2x
@@ -1360,13 +1369,17 @@ cmd_url() {
     local offer_id price gpu
     read -r offer_id price gpu <<< "$(echo "$offers" | python3 -c "
 import json, sys
+DISK_GB = $DISK_GB
 data = json.load(sys.stdin)
-data.sort(key=lambda x: x.get('dph_total', 999))
+for d in data:
+    stor = d.get('storage_cost', 0) or 0
+    d['real_dph'] = d.get('dph_base', d.get('dph_total', 0)) + stor * DISK_GB / 730
+data.sort(key=lambda x: x.get('real_dph', 999))
 d = data[0]
-print(f\"{d['id']}\t{d.get('dph_total',0):.4f}\t{d.get('gpu_name','?')}\")
+print(f\"{d['id']}\t{d.get('real_dph',0):.4f}\t{d.get('gpu_name','?')}\")
 ")"
 
-    log "Selected: $gpu @ \$$price/hr"
+    log "Selected: $gpu @ \$$price/hr (incl. storage for ${DISK_GB}GB)"
 
     # Estimate
     local est_seconds
