@@ -155,7 +155,27 @@ Without `--job-name`, the YouTube video ID is used as the directory and file nam
 
 The process is resumable — if interrupted, re-run the same command and it will skip already-completed steps (download, frame extraction, upscaled frames).
 
-Frame extraction uses parallel ffmpeg workers (up to 16) on multi-core machines for faster processing. VRAM-based auto-tiling prevents OOM errors on different GPU sizes.
+#### Pre-flight Check
+
+`enhance_gpu.py` runs a comprehensive pre-flight check before any processing:
+
+- **GPU**: CUDA compute capability, VRAM, driver version, Blackwell (sm_120) detection
+- **PyTorch**: Version, CUDA version, FP16 kernel compatibility test
+- **CPU**: Model, clock speed, single-core benchmark (warns if too slow)
+- **RAM**: Total and available memory
+- **Disk**: Space available, read/write speed benchmark
+- **PCIe**: Generation and lane width (bandwidth estimate)
+- **Software**: ffmpeg (need 5+), numpy (need <2), opencv, basicsr, realesrgan, yt-dlp
+
+If any check fails, it exits with specific fix commands — no wasted time downloading on broken instances.
+
+#### Performance Tips
+
+- **CPU clock speed matters**: A Xeon Phi (272 cores @ 1.4GHz) was 4x slower than an EPYC (32 cores @ 2.25GHz) with the same RTX 5090, because `cv2.imread`/`cv2.imwrite` bottleneck on per-core speed. Prefer machines with >2GHz per-core.
+- **RTX 5090** (Blackwell): Needs PyTorch 2.6+ with CUDA 12.8. The default Docker image must be upgraded.
+- Frame extraction uses parallel ffmpeg workers (up to 16) on multi-core machines.
+- Upscaling uses a parallel I/O pipeline (threaded pre-read + async write) to overlap CPU and GPU work.
+- VRAM-based auto-tiling prevents OOM errors on different GPU sizes.
 
 ## Performance Reference
 

@@ -14,7 +14,7 @@ old2new enhances old Da Vaz videos using Real-ESRGAN AI upscaling. There are two
 ## Architecture
 
 - **enhance.sh** — macOS script: accepts YouTube URL or local video file → detect hardware → benchmark → check disk space → interactive menu → extract frames (ffmpeg) → upscale (Real-ESRGAN ncnn-vulkan) → reassemble (ffmpeg)
-- **enhance_gpu.py** — Cloud GPU script: same pipeline but uses PyTorch/CUDA for upscaling. Checks disk space before starting. Supports `--job-name` for custom directory names. Uses `~/jobs/<name>/` for work directories. Parallel frame extraction using multiple ffmpeg workers (up to 16) on multi-core machines. Auto-tiling based on VRAM size to prevent OOM.
+- **enhance_gpu.py** — Cloud GPU script: same pipeline but uses PyTorch/CUDA for upscaling. Runs comprehensive pre-flight check (GPU, CPU, RAM, disk, PCIe, software) before any processing. Parallel frame extraction using multiple ffmpeg workers (up to 16). Parallel I/O pipeline (threaded pre-read + async write) to overlap CPU I/O with GPU compute. Auto-tiling based on VRAM size to prevent OOM. Supports `--job-name` for custom directory names. Uses `~/jobs/<name>/` for work directories.
 - **gcp_setup.sh** — One-command Google Cloud setup: pre-checks video size and disk needs → creates L4 GPU instance → installs all deps → downloads enhance_gpu.py → starts enhancement. Also supports `status` command with ETA.
 - **vast_batch.sh** — Versatile vast.ai script. Supports: (1) any YouTube URL as first arg for single video enhancement, (2) `test` for testing with a davaz.com video, (3) `launch N` for batch processing all 226 davaz.com videos on N parallel RTX 4090 instances. Also: `status` (shows dashboard URLs), `download`, `destroy`, `list`. Auto-detects HD and recommends 2x. Fetches video info via yt-dlp. Web dashboard via bore.pub tunnel.
 - **realesrgan/** — Auto-downloaded binary and models (gitignored). macOS ARM64 binary from github.com/xinntao/Real-ESRGAN
@@ -35,7 +35,9 @@ old2new enhances old Da Vaz videos using Real-ESRGAN AI upscaling. There are two
 
 - Local: Real-ESRGAN ncnn-vulkan uses Vulkan for GPU compute — works on Apple Silicon (Metal via MoltenVK)
 - Cloud: ncnn-vulkan does NOT work in most Docker containers (no Vulkan driver). Use the Python package with CUDA instead.
-- Both scripts check disk space before starting and abort with clear error if insufficient
+- `enhance_gpu.py` runs a pre-flight check that validates: GPU CUDA arch compatibility, PyTorch/CUDA versions, CPU single-core benchmark, RAM, disk space + I/O speed, PCIe gen/width, ffmpeg version, and all Python package versions. Exits with specific fix commands if anything fails.
+- CPU single-core speed matters: Xeon Phi (1.4GHz, 272 cores) was 4x slower than EPYC (2.25GHz, 32 cores) with same RTX 5090 GPU because cv2.imread/imwrite bottlenecks on per-core speed. Prefer machines with >2GHz per-core.
+- RTX 5090 (Blackwell, sm_120) needs PyTorch 2.6+ with CUDA 12.8. The `pytorch:2.1.0-cuda12.1` Docker image must be upgraded: `pip install torch torchvision --index-url https://download.pytorch.org/whl/cu128`. Also patch basicsr: `sed -i 's/functional_tensor/functional/' .../degradations.py` and suppress tile spam: `sed -i "s/print(f'.*Tile/pass  # /" .../realesrgan/utils.py`
 - Processing is resumable: each step checks for existing output before re-running
 - The `realesrgan-x4plus` model is used for both 2x and 4x upscaling (general-purpose, best for real-world content)
 - GFPGAN is DISABLED — it hallucinates facial features and changes how people look. Not suitable for documentary footage. Real-ESRGAN alone provides good upscaling.
@@ -47,7 +49,7 @@ old2new enhances old Da Vaz videos using Real-ESRGAN AI upscaling. There are two
 
 ## Cloud GPU Deployment
 
-- **vast.ai**: Use `pytorch/pytorch:2.1.0-cuda12.1-cudnn8-runtime` image. SSH access via `vastai` CLI. Cheapest option (~$0.34/hr for RTX 4090, ~$0.34/hr for RTX 5090). Request >=250GB disk for long videos (HD 1080p+ at 2x needs ~1.8TB for long films). Use `vast_batch.sh` for automated batch processing. API key stored in `~/.config/vastai/vast_api_key`. RTX 5090 (32GB VRAM) available and supported with auto-tiling.
+- **vast.ai**: Use `pytorch/pytorch:2.1.0-cuda12.1-cudnn8-runtime` image (upgrade PyTorch for RTX 5090). SSH access via `vastai` CLI. Cheapest option (~$0.34/hr for RTX 4090/5090). Request >=250GB disk for short videos, >=2TB for long HD films (1920x1200 @ 2x needs ~1.8TB). Use `vast_batch.sh` for automated batch processing. API key stored in `~/.config/vastai/vast_api_key`. When choosing instances: check CPU clock speed (>2GHz), disk space, and PCIe gen — not just GPU and price.
 - **RunPod**: Use `runpod/pytorch` image. SSH access via RunPod API. Often sold out on weekends.
 - **Google Cloud**: Use `gcp_setup.sh` for automated setup. Image: `pytorch-2-7-cu128-ubuntu-2204-nvidia-570`, machine: `g2-standard-4` + L4 GPU. Requires GPUS_ALL_REGIONS quota increase for new projects.
 - API keys stored in `~/.zshrc` as `VAST_API_KEY` and `RUNPOD_API_KEY`
