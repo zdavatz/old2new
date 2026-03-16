@@ -17,7 +17,283 @@ import time
 import subprocess
 import glob
 
+
+def preflight_check():
+    """Comprehensive pre-flight check of hardware and software before starting.
+    Checks GPU, CPU, RAM, disk, network, and all software dependencies.
+    Returns dict of system info or exits with error."""
+    import shutil
+    print("=" * 60)
+    print("PRE-FLIGHT CHECK")
+    print("=" * 60)
+    errors = []
+    warnings = []
+    info = {}
+
+    # --- GPU & CUDA ---
+    print("\n[GPU]")
+    try:
+        result = subprocess.run(
+            ["nvidia-smi", "--query-gpu=name,memory.total,driver_version,compute_cap",
+             "--format=csv,noheader,nounits"],
+            capture_output=True, text=True, timeout=5)
+        if result.returncode == 0:
+            parts = [p.strip() for p in result.stdout.strip().split(",")]
+            gpu_name = parts[0]
+            gpu_vram_mb = int(parts[1])
+            gpu_driver = parts[2]
+            gpu_compute = parts[3]
+            info["gpu"] = gpu_name
+            info["vram_gb"] = gpu_vram_mb / 1024
+            print(f"  GPU:      {gpu_name}")
+            print(f"  VRAM:     {gpu_vram_mb / 1024:.0f} GB")
+            print(f"  Driver:   {gpu_driver}")
+            print(f"  Compute:  sm_{gpu_compute.replace('.', '')}")
+
+            # Check if Blackwell (sm_12x) needs newer PyTorch
+            major = int(gpu_compute.split(".")[0])
+            if major >= 12:
+                info["needs_cu128"] = True
+                print(f"  WARNING:  Blackwell GPU detected — needs PyTorch 2.6+ with CUDA 12.8")
+        else:
+            errors.append("nvidia-smi failed — no GPU detected")
+    except FileNotFoundError:
+        errors.append("nvidia-smi not found — no NVIDIA GPU available")
+    except Exception as e:
+        errors.append(f"GPU check failed: {e}")
+
+    # --- PyTorch & CUDA compatibility ---
+    print("\n[PyTorch]")
+    try:
+        import torch
+        pt_ver = torch.__version__
+        cuda_ver = torch.version.cuda or "none"
+        cuda_avail = torch.cuda.is_available()
+        print(f"  PyTorch:  {pt_ver}")
+        print(f"  CUDA:     {cuda_ver}")
+        print(f"  GPU OK:   {cuda_avail}")
+        info["pytorch"] = pt_ver
+        info["cuda"] = cuda_ver
+
+        if cuda_avail:
+            cap = torch.cuda.get_device_capability()
+            print(f"  Arch:     sm_{cap[0]}{cap[1]}")
+            if cap[0] >= 12:
+                # Verify PyTorch actually supports this arch
+                try:
+                    t = torch.zeros(1).cuda().half()
+                    print(f"  FP16:     OK")
+                except RuntimeError as e:
+                    if "no kernel image" in str(e):
+                        errors.append(f"PyTorch {pt_ver} does not support sm_{cap[0]}{cap[1]} (Blackwell). "
+                                      f"Need: pip install torch torchvision --index-url https://download.pytorch.org/whl/cu128")
+                    else:
+                        errors.append(f"CUDA FP16 test failed: {e}")
+        else:
+            errors.append("CUDA not available — torch.cuda.is_available() returned False")
+    except ImportError:
+        errors.append("PyTorch not installed — pip install torch")
+
+    # --- CPU benchmark ---
+    print("\n[CPU]")
+    try:
+        cpu_count = os.cpu_count() or 1
+        with open("/proc/cpuinfo") as f:
+            cpu_name = ""
+            cpu_mhz = 0
+            for line in f:
+                if line.startswith("model name") and not cpu_name:
+                    cpu_name = line.split(":", 1)[1].strip()
+                if line.startswith("cpu MHz") and cpu_mhz == 0:
+                    cpu_mhz = float(line.split(":", 1)[1].strip())
+        print(f"  Model:    {cpu_name}")
+        print(f"  Cores:    {cpu_count}")
+        print(f"  MHz:      {cpu_mhz:.0f}")
+        info["cpu"] = cpu_name
+        info["cpu_cores"] = cpu_count
+        info["cpu_mhz"] = cpu_mhz
+
+        # Single-core benchmark: time a numpy operation as proxy
+        import timeit
+        bench_time = timeit.timeit("sum(range(1000000))", number=3) / 3
+        score = 1.0 / bench_time  # higher is better
+        print(f"  Bench:    {score:.1f} (single-core, higher=better)")
+        info["cpu_score"] = score
+        if score < 5.0:
+            warnings.append(f"Slow CPU ({score:.1f} score, {cpu_mhz:.0f} MHz). "
+                            f"Frame I/O will bottleneck GPU. Expect 2-4x slower than modern CPUs.")
+        if cpu_mhz < 1500:
+            warnings.append(f"CPU clock very low ({cpu_mhz:.0f} MHz). "
+                            f"Consider a machine with faster per-core speed (>2GHz).")
+    except Exception as e:
+        warnings.append(f"CPU check failed: {e}")
+
+    # --- RAM ---
+    print("\n[RAM]")
+    try:
+        with open("/proc/meminfo") as f:
+            mem_total = mem_avail = 0
+            for line in f:
+                parts = line.split()
+                if parts[0] == "MemTotal:":
+                    mem_total = int(parts[1]) // 1024  # MB
+                elif parts[0] == "MemAvailable:":
+                    mem_avail = int(parts[1]) // 1024  # MB
+        print(f"  Total:    {mem_total / 1024:.1f} GB")
+        print(f"  Avail:    {mem_avail / 1024:.1f} GB")
+        info["ram_gb"] = mem_total / 1024
+        if mem_avail < 4096:
+            warnings.append(f"Low available RAM ({mem_avail / 1024:.1f} GB). May cause issues with large frames.")
+    except Exception as e:
+        warnings.append(f"RAM check failed: {e}")
+
+    # --- Disk ---
+    print("\n[Disk]")
+    try:
+        home = os.path.expanduser("~")
+        st = os.statvfs(home)
+        total_gb = (st.f_blocks * st.f_frsize) / (1024**3)
+        free_gb = (st.f_bavail * st.f_frsize) / (1024**3)
+        print(f"  Total:    {total_gb:.0f} GB")
+        print(f"  Free:     {free_gb:.0f} GB")
+        info["disk_free_gb"] = free_gb
+        info["disk_total_gb"] = total_gb
+    except Exception as e:
+        warnings.append(f"Disk check failed: {e}")
+
+    # --- Disk I/O benchmark ---
+    try:
+        test_file = os.path.expanduser("~/disk_bench_test")
+        t0 = time.time()
+        with open(test_file, "wb") as f:
+            f.write(os.urandom(50 * 1024 * 1024))  # 50MB
+        f.close()
+        write_speed = 50 / (time.time() - t0)
+        t0 = time.time()
+        with open(test_file, "rb") as f:
+            f.read()
+        read_speed = 50 / (time.time() - t0)
+        os.remove(test_file)
+        print(f"  Write:    {write_speed:.0f} MB/s")
+        print(f"  Read:     {read_speed:.0f} MB/s")
+        info["disk_write_mbs"] = write_speed
+        info["disk_read_mbs"] = read_speed
+        if write_speed < 100:
+            warnings.append(f"Slow disk write ({write_speed:.0f} MB/s). Frame extraction and output will be slow.")
+    except Exception as e:
+        warnings.append(f"Disk benchmark failed: {e}")
+
+    # --- ffmpeg ---
+    print("\n[Software]")
+    try:
+        result = subprocess.run(["ffmpeg", "-version"], capture_output=True, text=True, timeout=5)
+        line = result.stdout.split("\n")[0]
+        print(f"  ffmpeg:   {line}")
+        # Check version
+        import re
+        m = re.search(r"version (\d+\.\d+)", line)
+        if m:
+            ver = float(m.group(1))
+            if ver < 5.0:
+                errors.append(f"ffmpeg {ver} too old — cannot merge webm streams. "
+                              f"Fix: curl -sL https://johnvansickle.com/ffmpeg/releases/ffmpeg-release-amd64-static.tar.xz | "
+                              f"tar xJ --strip-components=1 -C /opt/conda/bin/ --wildcards '*/ffmpeg' '*/ffprobe'")
+    except FileNotFoundError:
+        errors.append("ffmpeg not found — apt-get install -y ffmpeg")
+
+    # --- Python packages ---
+    pkg_issues = []
+    try:
+        import numpy
+        nv = numpy.__version__
+        print(f"  numpy:    {nv}")
+        if nv.startswith("2."):
+            pkg_issues.append(f"numpy {nv} breaks basicsr. Fix: pip install 'numpy==1.26.4'")
+    except ImportError:
+        pkg_issues.append("numpy not installed")
+
+    try:
+        import cv2
+        print(f"  opencv:   {cv2.__version__}")
+    except ImportError:
+        pkg_issues.append("opencv not installed. Fix: pip install 'opencv-python-headless<4.11'")
+
+    try:
+        from basicsr.archs.rrdbnet_arch import RRDBNet
+        print(f"  basicsr:  OK")
+    except ImportError as e:
+        if "functional_tensor" in str(e):
+            pkg_issues.append("basicsr import fails (functional_tensor removed in new torchvision). "
+                              "Fix: sed -i 's/from torchvision.transforms.functional_tensor import rgb_to_grayscale/"
+                              "from torchvision.transforms.functional import rgb_to_grayscale/' "
+                              "$(python3 -c 'import basicsr; print(basicsr.__path__[0])')/data/degradations.py")
+        else:
+            pkg_issues.append(f"basicsr import failed: {e}")
+
+    try:
+        from realesrgan import RealESRGANer
+        print(f"  realesrgan: OK")
+    except ImportError:
+        pkg_issues.append("realesrgan not installed. Fix: pip install realesrgan")
+
+    try:
+        result = subprocess.run(["yt-dlp", "--version"], capture_output=True, text=True, timeout=5)
+        print(f"  yt-dlp:   {result.stdout.strip()}")
+    except FileNotFoundError:
+        pkg_issues.append("yt-dlp not installed. Fix: pip install yt-dlp")
+
+    if pkg_issues:
+        for p in pkg_issues:
+            errors.append(p)
+
+    # --- PCIe bandwidth (from nvidia-smi) ---
+    try:
+        result = subprocess.run(
+            ["nvidia-smi", "--query-gpu=pcie.link.gen.current,pcie.link.width.current",
+             "--format=csv,noheader"],
+            capture_output=True, text=True, timeout=5)
+        if result.returncode == 0:
+            parts = [p.strip() for p in result.stdout.strip().split(",")]
+            print(f"\n[PCIe]")
+            print(f"  Gen:      {parts[0]}")
+            print(f"  Width:    x{parts[1]}")
+            gen = int(parts[0])
+            width = int(parts[1])
+            # Approx bandwidth: Gen3=1GB/s/lane, Gen4=2GB/s/lane, Gen5=4GB/s/lane
+            bw = {3: 1, 4: 2, 5: 4}.get(gen, 1) * width
+            print(f"  ~BW:      {bw} GB/s")
+            if gen < 4:
+                warnings.append(f"PCIe Gen{gen} — slower GPU data transfer. Gen4+ recommended.")
+    except Exception:
+        pass
+
+    # --- Summary ---
+    print("\n" + "=" * 60)
+    if errors:
+        print(f"ERRORS ({len(errors)}):")
+        for e in errors:
+            print(f"  ✗ {e}")
+    if warnings:
+        print(f"WARNINGS ({len(warnings)}):")
+        for w in warnings:
+            print(f"  ! {w}")
+    if not errors and not warnings:
+        print("ALL CHECKS PASSED")
+    elif not errors:
+        print("CHECKS PASSED (with warnings)")
+    print("=" * 60 + "\n")
+
+    if errors:
+        print("Fix the errors above before running enhancement.")
+        sys.exit(1)
+
+    return info
+
+
 def main():
+    # Run pre-flight check first
+    sys_info = preflight_check()
+
     from basicsr.archs.rrdbnet_arch import RRDBNet
     from realesrgan import RealESRGANer
     import cv2
