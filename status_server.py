@@ -293,9 +293,17 @@ class StatusHandler(http.server.BaseHTTPRequestHandler):
         done = sum(1 for v in videos if v["status"] == "done")
         active = [v for v in videos if v["status"] == "upscaling"]
 
-        # Aggregate frame stats
-        total_frames_all = sum(v["total_frames"] for v in videos)
-        done_frames_all = sum(v["done_frames"] for v in videos)
+        # Aggregate frame stats (estimate frames for queued videos from duration)
+        total_frames_all = 0
+        done_frames_all = 0
+        est_fps_default = 25  # assume 25fps for queued videos without frames
+        for v in videos:
+            if v["total_frames"] > 0:
+                total_frames_all += v["total_frames"]
+            else:
+                # Estimate from duration (queued/not-yet-extracted)
+                total_frames_all += int(v["duration"] * est_fps_default)
+            done_frames_all += v["done_frames"]
         overall_pct = round(done_frames_all / total_frames_all * 100, 1) if total_frames_all > 0 else 0
 
         # Extract speed info from log
@@ -329,7 +337,14 @@ class StatusHandler(http.server.BaseHTTPRequestHandler):
                     eta_secs = remaining / fps
                     eta_h = int(eta_secs // 3600)
                     eta_m = int((eta_secs % 3600) // 60)
-                    eta_str = f"{eta_h}h {eta_m}m" if eta_h > 0 else f"{eta_m}m"
+                    if eta_h >= 24:
+                        eta_d = eta_h // 24
+                        eta_h_rem = eta_h % 24
+                        eta_str = f"{eta_d}d {eta_h_rem}h {eta_m}m"
+                    elif eta_h > 0:
+                        eta_str = f"{eta_h}h {eta_m}m"
+                    else:
+                        eta_str = f"{eta_m}m"
 
         return {
             "total": total,
@@ -433,6 +448,25 @@ async function update() {
       h += `<div class="instance-bar">${items}</div>`;
     }
 
+    // Calculate cost estimates
+    const costPerHr = d.instance && d.instance.cost_per_hr ? parseFloat(d.instance.cost_per_hr) : 0;
+    let costRemaining = '—';
+    let costTotal = '—';
+    if (costPerHr > 0 && d.fps > 0) {
+      // Remaining frames for ALL videos (not just active)
+      const totalRemaining = d.total_frames - d.done_frames;
+      const remainingHrs = totalRemaining / d.fps / 3600;
+      costRemaining = '$' + (remainingHrs * costPerHr).toFixed(1);
+      // Estimate total from all video durations
+      const totalDurationSecs = d.videos.reduce((sum, v) => sum + (v.duration || 0), 0);
+      // Rough: duration * fps_guess * cost_per_frame_hr
+      // Better: use actual frames if known, else estimate
+      if (d.total_frames > 0) {
+        const totalHrs = d.total_frames / d.fps / 3600;
+        costTotal = '$' + (totalHrs * costPerHr).toFixed(1);
+      }
+    }
+
     h += `<div class="summary">
       <div class="card"><div class="num">${d.total}</div><div class="label">Total Videos</div></div>
       <div class="card"><div class="num" style="color:#6ee7b7">${done.length}</div><div class="label">Completed</div></div>
@@ -441,6 +475,7 @@ async function update() {
       <div class="card"><div class="num" style="font-size:1.2rem">${framesStr}</div><div class="label">Frames (${d.overall_pct}%)</div></div>
       <div class="card"><div class="num">${fpsStr}</div><div class="label">GPU Speed</div></div>
       <div class="card"><div class="num">${etaStr}</div><div class="label">ETA</div></div>
+      <div class="card"><div class="num" style="color:#fbbf24">${costRemaining}</div><div class="label">Cost Remaining</div></div>
       <div class="card"><div class="num" style="font-size:1rem">${dlStr}</div><div class="label">Download</div></div>
     </div>`;
 
