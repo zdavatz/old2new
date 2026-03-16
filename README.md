@@ -125,7 +125,8 @@ Enhance videos on TensorDock GPU instances (SSH VMs with RTX 4090, auto-sized di
 - **Auto disk sizing**: fetches exact resolution via `yt-dlp --dump-json`, calculates disk with 2.5x PNG compression + 20% safety margin
 - **Auto GPU selection**: HD videos (>1.6 MP) auto-switch to RTX 5090 — refuses to launch on RTX 4090 where tiling would be 8x slower
 - **Proven profiles**: SD-4x on RTX 4090 Ottawa (2.6 fps, $0.41/hr, 650GB) | HD-2x on RTX 5090 Chubbuck (1700-3000GB, ~$0.75/hr)
-- Queue multiple videos on one instance — frames cleaned between jobs to reuse disk
+- Queue multiple videos on one instance — fully automated pipeline per video:
+  1. Upscale with Real-ESRGAN → 2. Upload to YouTube → 3. Email juerg@davaz.com → 4. Delete .mkv to free disk
 - Fast startup: skips apt update, installs only what's needed (~3min vs ~7min)
 - Direct SSH access (user `user`, not root)
 - Web dashboard with progress bars accessible via port-forwarded URL
