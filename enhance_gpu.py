@@ -387,10 +387,9 @@ def main():
                     pre_frames = int(pre_dur * pre_fps)
                     pre_input_sz = (pre_w * pre_h * 3) / (1024 * 1024)  # uncompressed per frame
                     pre_output_sz = (pre_w * SCALE * pre_h * SCALE * 3) / (1024 * 1024)
-                    # PNG compression ~2x (conservative — upscaled frames compress poorly)
-                    # Add 20% safety margin for video file, model weights, temp files
-                    pre_est_gb = (pre_frames * pre_input_sz / 2 + pre_frames * pre_output_sz / 2) / 1024
-                    pre_est_gb = pre_est_gb * 1.2 + 5  # 20% margin + 5GB overhead
+                    # PNG compression ~2.5x with 10% safety margin
+                    pre_est_gb = (pre_frames * pre_input_sz / 2.5 + pre_frames * pre_output_sz / 2.5) / 1024
+                    pre_est_gb = pre_est_gb * 1.1 + 5  # 10% margin + 5GB overhead
                     statvfs = os.statvfs(WORKDIR)
                     pre_avail_gb = (statvfs.f_frsize * statvfs.f_bavail) / (1024**3)
                     print(f"  Video:    {pre_w}x{pre_h} @ {pre_fps}fps, {pre_dur:.0f}s ({pre_frames} frames)")
@@ -445,14 +444,14 @@ def main():
     # Estimate disk needs — only count what still needs to be written
     input_frame_size = (src_w * src_h * 3) / (1024 * 1024)  # uncompressed estimate
     output_frame_size = (src_w * SCALE * src_h * SCALE * 3) / (1024 * 1024)
-    # PNG compression ~2x (conservative — upscaled frames compress poorly)
+    # PNG compression ~2.5x with 10% safety margin
     existing_input = len(glob.glob(f"{FRAMES_IN}/frame_*.png"))
     existing_output = len(glob.glob(f"{FRAMES_OUT}/frame_*.png"))
     remaining_input = max(0, total_frames - existing_input)
     remaining_output = max(0, total_frames - existing_output)
-    est_input_gb = (remaining_input * input_frame_size / 2) / 1024
-    est_output_gb = (remaining_output * output_frame_size / 2) / 1024
-    est_remaining_gb = (est_input_gb + est_output_gb) * 1.2 + 5  # 20% margin + 5GB overhead
+    est_input_gb = (remaining_input * input_frame_size / 2.5) / 1024
+    est_output_gb = (remaining_output * output_frame_size / 2.5) / 1024
+    est_remaining_gb = (est_input_gb + est_output_gb) * 1.1 + 5  # 10% margin + 5GB overhead
 
     statvfs = os.statvfs(WORKDIR)
     avail_gb = (statvfs.f_frsize * statvfs.f_bavail) / (1024**3)
