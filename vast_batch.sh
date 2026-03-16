@@ -573,6 +573,18 @@ pip install -q realesrgan gfpgan yt-dlp "numpy<2" 2>/dev/null || {
 
 echo "Dependencies installed."
 
+# Speed test
+echo "Testing download speed..."
+SPEED_START=$(date +%s%N)
+curl -sL "https://speed.cloudflare.com/__down?bytes=10000000" -o /dev/null
+SPEED_END=$(date +%s%N)
+SPEED_MS=$(( (SPEED_END - SPEED_START) / 1000000 ))
+SPEED_MBPS=$(( 10 * 8 * 1000 / SPEED_MS ))
+echo "Download speed: ${SPEED_MBPS} Mbps"
+if [ "$SPEED_MBPS" -lt 50 ]; then
+    echo "WARNING: Very slow download speed (${SPEED_MBPS} Mbps)!"
+fi
+
 # Download enhance_gpu.py
 curl -sL "https://raw.githubusercontent.com/zdavatz/old2new/main/enhance_gpu.py" -o /root/enhance_gpu.py
 echo "enhance_gpu.py downloaded."

@@ -69,11 +69,29 @@ def main():
     print(f"Scale: {SCALE}x")
     print()
 
+    # --- Speed test ---
+    print("Testing download speed...")
+    try:
+        import urllib.request
+        test_url = "https://speed.cloudflare.com/__down?bytes=10000000"  # 10MB
+        t0 = time.time()
+        urllib.request.urlretrieve(test_url, "/dev/null")
+        t1 = time.time()
+        speed_mbps = 10 * 8 / (t1 - t0)  # 10MB in megabits
+        print(f"Download speed: {speed_mbps:.0f} Mbps")
+        if speed_mbps < 50:
+            print(f"WARNING: Download speed is very slow ({speed_mbps:.0f} Mbps)!")
+            print("Consider using a different host for faster downloads.")
+    except Exception as e:
+        print(f"Speed test failed: {e}")
+    print()
+
     # --- Download video ---
     if os.path.exists(INPUT):
         print("Video already downloaded.")
     else:
         print("Downloading video...")
+        dl_start = time.time()
         subprocess.run(["yt-dlp", "-o", f"{WORKDIR}/{dir_name}.%(ext)s",
                         "--merge-output-format", "mkv", URL], check=True)
         if not os.path.exists(INPUT):
@@ -86,6 +104,9 @@ def main():
             else:
                 print("Error: Download failed")
                 sys.exit(1)
+        dl_elapsed = time.time() - dl_start
+        dl_size = os.path.getsize(INPUT) / (1024 * 1024)
+        print(f"Downloaded {dl_size:.0f} MB in {dl_elapsed:.0f}s ({dl_size/dl_elapsed*8:.0f} Mbps)")
 
     # --- Check disk space ---
     result = subprocess.run(["ffprobe", "-v", "quiet", "-select_streams", "v:0",
