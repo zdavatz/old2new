@@ -306,12 +306,15 @@ get_ssh_key() {
     cat "$key_file"
 }
 
-# Estimate disk GB needed for a set of videos
+# Pre-launch check: estimate disk, check VRAM/tiling, recommend GPU
 # Fetches exact resolution via yt-dlp --dump-json (no download)
-# Uses same formula as enhance_gpu.py pre-download check
+# Outputs disk GB to stdout; logs details + warnings to stderr
+# Sets global NEEDS_5090=1 if any video requires >24GB VRAM to avoid tiling
+NEEDS_5090=0
 estimate_disk_gb() {
     local video_list="$1"  # tab-separated: vid\tscale\ttitle\tduration
     local max_gb=0
+    NEEDS_5090=0
     while IFS=$'\t' read -r vid scale title duration; do
         [[ -z "$vid" ]] && continue
         # Fetch video resolution via yt-dlp --dump-json (no download)
@@ -322,27 +325,40 @@ estimate_disk_gb() {
         height=$(echo "$info" | python3 -c "import json,sys; d=json.load(sys.stdin); print(d.get('height',480))" 2>/dev/null || echo 480)
         fps=$(echo "$info" | python3 -c "import json,sys; d=json.load(sys.stdin); print(int(d.get('fps',25)))" 2>/dev/null || echo 25)
 
-        # Same formula as enhance_gpu.py pre-download check:
-        # PNG compression ~2.5x (conservative), then 10% safety margin + 5GB overhead
+        # VRAM/tiling check — same thresholds as enhance_gpu.py
+        # RTX 4090 (24GB): safe up to 1.6 MP without tiling
+        # RTX 5090 (32GB): safe up to 2.0 MP without tiling
+        local mpixels_x10=$(( width * height * 10 / 1000000 ))  # 10x for integer math
+        local tiling_info="no tiling"
+        if [[ $mpixels_x10 -gt 16 ]]; then  # > 1.6 MP
+            if [[ $mpixels_x10 -gt 20 ]]; then  # > 2.0 MP — needs 5090 or tiling
+                tiling_info="NEEDS 5090 (32GB) to avoid tiling — will be ~8x slower on 4090!"
+                NEEDS_5090=1
+            else
+                tiling_info="tiling on 4090 (~3-4x slower), OK on 5090"
+                NEEDS_5090=1
+            fi
+        fi
+
+        # Disk estimate: PNG compression ~2.5x, 10% safety + 5GB overhead
         local total_frames=$(( duration * fps ))
         local input_bytes=$(( width * height * 3 ))
         local output_bytes=$(( width * scale * height * scale * 3 ))
-        # Use *10/25 instead of /2.5 for integer math
         local input_gb=$(( total_frames * input_bytes * 10 / 25 / 1073741824 ))
         local output_gb=$(( total_frames * output_bytes * 10 / 25 / 1073741824 ))
-        # 10% safety (matching enhance_gpu.py) + 5GB overhead
         local video_gb=$(( (input_gb + output_gb) * 110 / 100 + 5 ))
         if [[ $video_gb -gt $max_gb ]]; then
             max_gb=$video_gb
         fi
-        log "  $title: ${width}x${height} @ ${fps}fps, ${duration}s, ${scale}x → ~${video_gb}GB disk" >&2
+        local mpixels_str=$(( mpixels_x10 / 10 )).$(( mpixels_x10 % 10 ))
+        log "  $title: ${width}x${height} (${mpixels_str} MP) @ ${fps}fps, ${duration}s, ${scale}x" >&2
+        log "    Disk: ~${video_gb}GB | VRAM: ${tiling_info}" >&2
     done <<< "$video_list"
-    # Add overhead: ~30GB OS/deps, ~5GB model, ~2-5GB video download, 20% safety margin
-    # The filesystem also reserves ~5% for root, so request more than raw content needs
+    # Add overhead: OS/deps + 20% safety, round to 50
     max_gb=$(( max_gb * 120 / 100 + 50 ))
-    # Round up to nearest 50
     max_gb=$(( (max_gb + 49) / 50 * 50 ))
-    echo "$max_gb"
+    # Output: disk_gb needs_5090 (space-separated)
+    echo "$max_gb $NEEDS_5090"
 }
 
 td_api() {
@@ -724,16 +740,30 @@ cmd_launch() {
     # Estimate max disk needs across all instance assignments
     log "Estimating disk needs..."
     local max_disk=250
+    NEEDS_5090=0
     for ((j=0; j<num_instances; j++)); do
         local assignment_file="$ASSIGNMENTS_DIR/instance_${j}.txt"
-        local est
-        est=$(estimate_disk_gb "$(cat "$assignment_file")")
+        local estimate_result
+        estimate_result=$(estimate_disk_gb "$(cat "$assignment_file")")
+        local est=$(echo "$estimate_result" | awk '{print $1}')
+        local needs=$(echo "$estimate_result" | awk '{print $2}')
         if [[ $est -gt $max_disk ]]; then
             max_disk=$est
+        fi
+        if [[ "${needs:-0}" -eq 1 ]]; then
+            NEEDS_5090=1
         fi
     done
     STORAGE_GB=$max_disk
     log "Disk estimate: ${STORAGE_GB}GB needed (largest single video)"
+
+    if [[ "${NEEDS_5090:-0}" -eq 1 && "$GPU_MODEL" == *4090* ]]; then
+        log ""
+        log "WARNING: Some videos need >24GB VRAM to avoid tiling."
+        log "  Switching to RTX 5090 automatically."
+        GPU_MODEL="geforcertx5090-pcie-32gb"
+        GPU_DISPLAY="RTX 5090"
+    fi
     log ""
 
     # Find best locations with enough storage
@@ -858,12 +888,26 @@ cmd_test() {
     # Write single-video assignment
     echo -e "${vid}\t${scale}\t${title}\t${dur}" > "$ASSIGNMENTS_DIR/instance_0.txt"
 
-    # Estimate disk needs before launching
-    log "Estimating disk needs..."
+    # Estimate disk needs and check VRAM/tiling before launching
+    log "Pre-launch check..."
     local video_list
     video_list=$(cat "$ASSIGNMENTS_DIR/instance_0.txt")
-    STORAGE_GB=$(estimate_disk_gb "$video_list")
+    local estimate_result
+    estimate_result=$(estimate_disk_gb "$video_list")
+    STORAGE_GB=$(echo "$estimate_result" | awk '{print $1}')
+    NEEDS_5090=$(echo "$estimate_result" | awk '{print $2}')
     log "Disk estimate: ${STORAGE_GB}GB needed"
+
+    # Auto-switch to RTX 5090 if video needs it to avoid slow tiling
+    if [[ "${NEEDS_5090:-0}" -eq 1 && "$GPU_MODEL" == *4090* ]]; then
+        log ""
+        log "WARNING: This video needs >24GB VRAM to avoid tiling."
+        log "  RTX 4090 (24GB) would use tiling → ~8x slower (0.3 fps vs 2.5 fps)"
+        log "  RTX 5090 (32GB) can process without tiling → full speed"
+        log "  Switching to RTX 5090 automatically."
+        GPU_MODEL="geforcertx5090-pcie-32gb"
+        GPU_DISPLAY="RTX 5090"
+    fi
     log ""
 
     # Find cheapest location with enough storage
