@@ -575,8 +575,7 @@ async function update() {
     // Update h1 with video name
     document.getElementById('page-title').textContent = videoName || 'Video Enhancement';
 
-    // Update subtitle with cost estimate
-    const costPerHr = d.instance && d.instance.cost_per_hr ? parseFloat(d.instance.cost_per_hr) : 0;
+    // Update subtitle with cost estimate (reuse costPerHr from above)
     let subtitleParts = ['Real-ESRGAN AI Upscaling'];
     if (location) subtitleParts.push(location);
     if (costPerHr > 0 && etaStr !== '—') {
