@@ -183,11 +183,22 @@ def main():
     # --- Setup Real-ESRGAN + GFPGAN models ---
     # RealESRGAN_x4plus model is always 4x internally; outscale handles 2x by downsampling
     # Auto-detect tile size based on resolution and GPU VRAM
+    # Auto-detect tile size based on resolution and GPU VRAM
+    # Tiling processes the image in NxN chunks to fit in VRAM
     tile_size = 0  # 0 = no tiling (fastest)
-    if src_w * src_h > 1280 * 720:
-        tile_size = 400  # tile for HD+ to avoid CUDA OOM
-        if src_w * src_h > 1920 * 1080:
-            tile_size = 256  # smaller tiles for Full HD+
+    gpu_mem_gb = 0
+    if torch.cuda.is_available():
+        gpu_mem_gb = torch.cuda.get_device_properties(0).total_memory / (1024**3)
+    pixels = src_w * src_h
+    # Estimate VRAM needed: ~16 bytes per pixel * 4x scale * overhead
+    est_vram_gb = pixels * 16 * 4 * 2 / (1024**3)
+    if est_vram_gb > gpu_mem_gb * 0.8:
+        tile_size = 512
+        if est_vram_gb > gpu_mem_gb * 2:
+            tile_size = 384
+        if est_vram_gb > gpu_mem_gb * 4:
+            tile_size = 192
+        print(f"VRAM needed: ~{est_vram_gb:.0f}GB, available: {gpu_mem_gb:.0f}GB — using tile={tile_size}")
 
     print(f"\nLoading Real-ESRGAN model (output scale={SCALE}x, tile={tile_size})...")
     model = RRDBNet(num_in_ch=3, num_out_ch=3, num_feat=64, num_block=23, num_grow_ch=32, scale=4)
