@@ -183,22 +183,36 @@ def main():
     # --- Setup Real-ESRGAN + GFPGAN models ---
     # RealESRGAN_x4plus model is always 4x internally; outscale handles 2x by downsampling
     # Auto-detect tile size based on resolution and GPU VRAM
-    # Auto-detect tile size based on resolution and GPU VRAM
     # Tiling processes the image in NxN chunks to fit in VRAM
+    # RealESRGAN_x4plus always processes at 4x internally, so output pixels = input * 16
     tile_size = 0  # 0 = no tiling (fastest)
     gpu_mem_gb = 0
     if torch.cuda.is_available():
         gpu_mem_gb = torch.cuda.get_device_properties(0).total_memory / (1024**3)
     pixels = src_w * src_h
-    # Estimate VRAM needed: ~16 bytes per pixel * 4x scale * overhead
-    est_vram_gb = pixels * 16 * 4 * 2 / (1024**3)
-    if est_vram_gb > gpu_mem_gb * 0.8:
-        tile_size = 512
-        if est_vram_gb > gpu_mem_gb * 2:
-            tile_size = 384
-        if est_vram_gb > gpu_mem_gb * 4:
+    # Empirical data points (no-tile mode, RealESRGAN_x4plus):
+    #   1430x1080 (1.54 MP) = OK on 24GB GPU
+    #   1920x1200 (2.30 MP) = OOM on 48GB GPU (needed ~50GB total)
+    # VRAM scales super-linearly with resolution due to model internals.
+    # Safe limits per GPU size (conservative):
+    mpixels = pixels / 1e6
+    if gpu_mem_gb >= 40:
+        safe_mp = 2.0   # 48GB: safe up to ~2.0 MP (e.g. 1920x1040)
+    elif gpu_mem_gb >= 20:
+        safe_mp = 1.6   # 24GB: safe up to ~1.6 MP (e.g. 1430x1080)
+    elif gpu_mem_gb >= 10:
+        safe_mp = 0.7   # 12GB: conservative
+    else:
+        safe_mp = 0.3   # 8GB or less
+    if mpixels > safe_mp:
+        tile_size = 512 if gpu_mem_gb >= 16 else 384
+        if mpixels > safe_mp * 2:
+            tile_size = 384 if gpu_mem_gb >= 16 else 192
+        if mpixels > safe_mp * 4:
             tile_size = 192
-        print(f"VRAM needed: ~{est_vram_gb:.0f}GB, available: {gpu_mem_gb:.0f}GB — using tile={tile_size}")
+        print(f"Resolution: {src_w}x{src_h} ({mpixels:.1f} MP), VRAM: {gpu_mem_gb:.0f}GB (safe: {safe_mp} MP) — using tile={tile_size}")
+    else:
+        print(f"Resolution: {src_w}x{src_h} ({mpixels:.1f} MP), VRAM: {gpu_mem_gb:.0f}GB (safe: {safe_mp} MP) — no tiling needed")
 
     print(f"\nLoading Real-ESRGAN model (output scale={SCALE}x, tile={tile_size})...")
     model = RRDBNet(num_in_ch=3, num_out_ch=3, num_feat=64, num_block=23, num_grow_ch=32, scale=4)
