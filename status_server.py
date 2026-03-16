@@ -527,6 +527,13 @@ async function update() {
     }
     h += '<p style="margin-top:12px;color:#64748b;font-size:0.75rem">Updated: ' + d.timestamp + '</p>';
     app.innerHTML = h;
+
+    // Update page title with video name and location
+    const parts = ['Da Vaz'];
+    const activeVideo = d.videos.find(v => v.status === 'upscaling') || d.videos[0];
+    if (activeVideo) parts.push(activeVideo.display_title || activeVideo.title.replace(/_/g, ' '));
+    if (d.instance && d.instance.location) parts.push(d.instance.location);
+    document.title = parts.join(' — ');
   } catch(e) {
     document.getElementById('app').innerHTML = '<p>Error loading status: ' + e + '</p>';
   }
