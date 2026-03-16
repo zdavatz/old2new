@@ -42,6 +42,32 @@ RAM_GB=${RAM_GB:-32}  # more RAM for parallel I/O pipeline
 STORAGE_GB=250  # default, overridden by estimate_disk_gb()
 OS_IMAGE="ubuntu2404"
 
+# ---------- Proven instance profiles ----------
+# These are tested configurations with known performance.
+# Use as reference when selecting locations for similar workloads.
+#
+# Profile: SD-4x (SD videos, 4x upscale, no tiling)
+#   GPU:       RTX 4090 (24GB VRAM) — geforcertx4090-pcie-24gb
+#   CPU:       AMD EPYC 7F72 (2x cores, ~3.2GHz boost) — good single-core for cv2
+#   vCPUs:     4 (enough for SD; 16 preferred for faster extraction)
+#   RAM:       16GB
+#   Disk:      650GB (fits SD videos up to ~55min at 4x)
+#   Location:  Ottawa, Ontario, Canada
+#   Rate:      ~$0.41/hr
+#   Perf:      2.6 fps upscale (640x480 4x, no tiling, 0.3 MP)
+#   Best for:  SD videos ≤55min. Frames cleaned between videos.
+#
+# Profile: HD-2x (HD videos, 2x upscale, needs 5090 to avoid tiling)
+#   GPU:       RTX 5090 (32GB VRAM) — geforcertx5090-pcie-32gb
+#   vCPUs:     16
+#   RAM:       32GB
+#   Disk:      1700-3000GB depending on duration
+#   Location:  Chubbuck, Idaho (only location with 5090 + large storage)
+#   Rate:      ~$0.70-0.80/hr
+#   Perf:      ~2+ fps expected (1920x1200 2x, no tiling, 2.3 MP fits 32GB)
+#   Best for:  HD videos (1920x1080/1200). DO NOT use RTX 4090 — tiling = 8x slower.
+#   Disk rule: ~1700GB for 1h video, ~3000GB for 2h video
+
 # SSH user (TensorDock default)
 SSH_USER="user"
 
