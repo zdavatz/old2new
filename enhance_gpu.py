@@ -174,13 +174,20 @@ def main():
 
     # --- Setup Real-ESRGAN + GFPGAN models ---
     # RealESRGAN_x4plus model is always 4x internally; outscale handles 2x by downsampling
-    print(f"\nLoading Real-ESRGAN model (output scale={SCALE}x)...")
+    # Auto-detect tile size based on resolution and GPU VRAM
+    tile_size = 0  # 0 = no tiling (fastest)
+    if src_w * src_h > 1280 * 720:
+        tile_size = 400  # tile for HD+ to avoid CUDA OOM
+        if src_w * src_h > 1920 * 1080:
+            tile_size = 256  # smaller tiles for Full HD+
+
+    print(f"\nLoading Real-ESRGAN model (output scale={SCALE}x, tile={tile_size})...")
     model = RRDBNet(num_in_ch=3, num_out_ch=3, num_feat=64, num_block=23, num_grow_ch=32, scale=4)
     upsampler = RealESRGANer(
         scale=4,
         model_path="https://github.com/xinntao/Real-ESRGAN/releases/download/v0.1.0/RealESRGAN_x4plus.pth",
         model=model,
-        tile=0,
+        tile=tile_size,
         tile_pad=10,
         pre_pad=0,
         half=True,
