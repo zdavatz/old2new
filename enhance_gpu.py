@@ -362,12 +362,18 @@ def main():
         print(f"Speed test failed: {e}")
     print()
 
+    # --- Cookies for yt-dlp (auto-detect ~/cookies.txt) ---
+    COOKIES_FILE = os.path.expanduser("~/cookies.txt")
+    ytdlp_cookies = ["--cookies", COOKIES_FILE] if os.path.exists(COOKIES_FILE) else []
+    if ytdlp_cookies:
+        print(f"Using cookies: {COOKIES_FILE}")
+
     # --- Pre-download disk check ---
     # Fetch video metadata without downloading to estimate disk needs early
     if not os.path.exists(INPUT):
         print("Fetching video info...")
         try:
-            result = subprocess.run(["yt-dlp", "--dump-json", "--no-download", URL],
+            result = subprocess.run(["yt-dlp", "--dump-json", "--no-download"] + ytdlp_cookies + [URL],
                                     capture_output=True, text=True, timeout=60)
             if result.returncode == 0:
                 import json as _json
@@ -406,7 +412,7 @@ def main():
         print("Downloading video...")
         dl_start = time.time()
         subprocess.run(["yt-dlp", "-o", f"{WORKDIR}/{dir_name}.%(ext)s",
-                        "--merge-output-format", "mkv", URL], check=True)
+                        "--merge-output-format", "mkv"] + ytdlp_cookies + [URL], check=True)
         if not os.path.exists(INPUT):
             # yt-dlp may produce different filename, find it
             files = [f for f in glob.glob(f"{WORKDIR}/*.mkv") if "enhanced" not in f]
