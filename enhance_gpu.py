@@ -331,23 +331,80 @@ def main():
     sys.stdout.flush()
     start = time.time()
 
+    # Use parallel I/O: pre-read frames on CPU threads, write output on CPU threads
+    # GPU processing happens on main thread (CUDA is not thread-safe)
+    from concurrent.futures import ThreadPoolExecutor
+    import queue
+
+    cpu_count = os.cpu_count() or 1
+    read_workers = min(max(cpu_count // 4, 2), 8)
+    write_workers = min(max(cpu_count // 4, 2), 8)
+    prefetch_size = read_workers * 2  # buffer ahead of GPU
+
+    print(f"I/O pipeline: {read_workers} read workers, {write_workers} write workers, prefetch={prefetch_size}")
+    sys.stdout.flush()
+
+    # Build list of frames to process
+    todo = []
     for i, fpath in enumerate(existing):
         fname = os.path.basename(fpath)
         out_path = f"{FRAMES_OUT}/{fname}"
-        if os.path.exists(out_path):
-            continue
+        if not os.path.exists(out_path):
+            todo.append((i, fpath, fname, out_path))
 
-        img = cv2.imread(fpath, cv2.IMREAD_UNCHANGED)
-        output = enhance_frame(img, frame_num=i)
-        cv2.imwrite(out_path, output)
+    if todo:
+        # Pre-read queue: (index, img, frame_num, out_path)
+        read_queue = queue.Queue(maxsize=prefetch_size)
+        write_queue = queue.Queue(maxsize=prefetch_size)
+        read_done = [False]
 
-        if (i + 1) % 10 == 0:
-            elapsed = time.time() - start
-            processed = i + 1 - done
-            fps = processed / elapsed if elapsed > 0 else 0
-            remaining = (TOTAL - i - 1) / fps if fps > 0 else 0
-            print(f"  {i+1}/{TOTAL} ({fps:.1f} fps, ~{remaining/60:.0f}m remaining)")
-            sys.stdout.flush()
+        def reader():
+            for i, fpath, fname, out_path in todo:
+                img = cv2.imread(fpath, cv2.IMREAD_UNCHANGED)
+                read_queue.put((i, img, out_path))
+            read_done[0] = True
+
+        def writer():
+            while True:
+                item = write_queue.get()
+                if item is None:
+                    break
+                out_path, output = item
+                cv2.imwrite(out_path, output)
+                write_queue.task_done()
+
+        import threading
+        read_thread = threading.Thread(target=reader, daemon=True)
+        read_thread.start()
+
+        write_threads = []
+        for _ in range(write_workers):
+            t = threading.Thread(target=writer, daemon=True)
+            t.start()
+            write_threads.append(t)
+
+        processed = 0
+        for _ in range(len(todo)):
+            i, img, out_path = read_queue.get()
+            output = enhance_frame(img, frame_num=i)
+            write_queue.put((out_path, output))
+            processed += 1
+
+            if processed % 10 == 0:
+                elapsed = time.time() - start
+                fps = processed / elapsed if elapsed > 0 else 0
+                remaining_frames = len(todo) - processed
+                remaining = remaining_frames / fps if fps > 0 else 0
+                total_done = done + processed
+                print(f"  {total_done}/{TOTAL} ({fps:.1f} fps, ~{remaining/60:.0f}m remaining)")
+                sys.stdout.flush()
+
+        # Wait for all writes to finish
+        write_queue.join()
+        for _ in write_threads:
+            write_queue.put(None)
+        for t in write_threads:
+            t.join()
 
     elapsed = time.time() - start
     print(f"\nUpscaling complete in {elapsed/3600:.1f}h ({elapsed:.0f}s)")
