@@ -11,6 +11,105 @@ JOBS_DIR = os.path.expanduser("~/jobs")
 QUEUE_FILE = os.path.expanduser("~/video_queue.json")
 PORT = 8080
 
+
+def get_system_specs():
+    """Gather GPU, CPU, disk, and memory specs from the system."""
+    import subprocess
+    specs = {}
+
+    # GPU info via nvidia-smi
+    try:
+        result = subprocess.run(
+            ["nvidia-smi", "--query-gpu=name,memory.total,memory.used,memory.free,temperature.gpu,utilization.gpu,driver_version,pci.bus_id",
+             "--format=csv,noheader,nounits"],
+            capture_output=True, text=True, timeout=5
+        )
+        if result.returncode == 0:
+            parts = [p.strip() for p in result.stdout.strip().split(",")]
+            if len(parts) >= 8:
+                specs["gpu"] = {
+                    "name": parts[0],
+                    "vram_total_mb": int(parts[1]),
+                    "vram_used_mb": int(parts[2]),
+                    "vram_free_mb": int(parts[3]),
+                    "temp_c": int(parts[4]),
+                    "util_pct": int(parts[5]),
+                    "driver": parts[6],
+                    "pci_bus": parts[7],
+                }
+    except Exception:
+        pass
+
+    # CPU info
+    try:
+        cpu_name = ""
+        cpu_cores = 0
+        with open("/proc/cpuinfo") as f:
+            for line in f:
+                if line.startswith("model name") and not cpu_name:
+                    cpu_name = line.split(":", 1)[1].strip()
+                if line.startswith("processor"):
+                    cpu_cores += 1
+        specs["cpu"] = {"name": cpu_name, "cores": cpu_cores}
+    except Exception:
+        pass
+
+    # CPU utilization from /proc/stat (snapshot)
+    try:
+        with open("/proc/loadavg") as f:
+            parts = f.read().split()
+            specs.setdefault("cpu", {})["load_1m"] = float(parts[0])
+            specs.setdefault("cpu", {})["load_5m"] = float(parts[1])
+            specs.setdefault("cpu", {})["load_15m"] = float(parts[2])
+    except Exception:
+        pass
+
+    # Memory info
+    try:
+        mem = {}
+        with open("/proc/meminfo") as f:
+            for line in f:
+                parts = line.split()
+                if parts[0] == "MemTotal:":
+                    mem["total_mb"] = int(parts[1]) // 1024
+                elif parts[0] == "MemAvailable:":
+                    mem["available_mb"] = int(parts[1]) // 1024
+                elif parts[0] == "MemFree:":
+                    mem["free_mb"] = int(parts[1]) // 1024
+        if "total_mb" in mem:
+            mem["used_mb"] = mem["total_mb"] - mem.get("available_mb", mem.get("free_mb", 0))
+        specs["memory"] = mem
+    except Exception:
+        pass
+
+    # Disk info
+    try:
+        st = os.statvfs("/")
+        total_gb = (st.f_blocks * st.f_frsize) / (1024**3)
+        free_gb = (st.f_bavail * st.f_frsize) / (1024**3)
+        used_gb = total_gb - free_gb
+        specs["disk"] = {
+            "total_gb": round(total_gb, 1),
+            "used_gb": round(used_gb, 1),
+            "free_gb": round(free_gb, 1),
+            "util_pct": round(used_gb / total_gb * 100, 1) if total_gb > 0 else 0,
+        }
+    except Exception:
+        pass
+
+    # CUDA version
+    try:
+        result = subprocess.run(["nvcc", "--version"], capture_output=True, text=True, timeout=5)
+        if result.returncode == 0:
+            import re
+            m = re.search(r"release ([\d.]+)", result.stdout)
+            if m:
+                specs.setdefault("gpu", {})["cuda"] = m.group(1)
+    except Exception:
+        pass
+
+    return specs
+
 class StatusHandler(http.server.BaseHTTPRequestHandler):
     def log_message(self, format, *args):
         pass  # suppress access logs
@@ -235,6 +334,7 @@ class StatusHandler(http.server.BaseHTTPRequestHandler):
             "eta": eta_str,
             "dl_speed": dl_speed,
             "dl_progress": dl_progress,
+            "system": get_system_specs(),
         }
 
     def render_page(self):
@@ -274,6 +374,14 @@ class StatusHandler(http.server.BaseHTTPRequestHandler):
   .title-col { max-width: 350px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   a { color: #38bdf8; text-decoration: none; }
   a:hover { text-decoration: underline; }
+  .specs { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 12px; margin-bottom: 24px; }
+  .spec-card { background: #1e293b; border-radius: 8px; padding: 14px 18px; }
+  .spec-card h3 { font-size: 0.8rem; text-transform: uppercase; letter-spacing: 0.05em; color: #94a3b8; margin-bottom: 8px; }
+  .spec-row { display: flex; justify-content: space-between; font-size: 0.85rem; padding: 2px 0; }
+  .spec-row .label { color: #94a3b8; }
+  .spec-row .value { color: #e2e8f0; font-weight: 500; }
+  .spec-row .value.hot { color: #fb923c; }
+  .spec-row .value.ok { color: #6ee7b7; }
 </style>
 </head><body>
 <h1>Da Vaz Video Enhancement</h1>
@@ -305,6 +413,53 @@ async function update() {
       <div class="card"><div class="num">${etaStr}</div><div class="label">ETA</div></div>
       <div class="card"><div class="num" style="font-size:1rem">${dlStr}</div><div class="label">Download</div></div>
     </div>`;
+
+    // System specs panel
+    if (d.system) {
+      const s = d.system;
+      h += '<div class="specs">';
+      if (s.gpu) {
+        const g = s.gpu;
+        const vramPct = g.vram_total_mb > 0 ? ((g.vram_used_mb / g.vram_total_mb) * 100).toFixed(0) : 0;
+        const tempClass = g.temp_c >= 80 ? 'hot' : 'ok';
+        h += `<div class="spec-card"><h3>GPU</h3>
+          <div class="spec-row"><span class="label">Model</span><span class="value">${g.name}</span></div>
+          <div class="spec-row"><span class="label">VRAM</span><span class="value">${(g.vram_total_mb/1024).toFixed(1)} GB (${(g.vram_used_mb/1024).toFixed(1)} GB used, ${vramPct}%)</span></div>
+          <div class="spec-row"><span class="label">Temperature</span><span class="value ${tempClass}">${g.temp_c}°C</span></div>
+          <div class="spec-row"><span class="label">Utilization</span><span class="value">${g.util_pct}%</span></div>
+          <div class="spec-row"><span class="label">Driver</span><span class="value">${g.driver}</span></div>
+          ${g.cuda ? '<div class="spec-row"><span class="label">CUDA</span><span class="value">'+g.cuda+'</span></div>' : ''}
+          <div class="spec-row"><span class="label">PCIe Bus</span><span class="value">${g.pci_bus}</span></div>
+        </div>`;
+      }
+      if (s.cpu) {
+        const c = s.cpu;
+        const loadStr = c.load_1m !== undefined ? c.load_1m.toFixed(1)+' / '+c.load_5m.toFixed(1)+' / '+c.load_15m.toFixed(1) : '—';
+        h += `<div class="spec-card"><h3>CPU</h3>
+          <div class="spec-row"><span class="label">Model</span><span class="value">${c.name}</span></div>
+          <div class="spec-row"><span class="label">Cores</span><span class="value">${c.cores}</span></div>
+          <div class="spec-row"><span class="label">Load (1/5/15m)</span><span class="value">${loadStr}</span></div>
+        </div>`;
+      }
+      if (s.memory) {
+        const m = s.memory;
+        const usedPct = m.total_mb > 0 ? ((m.used_mb / m.total_mb) * 100).toFixed(0) : 0;
+        h += `<div class="spec-card"><h3>Memory</h3>
+          <div class="spec-row"><span class="label">Total</span><span class="value">${(m.total_mb/1024).toFixed(1)} GB</span></div>
+          <div class="spec-row"><span class="label">Used</span><span class="value">${(m.used_mb/1024).toFixed(1)} GB (${usedPct}%)</span></div>
+          <div class="spec-row"><span class="label">Available</span><span class="value">${((m.available_mb||m.free_mb)/1024).toFixed(1)} GB</span></div>
+        </div>`;
+      }
+      if (s.disk) {
+        const dk = s.disk;
+        h += `<div class="spec-card"><h3>Disk</h3>
+          <div class="spec-row"><span class="label">Total</span><span class="value">${dk.total_gb} GB</span></div>
+          <div class="spec-row"><span class="label">Used</span><span class="value">${dk.used_gb} GB (${dk.util_pct}%)</span></div>
+          <div class="spec-row"><span class="label">Free</span><span class="value">${dk.free_gb} GB</span></div>
+        </div>`;
+      }
+      h += '</div>';
+    }
 
     h += `<table><thead><tr>
       <th>#</th><th>Title</th><th>Input</th><th>Output</th><th>Duration</th><th>Status</th><th>Progress</th><th>Compare</th>

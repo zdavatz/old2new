@@ -299,11 +299,36 @@ for inst in data:
     status = inst.get('actual_status', 'unknown')
     iid = inst['id']
     gpu = inst.get('gpu_name', '?')
+    gpu_ram_mb = inst.get('gpu_totalram', inst.get('gpu_ram', 0))
+    gpu_ram = gpu_ram_mb / 1024
+    gpu_util = inst.get('gpu_util', 0)
+    gpu_temp = inst.get('gpu_temp', 0)
+    gpu_mem_bw = inst.get('gpu_mem_bw', 0)
+    gpu_arch = inst.get('gpu_arch', '?')
+    vmem_usage = inst.get('vmem_usage', 0)
+    cpu_name = inst.get('cpu_name', '?')
+    cpu_cores = inst.get('cpu_cores_effective', inst.get('cpu_cores', 0))
+    cpu_ram_mb = inst.get('cpu_ram', 0)
+    cpu_ram = cpu_ram_mb / 1024
+    cpu_util = inst.get('cpu_util', 0)
+    disk_space = inst.get('disk_space', 0)
+    disk_usage = inst.get('disk_usage', 0)
+    disk_util = inst.get('disk_util', 0)
+    disk_name = inst.get('disk_name', '?')
+    disk_bw = inst.get('disk_bw', 0)
+    pcie_bw = inst.get('pcie_bw', 0)
+    pci_gen = inst.get('pci_gen', '?')
+    mobo = inst.get('mobo_name', None) or 'N/A'
+    inet_down = inst.get('inet_down', 0)
+    inet_up = inst.get('inet_up', 0)
+    cuda = inst.get('cuda_max_good', '?')
+    driver = inst.get('driver_version', '?')
+    reliability = inst.get('reliability2', 0) * 100
+    country = inst.get('geolocation', inst.get('country_code', '?'))
     dph = inst.get('dph_total', 0)
     host = inst.get('ssh_host', '?')
     port = inst.get('ssh_port', '?')
     ports = inst.get('ports', {})
-    # Find the mapped port for 8080/tcp
     web_port = ''
     if ports and '8080/tcp' in ports:
         mapping = ports['8080/tcp']
@@ -312,7 +337,12 @@ for inst in data:
         elif isinstance(mapping, dict):
             web_port = str(mapping.get('HostPort', ''))
     label = inst.get('label', '')
-    print(f'{iid}\t{gpu}\t{dph:.4f}\t{host}\t{port}\t{status}\t{web_port}\t{label}')
+    uptime = inst.get('uptime_mins', 0) or 0
+    if uptime >= 60:
+        uptime_str = f'{uptime/60:.1f}h'
+    else:
+        uptime_str = f'{uptime:.0f}m'
+    print(f'{iid}\t{gpu}\t{gpu_ram:.1f}\t{gpu_util:.0f}\t{gpu_temp:.0f}\t{gpu_mem_bw:.0f}\t{gpu_arch}\t{vmem_usage:.1f}\t{cpu_name}\t{cpu_cores:.0f}\t{cpu_ram:.1f}\t{cpu_util:.0f}\t{disk_space:.0f}\t{disk_usage:.0f}\t{disk_util:.0f}\t{disk_name}\t{disk_bw:.0f}\t{pcie_bw:.1f}\t{pci_gen}\t{mobo}\t{inet_down:.0f}\t{inet_up:.0f}\t{cuda}\t{driver}\t{reliability:.1f}\t{country}\t{dph:.4f}\t{host}\t{port}\t{status}\t{web_port}\t{label}\t{uptime_str}')
 " 2>/dev/null || true
 }
 
@@ -999,16 +1029,28 @@ cmd_status() {
         return
     fi
 
-    printf "%-10s %-12s %-8s %-8s %-10s %s\n" "ID" "GPU" "\$/hr" "Status" "Label" "Status Page"
-    echo "--------------------------------------------------------------------------------"
-    echo "$instances" | while IFS=$'\t' read -r id gpu price host ssh_port status web_port label; do
+    echo "$instances" | while IFS=$'\t' read -r id gpu gpu_ram gpu_util gpu_temp gpu_mem_bw gpu_arch vmem_usage cpu_name cpu_cores cpu_ram cpu_util disk_space disk_usage disk_util disk_name disk_bw pcie_bw pci_gen mobo inet_down inet_up cuda driver reliability country dph host ssh_port status web_port label uptime; do
         local url=""
         if [[ -n "$web_port" && "$web_port" != "0" ]]; then
             url="http://${host}:${web_port}"
         elif [[ "$status" == "running" ]]; then
             url="(port mapping pending...)"
         fi
-        printf "%-10s %-12s \$%-7s %-8s %-10s %s\n" "$id" "$gpu" "$price" "$status" "$label" "$url"
+        echo "  Instance $id  [$status]  Label: $label  Uptime: $uptime"
+        echo "    GPU:      $gpu  ${gpu_ram}GB VRAM (${vmem_usage}GB used)  |  Arch: $gpu_arch  Mem BW: ${gpu_mem_bw} GB/s"
+        echo "              Util: ${gpu_util}%  Temp: ${gpu_temp}°C  |  PCIe Gen${pci_gen} @ ${pcie_bw} GB/s"
+        echo "    CPU:      $cpu_name"
+        echo "              ${cpu_cores} cores  ${cpu_ram}GB RAM  |  Util: ${cpu_util}%"
+        echo "    Mobo:     $mobo"
+        echo "    Disk:     ${disk_usage}GB / ${disk_space}GB (${disk_util}%)  |  BW: ${disk_bw} MB/s"
+        echo "              [$disk_name]"
+        echo "    Network:  Down: ${inet_down} Mbps  Up: ${inet_up} Mbps"
+        echo "    CUDA:     $cuda  Driver: $driver"
+        echo "    Location: $country  Reliability: ${reliability}%"
+        echo "    Cost:     \$${dph}/hr"
+        echo "    SSH:      ssh -p $ssh_port root@$host"
+        echo "    Dashboard: $url"
+        echo ""
     done
 
     echo ""
