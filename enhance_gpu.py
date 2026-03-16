@@ -362,6 +362,43 @@ def main():
         print(f"Speed test failed: {e}")
     print()
 
+    # --- Pre-download disk check ---
+    # Fetch video metadata without downloading to estimate disk needs early
+    if not os.path.exists(INPUT):
+        print("Fetching video info...")
+        try:
+            result = subprocess.run(["yt-dlp", "--dump-json", "--no-download", URL],
+                                    capture_output=True, text=True, timeout=60)
+            if result.returncode == 0:
+                import json as _json
+                vinfo = _json.loads(result.stdout)
+                pre_w = vinfo.get("width", 0) or 0
+                pre_h = vinfo.get("height", 0) or 0
+                pre_dur = vinfo.get("duration", 0) or 0
+                pre_fps = vinfo.get("fps", 25) or 25
+                pre_filesize = vinfo.get("filesize_approx", 0) or vinfo.get("filesize", 0) or 0
+                if pre_w and pre_h and pre_dur:
+                    pre_frames = int(pre_dur * pre_fps)
+                    pre_input_sz = (pre_w * pre_h * 3) / (1024 * 1024)  # uncompressed per frame
+                    pre_output_sz = (pre_w * SCALE * pre_h * SCALE * 3) / (1024 * 1024)
+                    # PNG compression ~3x
+                    pre_est_gb = (pre_frames * pre_input_sz / 3 + pre_frames * pre_output_sz / 3) / 1024 + 5
+                    statvfs = os.statvfs(WORKDIR)
+                    pre_avail_gb = (statvfs.f_frsize * statvfs.f_bavail) / (1024**3)
+                    print(f"  Video:    {pre_w}x{pre_h} @ {pre_fps}fps, {pre_dur:.0f}s ({pre_frames} frames)")
+                    print(f"  Disk est: ~{pre_est_gb:.0f} GB needed, {pre_avail_gb:.0f} GB available")
+                    if pre_est_gb > pre_avail_gb:
+                        print(f"\n  ERROR: Not enough disk space!")
+                        print(f"  Need ~{pre_est_gb:.0f} GB but only {pre_avail_gb:.0f} GB available.")
+                        print(f"  Resize disk to at least {int(pre_est_gb * 1.2)} GB or use a larger instance.")
+                        sys.exit(1)
+                    else:
+                        print(f"  Disk OK:  {pre_avail_gb - pre_est_gb:.0f} GB headroom")
+                    print()
+        except Exception as e:
+            print(f"  Warning: Could not pre-check video info: {e}")
+            print()
+
     # --- Download video ---
     if os.path.exists(INPUT):
         print("Video already downloaded.")
