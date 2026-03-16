@@ -155,6 +155,8 @@ Without `--job-name`, the YouTube video ID is used as the directory and file nam
 
 The process is resumable — if interrupted, re-run the same command and it will skip already-completed steps (download, frame extraction, upscaled frames).
 
+Frame extraction uses parallel ffmpeg workers (up to 16) on multi-core machines for faster processing. VRAM-based auto-tiling prevents OOM errors on different GPU sizes.
+
 ## Performance Reference
 
 | Hardware | Per frame | 11 min video (~16k frames) | Cost |
@@ -162,12 +164,14 @@ The process is resumable — if interrupted, re-run the same command and it will
 | M5 (10 GPU cores) | ~10s | ~45h | — |
 | M3 Ultra (76 GPU cores) | ~1.5-2s | ~7-9h | — |
 | RTX 4090 (vast.ai, CUDA) | ~1s | ~4.5h | ~$1.25 |
+| RTX 5090 (vast.ai, CUDA) | ~TBD | ~TBD | ~$0.34/hr |
+| A100 80GB (vast.ai, CUDA) | ~TBD | ~TBD | ~$0.66/hr |
 | L4 (Google Cloud, CUDA) | ~2s | ~9h | ~$6.30 |
 | H200 NVL (RunPod, CUDA) | ~1-1.5s | ~5-6h | ~$17-20 |
 
 ### Cloud GPU Providers
 
-- **[vast.ai](https://vast.ai)**: Cheapest option. RTX 4090 at ~$0.34/hr. CLI: `pip install vastai`. Use `vast_batch.sh` for automated batch processing.
+- **[vast.ai](https://vast.ai)**: Cheapest option. RTX 4090 at ~$0.34/hr, RTX 5090 at ~$0.34/hr, A100 80GB at ~$0.66/hr. CLI: `pip install vastai`. Use `vast_batch.sh` for automated batch processing.
 - **[RunPod](https://runpod.io)**: More GPU variety but often sold out. RTX 4090 at ~$0.34-0.59/hr. CLI: `pipx install runpod`
 - **[Google Cloud](https://cloud.google.com)**: Always available. L4 at ~$0.70/hr. Use `gcp_setup.sh` for one-command setup. Requires GPUS_ALL_REGIONS quota for new projects.
 
