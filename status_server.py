@@ -529,11 +529,11 @@ async function update() {
     app.innerHTML = h;
 
     // Update page title with video name and location
-    const parts = ['Da Vaz'];
+    const parts = [];
     const activeVideo = d.videos.find(v => v.status === 'upscaling') || d.videos[0];
     if (activeVideo) parts.push(activeVideo.display_title || activeVideo.title.replace(/_/g, ' '));
     if (d.instance && d.instance.location) parts.push(d.instance.location);
-    document.title = parts.join(' — ');
+    document.title = parts.join(' — ') || 'Video Enhancement';
   } catch(e) {
     document.getElementById('app').innerHTML = '<p>Error loading status: ' + e + '</p>';
   }
