@@ -634,8 +634,34 @@ def main():
     t1 = time.time()
     per_frame = t1 - t0
     total_est = per_frame * TOTAL
-    print(f"Benchmark: {per_frame:.2f}s per frame")
+    print(f"Benchmark: {per_frame:.2f}s per frame ({1/per_frame:.2f} fps)")
     print(f"Estimated total: {total_est / 3600:.1f} hours for {TOTAL} frames")
+
+    # Cost estimate from instance metadata
+    meta_file = os.path.expanduser("~/instance_meta.json")
+    if os.path.exists(meta_file):
+        try:
+            import json as _json
+            with open(meta_file) as f:
+                meta = _json.load(f)
+            cost_hr = float(meta.get("cost_per_hr", 0))
+            if cost_hr > 0:
+                est_cost = cost_hr * total_est / 3600
+                print(f"Estimated cost: ${est_cost:.0f} (${cost_hr}/hr × {total_est / 3600:.1f}h)")
+        except Exception:
+            pass
+
+    # Abort if benchmark is too slow (>10s per frame = very inefficient GPU)
+    if per_frame > 10.0:
+        print(f"\nWARNING: Very slow benchmark ({per_frame:.1f}s/frame)!")
+        print(f"This GPU may not be suitable for this workload.")
+        print(f"At this speed: {total_est / 3600:.0f} hours, likely >$100.")
+        print(f"Consider using a different GPU (RTX 5090 with tiling is typically 2-4s/frame).")
+        print(f"To proceed anyway, set FORCE_SLOW=1 environment variable.")
+        if not os.environ.get("FORCE_SLOW"):
+            print("ABORTING — too slow. Use FORCE_SLOW=1 to override.")
+            sys.exit(1)
+        print("FORCE_SLOW=1 set — proceeding despite slow benchmark.")
 
     # Save benchmark frame
     out_path = f"{FRAMES_OUT}/frame_00000001.png"
