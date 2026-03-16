@@ -37,8 +37,8 @@ if [[ "$GPU_MODEL" == *5090* ]]; then
     GPU_DISPLAY="RTX 5090"
 fi
 NUM_GPUS=1
-VCPUS=16   # more vCPUs = faster frame extraction (parallel ffmpeg workers)
-RAM_GB=32  # more RAM for parallel I/O pipeline
+VCPUS=${VCPUS:-16}   # more vCPUs = faster frame extraction (parallel ffmpeg workers)
+RAM_GB=${RAM_GB:-32}  # more RAM for parallel I/O pipeline
 STORAGE_GB=250  # default, overridden by estimate_disk_gb()
 OS_IMAGE="ubuntu2404"
 
@@ -307,10 +307,11 @@ get_ssh_key() {
 }
 
 # Estimate disk GB needed for a set of videos
+# Fetches exact resolution via yt-dlp --dump-json (no download)
 # Uses same formula as enhance_gpu.py pre-download check
 estimate_disk_gb() {
     local video_list="$1"  # tab-separated: vid\tscale\ttitle\tduration
-    local total_gb=0
+    local max_gb=0
     while IFS=$'\t' read -r vid scale title duration; do
         [[ -z "$vid" ]] && continue
         # Fetch video resolution via yt-dlp --dump-json (no download)
@@ -319,9 +320,9 @@ estimate_disk_gb() {
         local width height fps
         width=$(echo "$info" | python3 -c "import json,sys; d=json.load(sys.stdin); print(d.get('width',720))" 2>/dev/null || echo 720)
         height=$(echo "$info" | python3 -c "import json,sys; d=json.load(sys.stdin); print(d.get('height',480))" 2>/dev/null || echo 480)
-        fps=$(echo "$info" | python3 -c "import json,sys; d=json.load(sys.stdin); print(d.get('fps',25))" 2>/dev/null || echo 25)
+        fps=$(echo "$info" | python3 -c "import json,sys; d=json.load(sys.stdin); print(int(d.get('fps',25)))" 2>/dev/null || echo 25)
 
-        # Same formula as enhance_gpu.py: frame_size * total_frames / PNG_compression / 1024
+        # Same formula as enhance_gpu.py: frame_size * total_frames / PNG_compression
         local total_frames=$(( duration * fps ))
         local input_bytes=$(( width * height * 3 ))
         local output_bytes=$(( width * scale * height * scale * 3 ))
@@ -329,43 +330,15 @@ estimate_disk_gb() {
         local input_gb=$(( total_frames * input_bytes / 3 / 1073741824 ))
         local output_gb=$(( total_frames * output_bytes / 3 / 1073741824 ))
         local video_gb=$(( input_gb + output_gb + 5 ))  # +5GB for video file, model, etc.
-        total_gb=$(( total_gb > video_gb ? total_gb : video_gb ))  # max of any single video (frames cleaned between)
-        log "  $title: ${width}x${height} @ ${fps}fps, ${duration}s, ${scale}x → ~${video_gb}GB disk"
-    done <<< "$video_list"
-    # Add 50GB headroom for OS, deps, temp files
-    total_gb=$(( total_gb + 50 ))
-    # Round up to nearest 50
-    total_gb=$(( (total_gb + 49) / 50 * 50 ))
-    echo "$total_gb"
-}
-
-# Estimate disk without yt-dlp (faster, uses heuristics from video definition)
-estimate_disk_gb_fast() {
-    local video_list="$1"
-    local max_gb=0
-    while IFS=$'\t' read -r vid scale title duration; do
-        [[ -z "$vid" ]] && continue
-        # Get definition from VIDEO_DATA
-        local def
-        def=$(echo "$VIDEO_DATA" | grep "^${vid}"$'\t' | cut -f3)
-        local width height fps
-        if [[ "$def" == "hd" ]]; then
-            width=1920; height=1080; fps=30
-        else
-            width=720; height=480; fps=25
-        fi
-        local total_frames=$(( duration * fps ))
-        local input_bytes=$(( width * height * 3 ))
-        local output_bytes=$(( width * scale * height * scale * 3 ))
-        local input_gb=$(( total_frames * input_bytes / 3 / 1073741824 ))
-        local output_gb=$(( total_frames * output_bytes / 3 / 1073741824 ))
-        local video_gb=$(( input_gb + output_gb + 5 ))
         if [[ $video_gb -gt $max_gb ]]; then
             max_gb=$video_gb
         fi
+        log "  $title: ${width}x${height} @ ${fps}fps, ${duration}s, ${scale}x → ~${video_gb}GB disk"
     done <<< "$video_list"
-    # Add 50GB for OS/deps, round up to nearest 50
-    max_gb=$(( max_gb + 50 ))
+    # Add overhead: ~30GB OS/deps, ~5GB model, ~2-5GB video download, 20% safety margin
+    # The filesystem also reserves ~5% for root, so request more than raw content needs
+    max_gb=$(( max_gb * 120 / 100 + 50 ))
+    # Round up to nearest 50
     max_gb=$(( (max_gb + 49) / 50 * 50 ))
     echo "$max_gb"
 }
@@ -740,7 +713,7 @@ cmd_launch() {
     for ((j=0; j<num_instances; j++)); do
         local assignment_file="$ASSIGNMENTS_DIR/instance_${j}.txt"
         local est
-        est=$(estimate_disk_gb_fast "$(cat "$assignment_file")")
+        est=$(estimate_disk_gb "$(cat "$assignment_file")")
         if [[ $est -gt $max_disk ]]; then
             max_disk=$est
         fi
@@ -875,7 +848,7 @@ cmd_test() {
     log "Estimating disk needs..."
     local video_list
     video_list=$(cat "$ASSIGNMENTS_DIR/instance_0.txt")
-    STORAGE_GB=$(estimate_disk_gb_fast "$video_list")
+    STORAGE_GB=$(estimate_disk_gb "$video_list")
     log "Disk estimate: ${STORAGE_GB}GB needed"
     log ""
 
