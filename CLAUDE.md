@@ -36,6 +36,7 @@ old2new enhances old Da Vaz videos using Real-ESRGAN AI upscaling. There are two
 - Local: Real-ESRGAN ncnn-vulkan uses Vulkan for GPU compute — works on Apple Silicon (Metal via MoltenVK)
 - Cloud: ncnn-vulkan does NOT work in most Docker containers (no Vulkan driver). Use the Python package with CUDA instead.
 - `enhance_gpu.py` runs a pre-flight check that validates: GPU CUDA arch compatibility, PyTorch/CUDA versions, CPU single-core benchmark, RAM, disk space + I/O speed, PCIe gen/width, ffmpeg version, and all Python package versions. Exits with specific fix commands if anything fails.
+- Pre-download disk check: fetches video metadata via `yt-dlp --dump-json` (no download) to estimate disk needs from resolution × duration × scale. Aborts before downloading if disk is insufficient.
 - CPU single-core speed matters: Xeon Phi (1.4GHz, 272 cores) was 4x slower than EPYC (2.25GHz, 32 cores) with same RTX 5090 GPU because cv2.imread/imwrite bottlenecks on per-core speed. Prefer machines with >2GHz per-core.
 - RTX 5090 (Blackwell, sm_120) needs PyTorch 2.6+ with CUDA 12.8. The `pytorch:2.1.0-cuda12.1` Docker image must be upgraded: `pip install torch torchvision --index-url https://download.pytorch.org/whl/cu128`. Also patch basicsr: `sed -i 's/functional_tensor/functional/' .../degradations.py` and suppress tile spam: `sed -i "s/print(f'.*Tile/pass  # /" .../realesrgan/utils.py`
 - Processing is resumable: each step checks for existing output before re-running

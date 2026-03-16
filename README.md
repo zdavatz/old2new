@@ -169,6 +169,8 @@ The process is resumable — if interrupted, re-run the same command and it will
 
 If any check fails, it exits with specific fix commands — no wasted time downloading on broken instances.
 
+After the pre-flight check, a **pre-download disk estimate** fetches video metadata via `yt-dlp --dump-json` (without downloading) to calculate disk needs based on resolution, duration, and scale. If disk space is insufficient, it aborts before downloading — preventing wasted bandwidth and time on undersized instances.
+
 #### Performance Tips
 
 - **CPU clock speed matters**: A Xeon Phi (272 cores @ 1.4GHz) was 4x slower than an EPYC (32 cores @ 2.25GHz) with the same RTX 5090, because `cv2.imread`/`cv2.imwrite` bottleneck on per-core speed. Prefer machines with >2GHz per-core.
