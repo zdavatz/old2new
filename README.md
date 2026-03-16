@@ -100,6 +100,34 @@ The script auto-detects HD videos and recommends 2x upscale. You can also specif
 ./vast_batch.sh "https://www.youtube.com/watch?v=d6ph7n4k35Y" 2
 ```
 
+### Single Video / Batch (TensorDock)
+
+Enhance videos on TensorDock GPU instances (SSH VMs with RTX 4090, auto-sized disk):
+
+```bash
+# One-time setup: export TENSORDOCK_API_KEY in ~/.bashrc
+
+# Test with a single video (auto-calculates disk needs)
+./tensordock_batch.sh test mgUOHubnEC8
+./tensordock_batch.sh status          # shows dashboard URL, SSH command
+./tensordock_batch.sh ssh 0           # SSH into instance
+./tensordock_batch.sh download        # download when done
+./tensordock_batch.sh destroy         # clean up
+
+# Launch batch (multiple parallel instances)
+./tensordock_batch.sh launch 4
+./tensordock_batch.sh status
+
+# List all 226 videos
+./tensordock_batch.sh list
+```
+
+- **Auto disk sizing**: estimates disk needs from video resolution × duration × scale before creating the instance
+- RTX 4090 at ~$0.33-0.40/hr (Ottawa, Winnipeg, Tallinn, etc.)
+- Direct SSH access (user `user`, not root)
+- Web dashboard with progress bars accessible via port-forwarded URL
+- Cloud-init auto-installs all dependencies (PyTorch, Real-ESRGAN, ffmpeg)
+
 ### Batch Processing (vast.ai — all 226 davaz.com videos)
 
 The `vast_batch.sh` script also processes all 226 davaz.com videos in parallel on multiple RTX 4090 instances:
@@ -194,6 +222,7 @@ After the pre-flight check, a **pre-download disk estimate** fetches video metad
 ### Cloud GPU Providers
 
 - **[vast.ai](https://vast.ai)**: Cheapest option. RTX 4090 at ~$0.34/hr, RTX 5090 at ~$0.34/hr, A100 80GB at ~$0.66/hr. CLI: `pip install vastai`. Use `vast_batch.sh` for automated batch processing.
+- **[TensorDock](https://tensordock.com)**: SSH VMs with auto-sized disk. RTX 4090 at ~$0.33-0.40/hr. API key auth. Use `tensordock_batch.sh` for automated deployment. Auto-calculates disk needs per video.
 - **[RunPod](https://runpod.io)**: More GPU variety but often sold out. RTX 4090 at ~$0.34-0.59/hr. CLI: `pipx install runpod`
 - **[Google Cloud](https://cloud.google.com)**: Always available. L4 at ~$0.70/hr. Use `gcp_setup.sh` for one-command setup. Requires GPUS_ALL_REGIONS quota for new projects.
 

@@ -10,6 +10,7 @@ old2new enhances old Da Vaz videos using Real-ESRGAN AI upscaling. There are two
 2. **Cloud GPU**: `enhance_gpu.py` — uses Real-ESRGAN Python package (PyTorch/CUDA)
 3. **Google Cloud (one-command)**: `gcp_setup.sh` — creates instance, installs deps, runs enhancement
 4. **Batch (vast.ai)**: `vast_batch.sh` — parallel upscaling of all 226 davaz.com videos on multiple RTX 4090 instances
+5. **Batch (TensorDock)**: `tensordock_batch.sh` — SSH VMs with auto-sized disk, RTX 4090 instances
 
 ## Architecture
 
@@ -17,6 +18,7 @@ old2new enhances old Da Vaz videos using Real-ESRGAN AI upscaling. There are two
 - **enhance_gpu.py** — Cloud GPU script: same pipeline but uses PyTorch/CUDA for upscaling. Runs comprehensive pre-flight check (GPU, CPU, RAM, disk, PCIe, software) before any processing. Parallel frame extraction using multiple ffmpeg workers (up to 16). Parallel I/O pipeline (threaded pre-read + async write) to overlap CPU I/O with GPU compute. Auto-tiling based on VRAM size to prevent OOM. Supports `--job-name` for custom directory names. Uses `~/jobs/<name>/` for work directories.
 - **gcp_setup.sh** — One-command Google Cloud setup: pre-checks video size and disk needs → creates L4 GPU instance → installs all deps → downloads enhance_gpu.py → starts enhancement. Also supports `status` command with ETA.
 - **vast_batch.sh** — Versatile vast.ai script. Supports: (1) any YouTube URL as first arg for single video enhancement, (2) `test` for testing with a davaz.com video, (3) `launch N` for batch processing all 226 davaz.com videos on N parallel RTX 4090 instances. Also: `status` (shows dashboard URLs), `download`, `destroy`, `list`. Auto-detects HD and recommends 2x. Fetches video info via yt-dlp. Web dashboard via bore.pub tunnel.
+- **tensordock_batch.sh** — TensorDock GPU VM script. Similar to vast_batch.sh but uses TensorDock API for SSH VMs. Auto-calculates disk size from video resolution × duration × scale before creating instances. Supports: `test [VIDEO_ID]`, `launch N`, `status`, `ssh N`, `download`, `destroy`, `list`. Cloud-init auto-installs all deps (PyTorch, Real-ESRGAN, ffmpeg). Writes instance metadata for dashboard display. Default user is `user` (not root). Port forwarding for SSH (22) and dashboard (8080).
 - **realesrgan/** — Auto-downloaded binary and models (gitignored). macOS ARM64 binary from github.com/xinntao/Real-ESRGAN
 - **jobs/<title>/** — Per-video working directories using movie titles (not video IDs). Files named after title: `<title>.mkv` (input), `<title>_4x.mkv` (output). Contains extracted frames in `frames_in/` and upscaled frames in `frames_out/` (gitignored)
 
@@ -51,9 +53,10 @@ old2new enhances old Da Vaz videos using Real-ESRGAN AI upscaling. There are two
 ## Cloud GPU Deployment
 
 - **vast.ai**: Use `pytorch/pytorch:2.1.0-cuda12.1-cudnn8-runtime` image (upgrade PyTorch for RTX 5090). SSH access via `vastai` CLI. Cheapest option (~$0.34/hr for RTX 4090/5090). Request >=250GB disk for short videos, >=2TB for long HD films (1920x1200 @ 2x needs ~1.8TB). Use `vast_batch.sh` for automated batch processing. API key stored in `~/.config/vastai/vast_api_key`. When choosing instances: check CPU clock speed (>2GHz), disk space, and PCIe gen — not just GPU and price.
+- **TensorDock**: SSH VMs via API (`dashboard.tensordock.com/api/v2`). Auth: `Authorization: Bearer $TENSORDOCK_API_KEY`. RTX 4090 at ~$0.33-0.40/hr. Ubuntu 24.04 base image (no PyTorch pre-installed — cloud-init installs everything). Default SSH user is `user` (not root). API key stored in `~/.bashrc` as `TENSORDOCK_API_KEY`. `tensordock_batch.sh` auto-calculates disk size per video and passes it to instance creation. Port forwarding maps internal 22→random and 8080→random external ports. Disk resize requires stop→modify→start (GPU may detach — better to create with correct size from the start). Organization: old2new.
 - **RunPod**: Use `runpod/pytorch` image. SSH access via RunPod API. Often sold out on weekends.
 - **Google Cloud**: Use `gcp_setup.sh` for automated setup. Image: `pytorch-2-7-cu128-ubuntu-2204-nvidia-570`, machine: `g2-standard-4` + L4 GPU. Requires GPUS_ALL_REGIONS quota increase for new projects.
-- API keys stored in `~/.zshrc` as `VAST_API_KEY` and `RUNPOD_API_KEY`
+- API keys stored in `~/.bashrc` as `TENSORDOCK_API_KEY`, in `~/.zshrc` as `VAST_API_KEY` and `RUNPOD_API_KEY`
 - Google Cloud projects: old2new-490311 (zdavatz@ywesee.com), old2new-davaz (juerg@davaz.com)
 
 ## Cloud Python Dependency Fixes
