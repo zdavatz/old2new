@@ -401,8 +401,8 @@ class StatusHandler(http.server.BaseHTTPRequestHandler):
   .spec-row .value.ok { color: #6ee7b7; }
 </style>
 </head><body>
-<h1>Da Vaz Video Enhancement</h1>
-<p class="subtitle">Real-ESRGAN AI Upscaling &mdash; auto-refreshes every 30s</p>
+<h1 id="page-title">Da Vaz Video Enhancement</h1>
+<p class="subtitle" id="page-subtitle">Real-ESRGAN AI Upscaling &mdash; auto-refreshes every 30s</p>
 <div id="app">Loading...</div>
 <script>
 async function update() {
@@ -528,12 +528,36 @@ async function update() {
     h += '<p style="margin-top:12px;color:#64748b;font-size:0.75rem">Updated: ' + d.timestamp + '</p>';
     app.innerHTML = h;
 
-    // Update page title with video name and location
-    const parts = [];
+    // Update page title, h1, and subtitle with video name, location, and cost
     const activeVideo = d.videos.find(v => v.status === 'upscaling') || d.videos[0];
-    if (activeVideo) parts.push(activeVideo.display_title || activeVideo.title.replace(/_/g, ' '));
-    if (d.instance && d.instance.location) parts.push(d.instance.location);
-    document.title = parts.join(' — ') || 'Video Enhancement';
+    const videoName = activeVideo ? (activeVideo.display_title || activeVideo.title.replace(/_/g, ' ')) : '';
+    const location = (d.instance && d.instance.location) ? d.instance.location : '';
+    const titleParts = [];
+    if (videoName) titleParts.push(videoName);
+    if (location) titleParts.push(location);
+    document.title = titleParts.join(' — ') || 'Video Enhancement';
+
+    // Update h1 with video name
+    document.getElementById('page-title').textContent = videoName || 'Video Enhancement';
+
+    // Update subtitle with cost estimate
+    const costPerHr = d.instance && d.instance.cost_per_hr ? parseFloat(d.instance.cost_per_hr) : 0;
+    let subtitleParts = ['Real-ESRGAN AI Upscaling'];
+    if (location) subtitleParts.push(location);
+    if (costPerHr > 0 && etaStr !== '—') {
+      // Parse eta string (e.g. "5h 30m" or "45m")
+      let etaHours = 0;
+      const hMatch = etaStr.match(/(\d+)h/);
+      const mMatch = etaStr.match(/(\d+)m/);
+      if (hMatch) etaHours += parseInt(hMatch[1]);
+      if (mMatch) etaHours += parseInt(mMatch[1]) / 60;
+      if (etaHours > 0) {
+        const estCost = (etaHours * costPerHr).toFixed(1);
+        subtitleParts.push('$' + costPerHr.toFixed(2) + '/hr');
+        subtitleParts.push('~$' + estCost + ' remaining');
+      }
+    }
+    document.getElementById('page-subtitle').textContent = subtitleParts.join(' — ');
   } catch(e) {
     document.getElementById('app').innerHTML = '<p>Error loading status: ' + e + '</p>';
   }
