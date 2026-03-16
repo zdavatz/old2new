@@ -196,7 +196,9 @@ def main():
     # VRAM scales super-linearly with resolution due to model internals.
     # Safe limits per GPU size (conservative):
     mpixels = pixels / 1e6
-    if gpu_mem_gb >= 40:
+    if gpu_mem_gb >= 70:
+        safe_mp = 4.0   # 80GB A100: safe up to ~4.0 MP (e.g. 2560x1440)
+    elif gpu_mem_gb >= 40:
         safe_mp = 2.0   # 48GB: safe up to ~2.0 MP (e.g. 1920x1040)
     elif gpu_mem_gb >= 20:
         safe_mp = 1.6   # 24GB: safe up to ~1.6 MP (e.g. 1430x1080)
