@@ -9,6 +9,7 @@ from datetime import datetime, timedelta
 
 JOBS_DIR = os.path.expanduser("~/jobs")
 QUEUE_FILE = os.path.expanduser("~/video_queue.json")
+INSTANCE_META = os.path.expanduser("~/instance_meta.json")
 PORT = 8080
 
 
@@ -207,6 +208,16 @@ class StatusHandler(http.server.BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    def get_instance_meta(self):
+        """Read instance metadata (cost, location, label) from file."""
+        if os.path.exists(INSTANCE_META):
+            try:
+                with open(INSTANCE_META) as f:
+                    return json.load(f)
+            except Exception:
+                pass
+        return {}
+
     def get_status(self):
         queue = []
         if os.path.exists(QUEUE_FILE):
@@ -335,6 +346,7 @@ class StatusHandler(http.server.BaseHTTPRequestHandler):
             "dl_speed": dl_speed,
             "dl_progress": dl_progress,
             "system": get_system_specs(),
+            "instance": self.get_instance_meta(),
         }
 
     def render_page(self):
@@ -374,6 +386,11 @@ class StatusHandler(http.server.BaseHTTPRequestHandler):
   .title-col { max-width: 350px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   a { color: #38bdf8; text-decoration: none; }
   a:hover { text-decoration: underline; }
+  .instance-bar { background: #1e293b; border-radius: 8px; padding: 10px 18px; margin-bottom: 16px;
+         display: flex; gap: 24px; flex-wrap: wrap; font-size: 0.85rem; }
+  .instance-bar .item { display: flex; gap: 6px; }
+  .instance-bar .label { color: #94a3b8; }
+  .instance-bar .value { color: #e2e8f0; font-weight: 500; }
   .specs { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 12px; margin-bottom: 24px; }
   .spec-card { background: #1e293b; border-radius: 8px; padding: 14px 18px; }
   .spec-card h3 { font-size: 0.8rem; text-transform: uppercase; letter-spacing: 0.05em; color: #94a3b8; margin-bottom: 8px; }
@@ -403,7 +420,20 @@ async function update() {
     const framesStr = d.done_frames + ' / ' + d.total_frames;
     const dlStr = d.dl_progress || d.dl_speed || '—';
 
-    let h = `<div class="summary">
+    // Instance metadata bar
+    let h = '';
+    if (d.instance && Object.keys(d.instance).length > 0) {
+      const i = d.instance;
+      let items = '';
+      if (i.label) items += `<div class="item"><span class="label">Instance:</span><span class="value">${i.label}</span></div>`;
+      if (i.location) items += `<div class="item"><span class="label">Location:</span><span class="value">${i.location}</span></div>`;
+      if (i.cost_per_hr) items += `<div class="item"><span class="label">Cost:</span><span class="value">$${i.cost_per_hr}/hr</span></div>`;
+      if (i.provider) items += `<div class="item"><span class="label">Provider:</span><span class="value">${i.provider}</span></div>`;
+      if (i.instance_id) items += `<div class="item"><span class="label">ID:</span><span class="value">${i.instance_id}</span></div>`;
+      h += `<div class="instance-bar">${items}</div>`;
+    }
+
+    h += `<div class="summary">
       <div class="card"><div class="num">${d.total}</div><div class="label">Total Videos</div></div>
       <div class="card"><div class="num" style="color:#6ee7b7">${done.length}</div><div class="label">Completed</div></div>
       <div class="card"><div class="num" style="color:#38bdf8">${active.length}</div><div class="label">Upscaling Now</div></div>
