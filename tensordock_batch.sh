@@ -763,16 +763,21 @@ for entry in "${VIDEOS[@]}"; do
 
         echo "$vid $title" >> /root/completed.txt
 
-        # Clean up frames to save disk for next video
-        rm -rf "/root/jobs/$title/frames_in" "/root/jobs/$title/frames_out"
-        echo "Cleaned up frames for $title"
+        # Clean up frames ONLY after confirmed output exists
+        if [[ -f "/root/jobs/$title/${title}_${scale}x.mkv" ]]; then
+            rm -rf "/root/jobs/$title/frames_in" "/root/jobs/$title/frames_out"
+            echo "Cleaned up frames for $title (output confirmed)"
+        else
+            echo "WARNING: Output file missing after SUCCESS — keeping frames for $title"
+        fi
     else
         echo "FAILED: $title at $(date)"
         echo "$vid $title FAILED" >> /root/completed.txt
         FAILED=$((FAILED + 1))
 
-        # Clean up failed job to reclaim disk
-        rm -rf "/root/jobs/$title/frames_in" "/root/jobs/$title/frames_out"
+        # Only clean input frames on failure, keep output frames in case of partial progress
+        rm -rf "/root/jobs/$title/frames_in"
+        echo "Cleaned input frames for failed $title (keeping output frames for resume)"
     fi
 done
 
