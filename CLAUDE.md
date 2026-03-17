@@ -47,7 +47,8 @@ old2new enhances old Da Vaz videos using Real-ESRGAN AI upscaling. There are two
 - GFPGAN is DISABLED — it hallucinates facial features and changes how people look. Not suitable for documentary footage. Real-ESRGAN alone provides good upscaling.
 - Video reassembly uses libx264 with CRF 18 (visually lossless) and copies original audio stream
 - Frame extraction uses parallel ffmpeg workers (up to 16) when multiple CPUs are available. Always enable parallel extraction on new instances.
-- Auto-tiling for VRAM management: RTX 4090 (24GB) safe up to 1.6 MP, RTX 5090/48GB up to 2.0 MP, A100 80GB up to 4.0 MP. Higher resolutions automatically use tile=512 or smaller.
+- Auto-tiling for VRAM management: RTX 4090 (24GB) safe up to 1.6 MP, RTX 5090 (32GB) up to 2.0 MP, A100 80GB up to 4.0 MP. Higher resolutions automatically use tile=512 or smaller. Tiling is ~8x slower — always use a GPU with enough VRAM to avoid it.
+- Two GPU profiles for the davaz.com collection: **SD-4x** (RTX 4090, 24GB, ≤1.6 MP, 2.6 fps, $0.41/hr) and **HD-2x** (A100 80GB or RTX 5090, >1.6 MP, ~2+ fps, $0.75-1.05/hr). The script auto-detects and selects the right GPU. RTX 4090 handles 79/83 SD videos; A100/5090 needed for 4 HD videos only.
 - Web dashboard (`status_server.py`) shows progress bars, input/output filenames, side-by-side frame comparison, system specs (GPU/CPU/RAM/disk), instance metadata (cost, location, provider), and cost remaining estimate. On TensorDock, served via nginx reverse proxy (port 8080 → status_server.py on 8081) for reliability. On vast.ai, use `bore.pub` tunnel for HTTP access (direct ports often blocked by host firewall).
 - Instance metadata stored in `~/instance_meta.json` (label, location, cost_per_hr, provider, instance_id) — displayed in dashboard header.
 
