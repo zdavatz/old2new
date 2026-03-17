@@ -206,6 +206,8 @@ After the pre-flight check, a **pre-download disk estimate** fetches video metad
 
 #### Performance Tips
 
+- **CPU cores matter for upscaling**: 4 vCPUs = 2.6 fps, 16 vCPUs = 7.0 fps on the same RTX 4090. The I/O pipeline needs 8 read + 8 write threads to keep the GPU fed. Always request 16+ vCPUs.
+- **Disk speed matters**: 624 MB/s = 2.6 fps, 1207 MB/s NVMe = 7.0 fps. Need >=1000 MB/s NVMe for full GPU utilization.
 - **CPU clock speed matters**: A Xeon Phi (272 cores @ 1.4GHz) was 4x slower than an EPYC (32 cores @ 2.25GHz) with the same RTX 5090, because `cv2.imread`/`cv2.imwrite` bottleneck on per-core speed. Prefer machines with >2GHz per-core.
 - **RTX 5090** (Blackwell): Needs PyTorch 2.6+ with CUDA 12.8. The default Docker image must be upgraded.
 - Frame extraction uses parallel ffmpeg workers (up to 16) on multi-core machines.
