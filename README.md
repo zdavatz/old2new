@@ -129,7 +129,7 @@ Enhance videos on TensorDock GPU instances (SSH VMs with RTX 4090, auto-sized di
   1. Upscale with Real-ESRGAN → 2. Upload to YouTube → 3. Email juerg@davaz.com → 4. Delete .mkv to free disk
 - Fast startup: skips apt update, installs only what's needed (~3min vs ~7min)
 - Direct SSH access (user `user`, not root)
-- Web dashboard with progress bars accessible via port-forwarded URL
+- Web dashboard via nginx reverse proxy (reliable, no dropped connections)
 - Cloud-init auto-installs all dependencies (PyTorch, Real-ESRGAN, ffmpeg; auto-detects Blackwell GPUs for CUDA 12.8)
 
 ### Batch Processing (vast.ai — all 226 davaz.com videos)

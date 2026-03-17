@@ -48,7 +48,7 @@ old2new enhances old Da Vaz videos using Real-ESRGAN AI upscaling. There are two
 - Video reassembly uses libx264 with CRF 18 (visually lossless) and copies original audio stream
 - Frame extraction uses parallel ffmpeg workers (up to 16) when multiple CPUs are available. Always enable parallel extraction on new instances.
 - Auto-tiling for VRAM management: RTX 4090 (24GB) safe up to 1.6 MP, RTX 5090/48GB up to 2.0 MP, A100 80GB up to 4.0 MP. Higher resolutions automatically use tile=512 or smaller.
-- Web dashboard (`status_server.py`) shows progress bars, input/output filenames, side-by-side frame comparison, system specs (GPU/CPU/RAM/disk), and instance metadata (cost, location, provider). On vast.ai, use `bore.pub` tunnel for HTTP access (direct ports often blocked by host firewall).
+- Web dashboard (`status_server.py`) shows progress bars, input/output filenames, side-by-side frame comparison, system specs (GPU/CPU/RAM/disk), instance metadata (cost, location, provider), and cost remaining estimate. On TensorDock, served via nginx reverse proxy (port 8080 → status_server.py on 8081) for reliability. On vast.ai, use `bore.pub` tunnel for HTTP access (direct ports often blocked by host firewall).
 - Instance metadata stored in `~/instance_meta.json` (label, location, cost_per_hr, provider, instance_id) — displayed in dashboard header.
 
 ## Cloud GPU Deployment
