@@ -89,6 +89,23 @@ def preflight_check():
                                       f"Need: pip install torch torchvision --index-url https://download.pytorch.org/whl/cu128")
                     else:
                         errors.append(f"CUDA FP16 test failed: {e}")
+
+            # Test actual CUDA convolution (catches driver/CUDA mismatches like CUBLAS_STATUS_NOT_SUPPORTED)
+            try:
+                conv = torch.nn.Conv2d(3, 16, 3, padding=1).cuda().half()
+                test_input = torch.randn(1, 3, 64, 64).cuda().half()
+                _ = conv(test_input)
+                del conv, test_input
+                torch.cuda.empty_cache()
+                print(f"  Conv2d:   OK (FP16 compute works)")
+            except RuntimeError as e:
+                err_str = str(e)
+                if "CUBLAS_STATUS_NOT_SUPPORTED" in err_str or "INTERNAL ASSERT" in err_str:
+                    errors.append(f"CUDA compute test FAILED: driver ({info.get('gpu', {}).get('driver', '?')}) "
+                                  f"incompatible with PyTorch {pt_ver}/CUDA {cuda_ver}. "
+                                  f"Try: pip install --force-reinstall torch torchvision --index-url https://download.pytorch.org/whl/cu128")
+                else:
+                    errors.append(f"CUDA Conv2d test failed: {e}")
         else:
             errors.append("CUDA not available — torch.cuda.is_available() returned False")
     except ImportError:
