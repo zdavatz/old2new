@@ -172,8 +172,30 @@ def main():
     print(f"  Description: {metadata['description'][:100]}..." if len(metadata['description']) > 100 else f"  Description: {metadata['description']}")
     print()
 
-    # Upload
+    # Upload (with timing)
+    import time
+    upload_start = time.time()
     new_video_id = upload_video(youtube, args.enhanced_file, metadata)
+    upload_elapsed = time.time() - upload_start
+    filesize_mb = os.path.getsize(args.enhanced_file) / (1024 * 1024)
+    upload_speed = filesize_mb * 8 / upload_elapsed if upload_elapsed > 0 else 0
+    print(f"  Upload time: {upload_elapsed:.0f}s ({upload_elapsed/60:.1f}m)")
+    print(f"  Upload speed: {upload_speed:.0f} Mbps")
+
+    # Update timing.json in job directory if it exists
+    job_dir = os.path.dirname(args.enhanced_file)
+    timing_file = os.path.join(job_dir, "timing.json")
+    try:
+        timing = {}
+        if os.path.exists(timing_file):
+            with open(timing_file) as f:
+                timing = json.load(f)
+        timing["youtube_upload"] = round(upload_elapsed)
+        timing["upload_speed_mbps"] = round(upload_speed)
+        with open(timing_file, "w") as f:
+            json.dump(timing, f)
+    except Exception:
+        pass
 
     # Send email notification
     if args.notify and new_video_id:

@@ -515,11 +515,11 @@ async function update() {
       <div class="card"><div class="num" style="font-size:0.9rem;color:#94a3b8">${(() => {
         const done = d.videos.filter(v => v.timing && v.timing.upscaling > 0);
         if (done.length === 0) return '—';
-        const totalOverhead = done.reduce((s, v) => s + (v.timing.download || 0) + (v.timing.extraction || 0) + (v.timing.reassembly || 0), 0);
+        const totalOverhead = done.reduce((s, v) => s + (v.timing.download || 0) + (v.timing.extraction || 0) + (v.timing.reassembly || 0) + (v.timing.youtube_upload || 0), 0);
         const totalUpscale = done.reduce((s, v) => s + (v.timing.upscaling || 0), 0);
         const pct = totalUpscale > 0 ? Math.round(totalOverhead / (totalOverhead + totalUpscale) * 100) : 0;
         return Math.round(totalOverhead / 60) + 'm (' + pct + '%)';
-      })()}</div><div class="label">Overhead (dl+ext+asm)</div></div>
+      })()}</div><div class="label">Overhead (dl+ext+asm+yt)</div></div>
     </div>`;
 
     // System specs panel
@@ -600,7 +600,8 @@ async function update() {
           ? (v.timing.download ? 'dl:' + Math.round(v.timing.download/60) + 'm ' : '')
             + (v.timing.extraction ? 'ext:' + Math.round(v.timing.extraction/60) + 'm ' : '')
             + (v.timing.upscaling ? 'up:' + (v.timing.upscaling/3600).toFixed(1) + 'h ' : '')
-            + (v.timing.reassembly ? 'asm:' + Math.round(v.timing.reassembly/60) + 'm' : '')
+            + (v.timing.reassembly ? 'asm:' + Math.round(v.timing.reassembly/60) + 'm ' : '')
+            + (v.timing.youtube_upload ? 'yt:' + Math.round(v.timing.youtube_upload/60) + 'm' : '')
           : '—'}</td>
         <td>${compareLink}</td>
       </tr>`;
