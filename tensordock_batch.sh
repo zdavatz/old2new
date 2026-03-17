@@ -753,10 +753,9 @@ for entry in "${VIDEOS[@]}"; do
                 echo "YouTube upload + email notification done at $(date)"
                 touch "/root/jobs/$title/.uploaded"
 
-                # ONLY clean up after successful YouTube upload
-                rm -f "$ENHANCED_FILE"
-                rm -rf "/root/jobs/$title/frames_in" "/root/jobs/$title/frames_out"
-                echo "Cleaned up all files for $title (uploaded to YouTube)"
+                # ONLY clean up after successful YouTube upload — delete everything
+                rm -rf "/root/jobs/$title"
+                echo "Cleaned up entire job dir for $title (uploaded to YouTube)"
             else
                 echo "WARNING: YouTube upload failed — keeping ALL files for $title"
             fi
