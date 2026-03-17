@@ -632,8 +632,8 @@ async function update() {
     if (costPerHr > 0 && etaStr !== '—') {
       // Parse eta string (e.g. "5h 30m" or "45m")
       let etaHours = 0;
-      const hMatch = etaStr.match(/(\d+)h/);
-      const mMatch = etaStr.match(/(\d+)m/);
+      const hMatch = etaStr.match(/(\\d+)h/);
+      const mMatch = etaStr.match(/(\\d+)m/);
       if (hMatch) etaHours += parseInt(hMatch[1]);
       if (mMatch) etaHours += parseInt(mMatch[1]) / 60;
       if (etaHours > 0) {

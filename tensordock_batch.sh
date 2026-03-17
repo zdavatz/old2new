@@ -451,6 +451,23 @@ create_instance() {
     tmp_key=$(mktemp)
     echo "$ssh_key" > "$tmp_key"
 
+    # Read YouTube OAuth credentials for upload step
+    local script_dir
+    script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+    local tmp_client_secret tmp_youtube_token
+    tmp_client_secret=$(mktemp)
+    tmp_youtube_token=$(mktemp)
+    if [[ -f "$script_dir/client_secret.json" ]]; then
+        cp "$script_dir/client_secret.json" "$tmp_client_secret"
+    else
+        echo '{}' > "$tmp_client_secret"
+    fi
+    if [[ -f "$script_dir/youtube_token.json" ]]; then
+        cp "$script_dir/youtube_token.json" "$tmp_youtube_token"
+    else
+        echo '{}' > "$tmp_youtube_token"
+    fi
+
     local payload
     payload=$(python3 -c "
 import json
@@ -458,6 +475,10 @@ with open('$tmp_script') as f:
     script_content = f.read()
 with open('$tmp_key') as f:
     ssh_key = f.read().strip()
+with open('$tmp_client_secret') as f:
+    client_secret = f.read()
+with open('$tmp_youtube_token') as f:
+    youtube_token = f.read()
 data = {
     'data': {
         'type': 'virtualmachine',
@@ -496,6 +517,18 @@ data = {
                         'content': script_content,
                         'owner': 'root:root',
                         'permissions': '0755'
+                    },
+                    {
+                        'path': '/root/client_secret.json',
+                        'content': client_secret,
+                        'owner': 'root:root',
+                        'permissions': '0600'
+                    },
+                    {
+                        'path': '/root/youtube_token.json',
+                        'content': youtube_token,
+                        'owner': 'root:root',
+                        'permissions': '0600'
                     }
                 ],
                 'runcmd': ['bash /root/setup.sh > /root/enhance.log 2>&1 &']
@@ -505,7 +538,7 @@ data = {
 }
 print(json.dumps(data))
 ")
-    rm -f "$tmp_script" "$tmp_key"
+    rm -f "$tmp_script" "$tmp_key" "$tmp_client_secret" "$tmp_youtube_token"
 
     td_api POST /instances -d "$payload"
 }
@@ -581,6 +614,9 @@ fi
 # Install realesrgan and deps
 $PIP realesrgan yt-dlp "numpy==1.26.4" "basicsr==1.4.2" 2>&1 || true
 
+# Install Google API deps for YouTube upload + email notification
+$PIP google-api-python-client google-auth-oauthlib google-auth-httplib2 2>&1 || true
+
 # Fix opencv: remove full version, install headless (avoids libGL issues)
 pip uninstall --break-system-packages -y opencv-python opencv-contrib-python 2>/dev/null || true
 $PIP "opencv-python-headless==4.10.0.84" 2>&1 || true
@@ -618,9 +654,10 @@ else
     echo "Speed test too fast to measure"
 fi
 
-# Download enhance_gpu.py
+# Download enhance_gpu.py and youtube_upload.py
 curl -sL "https://raw.githubusercontent.com/zdavatz/old2new/main/enhance_gpu.py" -o /root/enhance_gpu.py
-echo "enhance_gpu.py downloaded."
+curl -sL "https://raw.githubusercontent.com/zdavatz/old2new/main/youtube_upload.py" -o /root/youtube_upload.py
+echo "enhance_gpu.py and youtube_upload.py downloaded."
 
 SETUP_HEADER
 
@@ -702,7 +739,28 @@ for entry in "${VIDEOS[@]}"; do
     # Run enhance_gpu.py with --job-name to use movie title as directory name
     URL="https://www.youtube.com/watch?v=$vid"
     if python3 /root/enhance_gpu.py "$URL" "$scale" --job-name "$title"; then
-        echo "SUCCESS: $title completed at $(date)"
+        echo "SUCCESS: $title upscaled at $(date)"
+
+        # Find the enhanced .mkv file
+        ENHANCED_FILE=$(ls /root/jobs/$title/${title}_${scale}x.mkv /root/jobs/$title/enhanced_${scale}x.mkv 2>/dev/null | head -1)
+
+        # Upload to YouTube and send email notification to juerg@davaz.com
+        if [[ -n "$ENHANCED_FILE" && -f "/root/client_secret.json" && -f "/root/youtube_token.json" ]]; then
+            echo "Uploading to YouTube..."
+            if python3 /root/youtube_upload.py "$vid" "$ENHANCED_FILE" \
+                --client-secret /root/client_secret.json \
+                --token /root/youtube_token.json; then
+                echo "YouTube upload + email notification done at $(date)"
+                # Delete the .mkv to free disk for next video
+                rm -f "$ENHANCED_FILE"
+                echo "Deleted $ENHANCED_FILE to free disk"
+            else
+                echo "WARNING: YouTube upload failed — keeping $ENHANCED_FILE for manual download"
+            fi
+        else
+            echo "Skipping YouTube upload (missing credentials or enhanced file)"
+        fi
+
         echo "$vid $title" >> /root/completed.txt
 
         # Clean up frames to save disk for next video
