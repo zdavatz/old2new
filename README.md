@@ -218,21 +218,22 @@ Two GPU profiles handle the entire davaz.com video collection:
 | Profile | GPU | VRAM | Use Case | Speed | Cost/hr | Tiling |
 |---------|-----|------|----------|-------|---------|--------|
 | **SD-4x** | RTX 4090 | 24GB | SD videos ≤1.6 MP (e.g. 640x480) | 2.6 fps | ~$0.41 | None |
-| **HD-2x** | A100 80GB / RTX 5090 | 80GB / 32GB | HD videos >1.6 MP (e.g. 1920x1200) | ~2+ fps | ~$0.75-1.05 | None |
+| **HD-2x** | RTX 5090 | 32GB | HD videos >1.6 MP (e.g. 1920x1200) | 1.7 fps | ~$0.75-1.05 | None |
 
-The RTX 4090 is the workhorse — faster per frame, cheaper, handles 79 of 83 SD videos. The A100/5090 is only needed for HD videos where the 4090's 24GB VRAM causes tiling (8x slower). The script auto-detects resolution and selects the right GPU.
+The RTX 4090 is the workhorse — faster per frame, cheaper, handles 79 of 83 SD videos. The RTX 5090 is needed for HD videos where the 4090's 24GB VRAM causes tiling (8x slower). The script auto-detects resolution and selects the right GPU.
 
-### RTX 4090 vs A100 for Real-ESRGAN
+### RTX 4090 vs RTX 5090 vs A100 for Real-ESRGAN
 
-| Aspect | RTX 4090 (24GB) | A100 (80GB) | Winner |
-|--------|-----------------|-------------|--------|
-| Inference speed (single frame) | ~0.4s (2.6 fps) | ~0.5-1s | RTX 4090 (higher clocks) |
-| HD video without tiling | No (>1.6 MP tiles) | Yes (80GB fits easily) | A100 |
-| Cost efficiency | ~$0.41/hr | ~$1.05/hr | RTX 4090 (~3x cheaper) |
-| Power | ~450W | ~300-400W | A100 |
-| Multi-GPU scaling | PCIe only | NVLink | A100 |
+| Aspect | RTX 4090 (24GB) | RTX 5090 (32GB) | A100 (80GB) |
+|--------|-----------------|-----------------|-------------|
+| SD 4x (640x480) | **2.6 fps** | ~2+ fps | 0.07 fps |
+| HD 2x (1920x1200) | 0.3 fps (tiling) | **1.7 fps** | 0.07 fps |
+| Cost/hr | ~$0.41 | ~$0.75-1.07 | ~$1.05 |
+| Best for | SD videos ≤1.6 MP | HD videos ≤2.3 MP | NOT recommended |
 
-**Rule of thumb**: Use RTX 4090 for everything ≤1.6 MP. Use A100/5090 only for HD content that would require tiling on 4090.
+**A100 is NOT suitable for Real-ESRGAN** — despite 80GB VRAM, it runs at 0.07 fps (14s/frame) due to low clock speeds optimized for training/inference, not single-frame super-resolution. An RTX 4090 with tiling is still 4x faster and 15x cheaper.
+
+**Rule of thumb**: Use RTX 4090 for SD (≤1.6 MP). Use RTX 5090 for HD (≤2.3 MP). Never use A100/datacenter GPUs.
 
 ## Performance Reference
 
@@ -241,8 +242,8 @@ The RTX 4090 is the workhorse — faster per frame, cheaper, handles 79 of 83 SD
 | M5 (10 GPU cores) | ~10s | ~45h | — |
 | M3 Ultra (76 GPU cores) | ~1.5-2s | ~7-9h | — |
 | RTX 4090 (TensorDock, CUDA) | ~0.4s | ~1.8h | ~$0.74 |
-| A100 80GB (TensorDock, CUDA) | ~0.5-1s | ~2-4h | ~$2-4 |
-| RTX 5090 (TensorDock, CUDA) | ~TBD | ~TBD | ~$0.75/hr |
+| RTX 5090 (vast.ai, CUDA) | ~0.6s | ~2.7h | ~$1.07/hr |
+| A100 80GB (NOT recommended) | ~14s | ~62h | ~$66 |
 | L4 (Google Cloud, CUDA) | ~2s | ~9h | ~$6.30 |
 | H200 NVL (RunPod, CUDA) | ~1-1.5s | ~5-6h | ~$17-20 |
 
