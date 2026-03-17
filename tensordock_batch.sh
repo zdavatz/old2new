@@ -482,6 +482,14 @@ data = {
             ],
             'ssh_key': ssh_key,
             'cloud_init': {
+                'package_update': False,
+                'package_upgrade': False,
+                'bootcmd': [
+                    ['systemctl', 'disable', '--now', 'unattended-upgrades'],
+                    ['systemctl', 'disable', '--now', 'apt-daily.timer'],
+                    ['systemctl', 'disable', '--now', 'apt-daily-upgrade.timer'],
+                    ['systemctl', 'mask', 'unattended-upgrades'],
+                ],
                 'write_files': [
                     {
                         'path': '/root/setup.sh',
@@ -520,6 +528,12 @@ set -e
 export DEBIAN_FRONTEND=noninteractive
 
 echo "=== Setup started at $(date) ==="
+
+# Kill any residual unattended-upgrades (bootcmd disables it, but belt-and-suspenders)
+echo "Stopping unattended-upgrades..."
+systemctl stop unattended-upgrades 2>/dev/null || true
+# Wait for dpkg lock to release
+for i in $(seq 1 15); do fuser /var/lib/dpkg/lock-frontend >/dev/null 2>&1 || break; sleep 1; done
 
 # Install minimal system packages (no apt update — saves 3-5 min on throwaway instances)
 echo "Installing system packages..."
