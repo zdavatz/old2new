@@ -37,8 +37,8 @@ if [[ "$GPU_MODEL" == *5090* ]]; then
     GPU_DISPLAY="RTX 5090"
 fi
 NUM_GPUS=1
-VCPUS=${VCPUS:-16}   # more vCPUs = faster frame extraction (parallel ffmpeg workers)
-RAM_GB=${RAM_GB:-32}  # more RAM for parallel I/O pipeline
+VCPUS=${VCPUS:-16}   # MINIMUM 16: I/O pipeline needs 8 read + 8 write workers (4 vCPUs = 2.6fps, 16 = 7.0fps)
+RAM_GB=${RAM_GB:-32}  # 32GB for parallel I/O pipeline
 STORAGE_GB=250  # default, overridden by estimate_disk_gb()
 OS_IMAGE="ubuntu2404"
 
@@ -46,25 +46,29 @@ OS_IMAGE="ubuntu2404"
 # These are tested configurations with known performance.
 # Use as reference when selecting locations for similar workloads.
 #
+# IMPORTANT: CPU cores and disk speed directly impact upscaling fps!
+#   4 vCPUs + 624 MB/s disk = 2.6 fps (GPU idle waiting for I/O)
+#   16 vCPUs + 1207 MB/s disk = 7.0 fps (GPU fully utilized)
+#   Always request 16+ vCPUs and NVMe >=1000 MB/s.
+#
 # Profile: SD-4x (SD videos, 4x upscale, no tiling)
 #   GPU:       RTX 4090 (24GB VRAM) — geforcertx4090-pcie-24gb
-#   CPU:       AMD EPYC 7F72 (2x cores, ~3.2GHz boost) — good single-core for cv2
-#   vCPUs:     4 (enough for SD; 16 preferred for faster extraction)
-#   RAM:       16GB
-#   Disk:      650GB (fits SD videos up to ~55min at 4x)
-#   Location:  Ottawa, Ontario, Canada
-#   Rate:      ~$0.41/hr
-#   Perf:      2.6 fps upscale (640x480 4x, no tiling, 0.3 MP)
-#   Best for:  SD videos ≤55min. Frames cleaned between videos.
+#   CPU:       16+ vCPUs MINIMUM — I/O pipeline needs 8 read + 8 write workers
+#   RAM:       32GB
+#   Disk:      750GB NVMe >=1000 MB/s (fits SD videos up to ~55min at 4x)
+#   Location:  Orlando, Florida (16 vCPUs, fast NVMe, 3TB max)
+#   Rate:      ~$0.50/hr
+#   Perf:      7.0 fps upscale (640x480 4x, no tiling, 0.3 MP)
+#   Best for:  SD videos ≤55min. Job dir cleaned after YouTube upload.
 #
 # Profile: HD-2x (HD videos, 2x upscale, needs 5090 to avoid tiling)
 #   GPU:       RTX 5090 (32GB VRAM) — geforcertx5090-pcie-32gb
-#   vCPUs:     16
+#   CPU:       16+ vCPUs MINIMUM
 #   RAM:       32GB
-#   Disk:      1700-3000GB depending on duration
+#   Disk:      1700-3000GB NVMe depending on duration
 #   Location:  Chubbuck, Idaho (only location with 5090 + large storage)
 #   Rate:      ~$0.70-0.80/hr
-#   Perf:      ~2+ fps expected (1920x1200 2x, no tiling, 2.3 MP fits 32GB)
+#   Perf:      1.7 fps (1920x1200 2x, no tiling, 2.3 MP fits 32GB)
 #   Best for:  HD videos (1920x1080/1200). DO NOT use RTX 4090 — tiling = 8x slower.
 #   Disk rule: ~1700GB for 1h video, ~3000GB for 2h video
 

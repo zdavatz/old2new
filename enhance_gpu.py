@@ -136,6 +136,9 @@ def preflight_check():
         score = 1.0 / bench_time  # higher is better
         print(f"  Bench:    {score:.1f} (single-core, higher=better)")
         info["cpu_score"] = score
+        if cpu_count < 8:
+            warnings.append(f"Only {cpu_count} CPU cores — I/O pipeline needs 16+ for full GPU utilization. "
+                            f"With 4 cores: ~2.6 fps. With 16 cores: ~7.0 fps (same GPU).")
         if score < 5.0:
             warnings.append(f"Slow CPU ({score:.1f} score, {cpu_mhz:.0f} MHz). "
                             f"Frame I/O will bottleneck GPU. Expect 2-4x slower than modern CPUs.")
@@ -195,8 +198,11 @@ def preflight_check():
         print(f"  Read:     {read_speed:.0f} MB/s")
         info["disk_write_mbs"] = write_speed
         info["disk_read_mbs"] = read_speed
-        if write_speed < 100:
-            warnings.append(f"Slow disk write ({write_speed:.0f} MB/s). Frame extraction and output will be slow.")
+        if read_speed < 800:
+            warnings.append(f"Slow disk read ({read_speed:.0f} MB/s). GPU will be I/O bottlenecked. "
+                            f"Need >=1000 MB/s NVMe for full GPU utilization (7fps vs 2.6fps).")
+        if write_speed < 200:
+            warnings.append(f"Slow disk write ({write_speed:.0f} MB/s). Frame output will bottleneck GPU.")
     except Exception as e:
         warnings.append(f"Disk benchmark failed: {e}")
 
