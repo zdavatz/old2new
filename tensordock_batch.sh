@@ -751,33 +751,27 @@ for entry in "${VIDEOS[@]}"; do
                 --client-secret /root/client_secret.json \
                 --token /root/youtube_token.json; then
                 echo "YouTube upload + email notification done at $(date)"
-                # Delete the .mkv to free disk for next video
+                touch "/root/jobs/$title/.uploaded"
+
+                # ONLY clean up after successful YouTube upload
                 rm -f "$ENHANCED_FILE"
-                echo "Deleted $ENHANCED_FILE to free disk"
+                rm -rf "/root/jobs/$title/frames_in" "/root/jobs/$title/frames_out"
+                echo "Cleaned up all files for $title (uploaded to YouTube)"
             else
-                echo "WARNING: YouTube upload failed — keeping $ENHANCED_FILE for manual download"
+                echo "WARNING: YouTube upload failed — keeping ALL files for $title"
             fi
         else
-            echo "Skipping YouTube upload (missing credentials or enhanced file)"
+            echo "Skipping YouTube upload (missing credentials or enhanced file) — keeping ALL files"
         fi
 
         echo "$vid $title" >> /root/completed.txt
-
-        # Clean up frames ONLY after confirmed output exists
-        if [[ -f "/root/jobs/$title/${title}_${scale}x.mkv" ]]; then
-            rm -rf "/root/jobs/$title/frames_in" "/root/jobs/$title/frames_out"
-            echo "Cleaned up frames for $title (output confirmed)"
-        else
-            echo "WARNING: Output file missing after SUCCESS — keeping frames for $title"
-        fi
     else
         echo "FAILED: $title at $(date)"
         echo "$vid $title FAILED" >> /root/completed.txt
         FAILED=$((FAILED + 1))
 
-        # Only clean input frames on failure, keep output frames in case of partial progress
-        rm -rf "/root/jobs/$title/frames_in"
-        echo "Cleaned input frames for failed $title (keeping output frames for resume)"
+        # NEVER delete frames on failure — keep everything for resume
+        echo "Keeping all frames for failed $title (can resume later)"
     fi
 done
 
