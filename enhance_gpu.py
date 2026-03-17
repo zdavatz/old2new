@@ -583,7 +583,7 @@ def main():
     elif gpu_mem_gb >= 40:
         safe_mp = 2.5   # 48GB: safe up to ~2.5 MP (e.g. 1920x1200)
     elif gpu_mem_gb >= 28:
-        safe_mp = 2.3   # 32GB RTX 5090: safe up to ~2.3 MP (1920x1200 confirmed no-tile on BORN to MOVE)
+        safe_mp = 2.4   # 32GB RTX 5090: safe for 1920x1200 (2.304 MP, confirmed no-tile on BORN to MOVE)
     elif gpu_mem_gb >= 20:
         safe_mp = 1.6   # 24GB RTX 4090: safe up to ~1.6 MP (e.g. 1430x1080)
     elif gpu_mem_gb >= 10:
