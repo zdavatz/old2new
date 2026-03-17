@@ -265,6 +265,28 @@ class StatusHandler(http.server.BaseHTTPRequestHandler):
             elif os.path.exists(os.path.join(job_dir, "original.mkv")):
                 status = "downloaded"
 
+            # Detect input resolution via ffprobe
+            resolution = ""
+            input_file = os.path.join(job_dir, f"{title}.mkv")
+            if not os.path.exists(input_file):
+                for ext in ["mkv", "mp4", "webm"]:
+                    candidates = [c for c in glob.glob(os.path.join(job_dir, f"*.{ext}")) if f"_{scale}x" not in c]
+                    if candidates:
+                        input_file = candidates[0]
+                        break
+            if os.path.exists(input_file):
+                try:
+                    import subprocess
+                    r = subprocess.run(
+                        ["ffprobe", "-v", "quiet", "-select_streams", "v:0",
+                         "-show_entries", "stream=width,height",
+                         "-of", "csv=p=0:s=x", input_file],
+                        capture_output=True, text=True, timeout=5)
+                    if r.returncode == 0 and "x" in r.stdout:
+                        resolution = r.stdout.strip()
+                except Exception:
+                    pass
+
             videos.append({
                 "id": vid,
                 "title": title,
@@ -276,6 +298,7 @@ class StatusHandler(http.server.BaseHTTPRequestHandler):
                 "total_frames": total_frames,
                 "done_frames": done_frames,
                 "eta": eta,
+                "resolution": resolution,
             })
 
         # Read last lines of enhance.log
@@ -527,7 +550,7 @@ async function update() {
     }
 
     h += `<table><thead><tr>
-      <th>#</th><th>Title</th><th>Input</th><th>Output</th><th>Duration</th><th>Status</th><th>Progress</th><th>Compare</th>
+      <th>#</th><th>Title</th><th>Resolution</th><th>Input</th><th>Output</th><th>Duration</th><th>Status</th><th>Progress</th><th>Compare</th>
     </tr></thead><tbody>`;
 
     const order = [...active, ...other, ...done, ...queued];
@@ -546,6 +569,7 @@ async function update() {
       h += `<tr>
         <td>${i+1}</td>
         <td class="title-col"><a href="${ytUrl}" target="_blank">${v.display_title || v.title.replace(/_/g, ' ')}</a></td>
+        <td style="font-size:0.75rem;color:#94a3b8">${v.resolution || '—'}</td>
         <td style="font-size:0.75rem;color:#94a3b8">${inputName}</td>
         <td style="font-size:0.75rem">${outputCell}</td>
         <td>${dur}</td>
