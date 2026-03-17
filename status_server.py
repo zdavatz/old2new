@@ -287,6 +287,17 @@ class StatusHandler(http.server.BaseHTTPRequestHandler):
                 except Exception:
                     pass
 
+            # Read timing data if available
+            timing = {}
+            timing_file = os.path.join(job_dir, "timing.json")
+            if os.path.exists(timing_file):
+                try:
+                    import json as _json
+                    with open(timing_file) as tf:
+                        timing = _json.load(tf)
+                except Exception:
+                    pass
+
             videos.append({
                 "id": vid,
                 "title": title,
@@ -299,6 +310,7 @@ class StatusHandler(http.server.BaseHTTPRequestHandler):
                 "done_frames": done_frames,
                 "eta": eta,
                 "resolution": resolution,
+                "timing": timing,
             })
 
         # Read last lines of enhance.log
@@ -500,6 +512,14 @@ async function update() {
       <div class="card"><div class="num">${etaStr}</div><div class="label">ETA</div></div>
       <div class="card"><div class="num" style="color:#fbbf24">${costRemaining}</div><div class="label">Cost Remaining</div></div>
       <div class="card"><div class="num" style="font-size:1rem">${dlStr}</div><div class="label">Download</div></div>
+      <div class="card"><div class="num" style="font-size:0.9rem;color:#94a3b8">${(() => {
+        const done = d.videos.filter(v => v.timing && v.timing.upscaling > 0);
+        if (done.length === 0) return '—';
+        const totalOverhead = done.reduce((s, v) => s + (v.timing.download || 0) + (v.timing.extraction || 0) + (v.timing.reassembly || 0), 0);
+        const totalUpscale = done.reduce((s, v) => s + (v.timing.upscaling || 0), 0);
+        const pct = totalUpscale > 0 ? Math.round(totalOverhead / (totalOverhead + totalUpscale) * 100) : 0;
+        return Math.round(totalOverhead / 60) + 'm (' + pct + '%)';
+      })()}</div><div class="label">Overhead (dl+ext+asm)</div></div>
     </div>`;
 
     // System specs panel
@@ -550,7 +570,7 @@ async function update() {
     }
 
     h += `<table><thead><tr>
-      <th>#</th><th>Title</th><th>Resolution</th><th>Input</th><th>Output</th><th>Duration</th><th>Status</th><th>Progress</th><th>Compare</th>
+      <th>#</th><th>Title</th><th>Resolution</th><th>Input</th><th>Output</th><th>Duration</th><th>Status</th><th>Progress</th><th>Timing</th><th>Compare</th>
     </tr></thead><tbody>`;
 
     const order = [...active, ...other, ...done, ...queued];
@@ -576,6 +596,12 @@ async function update() {
         <td><span class="status status-${v.status}">${v.status}</span></td>
         <td><div class="bar-bg"><div class="bar-fg" style="width:${v.progress}%;background:${barColor}"></div>
             <span class="bar-text">${v.status==='done' ? v.eta : v.progress > 0 ? v.done_frames+'/'+v.total_frames : ''}</span></div></td>
+        <td style="font-size:0.7rem;color:#94a3b8">${v.timing && Object.keys(v.timing).length > 0
+          ? (v.timing.download ? 'dl:' + Math.round(v.timing.download/60) + 'm ' : '')
+            + (v.timing.extraction ? 'ext:' + Math.round(v.timing.extraction/60) + 'm ' : '')
+            + (v.timing.upscaling ? 'up:' + (v.timing.upscaling/3600).toFixed(1) + 'h ' : '')
+            + (v.timing.reassembly ? 'asm:' + Math.round(v.timing.reassembly/60) + 'm' : '')
+          : '—'}</td>
         <td>${compareLink}</td>
       </tr>`;
     });

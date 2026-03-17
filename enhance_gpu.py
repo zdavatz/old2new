@@ -423,6 +423,10 @@ def main():
             print(f"  Warning: Could not pre-check video info: {e}")
             print()
 
+    # --- Timing tracker (written to job dir for dashboard) ---
+    timing = {"download": 0, "extraction": 0, "upscaling": 0, "reassembly": 0}
+    timing_file = f"{WORKDIR}/timing.json"
+
     # --- Download video ---
     if os.path.exists(INPUT):
         print("Video already downloaded.")
@@ -444,6 +448,7 @@ def main():
         dl_elapsed = time.time() - dl_start
         dl_size = os.path.getsize(INPUT) / (1024 * 1024)
         print(f"Downloaded {dl_size:.0f} MB in {dl_elapsed:.0f}s ({dl_size/dl_elapsed*8:.0f} Mbps)")
+        timing["download"] = round(dl_elapsed)
 
     # --- Check disk space ---
     result = subprocess.run(["ffprobe", "-v", "quiet", "-select_streams", "v:0",
@@ -530,6 +535,7 @@ def main():
 
             existing = sorted(glob.glob(f"{FRAMES_IN}/frame_*.png"))
             extract_elapsed = time.time() - extract_start
+            timing["extraction"] = round(extract_elapsed)
             print(f"Extracted {len(existing)} frames in {extract_elapsed:.0f}s ({num_workers} workers)")
         else:
             # Single-process extraction (short video or single CPU)
@@ -551,6 +557,7 @@ def main():
                     sys.stdout.flush()
             existing = sorted(glob.glob(f"{FRAMES_IN}/frame_*.png"))
             extract_elapsed = time.time() - extract_start
+            timing["extraction"] = round(extract_elapsed)
             print(f"Extracted {len(existing)} frames in {extract_elapsed:.0f}s")
 
     TOTAL = len(existing)
@@ -770,6 +777,7 @@ def main():
             t.join()
 
     elapsed = time.time() - start
+    timing["upscaling"] = round(elapsed)
     print(f"\nUpscaling complete in {elapsed/3600:.1f}h ({elapsed:.0f}s)")
 
     # --- Get FPS ---
@@ -781,6 +789,7 @@ def main():
     fps = int(fps_parts[0]) // int(fps_parts[1]) if len(fps_parts) == 2 else int(fps_parts[0])
 
     # --- Reassemble ---
+    reassemble_start = time.time()
     print(f"\nReassembling video at {fps}fps...")
     src_info = subprocess.run(["ffprobe", "-v", "quiet", "-select_streams", "a",
         "-show_entries", "stream=codec_type", "-of", "csv=p=0", INPUT],
@@ -796,6 +805,24 @@ def main():
         subprocess.run(["ffmpeg", "-framerate", str(fps), "-i", f"{FRAMES_OUT}/frame_%08d.png",
             "-c:v", "libx264", "-crf", "18", "-preset", "slow", "-pix_fmt", "yuv420p",
             "-y", output_file], check=True, capture_output=True)
+
+    reassemble_elapsed = time.time() - reassemble_start
+    timing["reassembly"] = round(reassemble_elapsed)
+
+    # Write timing to JSON for dashboard
+    import json as _json
+    with open(timing_file, "w") as f:
+        _json.dump(timing, f)
+
+    total_time = sum(timing.values())
+    overhead = timing["download"] + timing["extraction"] + timing["reassembly"]
+    print(f"\nTiming breakdown:")
+    print(f"  Download:    {timing['download']}s ({timing['download']/60:.1f}m)")
+    print(f"  Extraction:  {timing['extraction']}s ({timing['extraction']/60:.1f}m)")
+    print(f"  Upscaling:   {timing['upscaling']}s ({timing['upscaling']/3600:.1f}h)")
+    print(f"  Reassembly:  {timing['reassembly']}s ({timing['reassembly']/60:.1f}m)")
+    print(f"  Total:       {total_time}s ({total_time/3600:.1f}h)")
+    print(f"  Overhead:    {overhead}s ({overhead/60:.0f}m, {overhead/total_time*100:.0f}% of total)")
 
     size = os.path.getsize(output_file) / (1024 * 1024)
     print(f"\nDone! Output: {output_file} ({size:.0f} MB)")
