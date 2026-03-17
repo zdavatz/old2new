@@ -523,10 +523,28 @@ echo "=== Setup started at $(date) ==="
 
 # Install minimal system packages (no apt update — saves 3-5 min on throwaway instances)
 echo "Installing system packages..."
-apt-get install -y --no-install-recommends python3-pip ffmpeg 2>/dev/null || {
+apt-get install -y --no-install-recommends python3-pip ffmpeg nginx 2>/dev/null || {
     # Only run apt-get update if install fails (package cache missing)
-    apt-get update -qq && apt-get install -y --no-install-recommends python3-pip ffmpeg
+    apt-get update -qq && apt-get install -y --no-install-recommends python3-pip ffmpeg nginx
 }
+
+# Configure nginx as reverse proxy to status server (more reliable than Python http.server)
+cat > /etc/nginx/sites-available/default << 'NGINXCONF'
+server {
+    listen 8080 default_server;
+    server_name _;
+    location / {
+        proxy_pass http://127.0.0.1:8081;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_read_timeout 300;
+        proxy_connect_timeout 5;
+    }
+}
+NGINXCONF
+systemctl enable nginx
+systemctl restart nginx
+echo "nginx configured on port 8080 -> status server on 8081"
 
 # Install Python dependencies
 echo "Installing Python dependencies..."
@@ -629,8 +647,10 @@ SETUP_HEADER
     # Download and start the status server
     echo "# Download and start status server"
     echo 'curl -sL "https://raw.githubusercontent.com/zdavatz/old2new/main/status_server.py?$(date +%s)" -o /root/status_server.py'
+    echo '# Run on port 8081 behind nginx (nginx listens on 8080)'
+    echo 'sed -i "s/PORT = 8080/PORT = 8081/" /root/status_server.py'
     echo 'python3 /root/status_server.py &'
-    echo 'echo "Status server started on port 8080"'
+    echo 'echo "Status server started on port 8081 (nginx proxy on 8080)"'
     echo ""
 
     # Append video processing loop
