@@ -1,0 +1,43 @@
+FROM pytorch/pytorch:2.7.0-cuda12.8-cudnn9-runtime
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+# Minimal system deps (gcc for torch.compile, curl for scripts)
+RUN apt-get update -qq && \
+    apt-get install -y --no-install-recommends gcc curl xz-utils && \
+    rm -rf /var/lib/apt/lists/*
+
+# Real-ESRGAN + minimal deps (single layer, cleanup pip cache)
+RUN pip install --no-cache-dir -q \
+    realesrgan "numpy==1.26.4" "basicsr==1.4.2" \
+    yt-dlp google-api-python-client google-auth-oauthlib && \
+    pip uninstall -y opencv-python 2>/dev/null; \
+    pip install --no-cache-dir -q "opencv-python-headless==4.10.0.84" && \
+    pip install --no-cache-dir -q "numpy==1.26.4" && \
+    rm -rf /root/.cache/pip
+
+# Patch basicsr + pre-download model weights
+RUN DEGRADATIONS_FILE=$(python3 -c "import importlib.util; print(importlib.util.find_spec('basicsr').submodule_search_locations[0])")/data/degradations.py && \
+    [ -f "$DEGRADATIONS_FILE" ] && \
+    sed -i 's/from torchvision.transforms.functional_tensor import rgb_to_grayscale/from torchvision.transforms.functional import rgb_to_grayscale/' "$DEGRADATIONS_FILE" && \
+    python3 -c "from basicsr.archs.rrdbnet_arch import RRDBNet; \
+from realesrgan import RealESRGANer; \
+model = RRDBNet(num_in_ch=3, num_out_ch=3, num_feat=64, num_block=23, num_grow_ch=32, scale=4); \
+RealESRGANer(scale=4, model_path='https://github.com/xinntao/Real-ESRGAN/releases/download/v0.1.0/RealESRGAN_x4plus.pth', model=model, tile=0, pre_pad=0, half=True, gpu_id=None)"
+
+# Static ffmpeg 7.x (replace conda's old ffmpeg)
+RUN curl -sL https://johnvansickle.com/ffmpeg/releases/ffmpeg-release-amd64-static.tar.xz | tar xJ -C /tmp/ && \
+    cp /tmp/ffmpeg-*-amd64-static/ffmpeg /opt/conda/bin/ffmpeg && \
+    cp /tmp/ffmpeg-*-amd64-static/ffprobe /opt/conda/bin/ffprobe && \
+    rm -rf /tmp/ffmpeg-*
+
+# Verify
+RUN python3 -c "import torch; print(f'PyTorch: {torch.__version__}'); \
+import cv2; print(f'OpenCV: {cv2.__version__}'); \
+import numpy as np; print(f'NumPy: {np.__version__}'); \
+from basicsr.archs.rrdbnet_arch import RRDBNet; print('BasicSR: OK'); \
+from realesrgan import RealESRGANer; print('RealESRGAN: OK'); \
+print('ALL OK')"
+
+WORKDIR /root
+CMD ["bash"]
