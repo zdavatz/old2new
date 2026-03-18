@@ -1,0 +1,60 @@
+FROM nvidia/cuda:12.8.0-base-ubuntu24.04
+
+ENV DEBIAN_FRONTEND=noninteractive \
+    PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1
+
+# System deps (gcc/g++ for torch.compile + TensorRT)
+RUN apt-get update -qq && \
+    apt-get install -y --no-install-recommends \
+    python3 python3-pip python3-venv gcc g++ curl xz-utils && \
+    rm -rf /var/lib/apt/lists/*
+
+# Venv
+RUN python3 -m venv /opt/venv
+ENV PATH="/opt/venv/bin:$PATH"
+
+# PyTorch (slim GPU wheel)
+RUN pip install --no-cache-dir torch torchvision \
+    --index-url https://download.pytorch.org/whl/cu128
+
+# Real-ESRGAN + deps
+RUN pip install --no-cache-dir \
+    realesrgan "numpy==1.26.4" "basicsr==1.4.2" \
+    "opencv-python-headless==4.10.0.84" \
+    yt-dlp google-api-python-client google-auth-oauthlib
+
+# TensorRT + ONNX Runtime
+RUN pip install --no-cache-dir \
+    torch-tensorrt --extra-index-url https://download.pytorch.org/whl/cu128 && \
+    pip install --no-cache-dir onnxruntime-gpu onnx
+
+# Patch basicsr + pre-download model weights
+RUN DEGRADATIONS_FILE=$(python3 -c "import importlib.util; print(importlib.util.find_spec('basicsr').submodule_search_locations[0])")/data/degradations.py && \
+    [ -f "$DEGRADATIONS_FILE" ] && \
+    sed -i 's/from torchvision.transforms.functional_tensor import rgb_to_grayscale/from torchvision.transforms.functional import rgb_to_grayscale/' "$DEGRADATIONS_FILE" && \
+    python3 -c "from basicsr.archs.rrdbnet_arch import RRDBNet; \
+from realesrgan import RealESRGANer; \
+model = RRDBNet(num_in_ch=3, num_out_ch=3, num_feat=64, num_block=23, num_grow_ch=32, scale=4); \
+RealESRGANer(scale=4, model_path='https://github.com/xinntao/Real-ESRGAN/releases/download/v0.1.0/RealESRGAN_x4plus.pth', model=model, tile=0, pre_pad=0, half=True, gpu_id=None)"
+
+# Static ffmpeg 7.x
+RUN curl -sL https://johnvansickle.com/ffmpeg/releases/ffmpeg-release-amd64-static.tar.xz | tar xJ -C /tmp/ && \
+    cp /tmp/ffmpeg-*-amd64-static/ffmpeg /usr/local/bin/ffmpeg && \
+    cp /tmp/ffmpeg-*-amd64-static/ffprobe /usr/local/bin/ffprobe && \
+    rm -rf /tmp/ffmpeg-*
+
+# Verify
+RUN python3 -c "import torch; print(f'PyTorch: {torch.__version__}'); \
+import cv2; print(f'OpenCV: {cv2.__version__}'); \
+import numpy as np; print(f'NumPy: {np.__version__}'); \
+from basicsr.archs.rrdbnet_arch import RRDBNet; print('BasicSR: OK'); \
+from realesrgan import RealESRGANer; print('RealESRGAN: OK'); \
+try: import torch_tensorrt; print(f'TensorRT: {torch_tensorrt.__version__}')
+except: print('TensorRT: not available'); \
+try: import onnxruntime; print(f'ONNX Runtime: {onnxruntime.__version__}')
+except: print('ONNX Runtime: not available'); \
+print('ALL OK')"
+
+WORKDIR /root
+CMD ["bash"]
