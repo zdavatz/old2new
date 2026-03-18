@@ -4,10 +4,11 @@ ENV DEBIAN_FRONTEND=noninteractive \
     PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1
 
-# System deps (gcc/g++ for torch.compile + TensorRT)
+# System deps (gcc/g++ for torch.compile + TensorRT, libgl1 for opencv fallback)
 RUN apt-get update -qq && \
     apt-get install -y --no-install-recommends \
-    python3 python3-pip python3-venv gcc g++ curl xz-utils && \
+    python3 python3-pip python3-venv gcc g++ curl xz-utils \
+    libgl1 libglib2.0-0 && \
     rm -rf /var/lib/apt/lists/*
 
 # Venv
@@ -22,8 +23,9 @@ RUN pip install --no-cache-dir \
 # Real-ESRGAN + deps
 RUN pip install --no-cache-dir \
     realesrgan "numpy==1.26.4" "basicsr==1.4.2" \
-    "opencv-python-headless==4.10.0.84" \
     yt-dlp google-api-python-client google-auth-oauthlib && \
+    pip uninstall -y opencv-python opencv-contrib-python 2>/dev/null; \
+    pip install --no-cache-dir "opencv-python-headless==4.10.0.84" && \
     pip install --no-cache-dir "numpy==1.26.4"
 
 # TensorRT + ONNX Runtime
@@ -44,7 +46,7 @@ RUN WEIGHTS_DIR=$(python3 -c "import site; print(site.getsitepackages()[0])")/we
     -o "$WEIGHTS_DIR/RealESRGAN_x4plus.pth"
 
 # Static ffmpeg 7.x
-RUN curl -sL https://johnvansickle.com/ffmpeg/releases/ffmpeg-release-amd64-static.tar.xz | tar xJ -C /tmp/ && \
+RUN curl -sL https://johnvansickle.com/ffmpeg/releases/ffmpeg-7.1-amd64-static.tar.xz | tar xJ -C /tmp/ && \
     cp /tmp/ffmpeg-*-amd64-static/ffmpeg /usr/local/bin/ffmpeg && \
     cp /tmp/ffmpeg-*-amd64-static/ffprobe /usr/local/bin/ffprobe && \
     rm -rf /tmp/ffmpeg-*
