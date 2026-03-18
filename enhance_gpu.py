@@ -613,7 +613,7 @@ def main():
     elif gpu_mem_gb >= 40:
         safe_mp = 2.0   # 48GB: safe up to ~2.0 MP (2.3 MP OOMs on 48GB!)
     elif gpu_mem_gb >= 28:
-        safe_mp = 1.8   # 32GB RTX 5090: safe up to ~1.8 MP (2.3 MP = 7.5s/frame due to VRAM swapping)
+        safe_mp = 1.6   # 32GB RTX 5090: tile=512 for >1.6 MP (0.5 fps tiled vs 0.2 fps no-tile at 1920x1200)
     elif gpu_mem_gb >= 20:
         safe_mp = 1.6   # 24GB RTX 4090: safe up to ~1.6 MP (e.g. 1430x1080)
     elif gpu_mem_gb >= 10:

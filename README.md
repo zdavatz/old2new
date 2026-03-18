@@ -220,23 +220,25 @@ Two GPU profiles handle the entire davaz.com video collection:
 
 | Profile | GPU | VRAM | Use Case | Speed | Cost/hr | Tiling |
 |---------|-----|------|----------|-------|---------|--------|
-| **SD-4x** | RTX 4090 | 24GB | SD videos ≤1.6 MP (e.g. 640x480) | 2.6 fps | ~$0.41 | None |
-| **HD-2x** | RTX 5090 | 32GB | HD videos >1.6 MP (e.g. 1920x1200) | 1.7 fps | ~$0.75-1.05 | None |
+| **SD-4x** | RTX 4090 | 24GB | SD videos ≤1.6 MP (e.g. 640x480) | 7.0 fps | ~$0.50 | None |
+| **HD-2x (low-res)** | RTX 5090 | 32GB | HD videos ≤1.6 MP (e.g. 960x720) | 1.7 fps | ~$0.69 | None |
+| **HD-2x (high-res)** | RTX 5090 | 32GB | HD videos >1.6 MP (e.g. 1920x1200) | 0.5 fps | ~$0.69 | tile=512 |
 
-The RTX 4090 is the workhorse — faster per frame, cheaper, handles 79 of 83 SD videos. The RTX 5090 is needed for HD videos where the 4090's 24GB VRAM causes tiling (8x slower). The script auto-detects resolution and selects the right GPU.
+The RTX 4090 handles all SD videos without tiling. The RTX 5090 handles HD videos — low-res HD without tiling (1.7 fps), high-res HD with tiling (0.5 fps). Tiling is auto-detected per video based on resolution vs VRAM.
 
 ### RTX 4090 vs RTX 5090 for Real-ESRGAN
 
 | Aspect | RTX 4090 (24GB) | RTX 5090 (32GB) |
 |--------|-----------------|-----------------|
-| SD 4x (640x480) | **2.6 fps** | ~2+ fps |
-| HD 2x (1920x1200) | 0.3 fps (tiling) | **1.7 fps** |
-| Cost/hr | ~$0.41 | ~$0.75 |
-| Best for | SD videos ≤1.6 MP | HD videos ≤2.3 MP |
+| SD 4x (640x480) | **7.0 fps** (16 vCPUs) | ~2+ fps |
+| HD 2x (960x720) | tiling (slow) | **1.7 fps** (no tile) |
+| HD 2x (1920x1200) | 0.3 fps (tiling) | **0.5 fps** (tile=512) |
+| Cost/hr | ~$0.50 | ~$0.69 |
+| Best for | SD videos ≤1.6 MP | HD videos (any resolution) |
 
 **A100 is NOT suitable for Real-ESRGAN** — despite 80GB VRAM, it runs at 0.07 fps (14s/frame) due to low clock speeds. Never use A100/datacenter GPUs for upscaling.
 
-**Rule of thumb**: Use RTX 4090 for SD (≤1.6 MP). Use RTX 5090 for HD (≤2.3 MP).
+**Rule of thumb**: Use RTX 4090 for SD (≤1.6 MP). Use RTX 5090 for HD. Tiling is auto-enabled for >1.6 MP on any GPU.
 
 ## Performance Reference
 
