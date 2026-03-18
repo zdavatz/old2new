@@ -35,11 +35,10 @@ RUN DEGRADATIONS_FILE=$(python3 -c "import importlib.util; print(importlib.util.
         sed -i 's/from torchvision.transforms.functional_tensor import rgb_to_grayscale/from torchvision.transforms.functional import rgb_to_grayscale/' "$DEGRADATIONS_FILE"; \
     fi
 
-# Pre-download model weights
-RUN python3 -c "from basicsr.archs.rrdbnet_arch import RRDBNet; \
-from realesrgan import RealESRGANer; \
-model = RRDBNet(num_in_ch=3, num_out_ch=3, num_feat=64, num_block=23, num_grow_ch=32, scale=4); \
-RealESRGANer(scale=4, model_path='https://github.com/xinntao/Real-ESRGAN/releases/download/v0.1.0/RealESRGAN_x4plus.pth', model=model, tile=0, pre_pad=0, half=True, gpu_id=None)"
+# Pre-download model weights (curl, no GPU needed)
+RUN mkdir -p /opt/venv/lib/python3.12/site-packages/weights && \
+    curl -sL https://github.com/xinntao/Real-ESRGAN/releases/download/v0.1.0/RealESRGAN_x4plus.pth \
+    -o /opt/venv/lib/python3.12/site-packages/weights/RealESRGAN_x4plus.pth
 
 # Static ffmpeg 7.x
 RUN curl -sL https://johnvansickle.com/ffmpeg/releases/ffmpeg-release-amd64-static.tar.xz | tar xJ -C /tmp/ && \
