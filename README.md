@@ -279,6 +279,33 @@ Tested extensively — **ncnn-vulkan does not work for cloud GPU upscaling**:
 
 A Docker image with ncnn-vulkan is available at `ghcr.io/zdavatz/realesrgan-ncnn-vulkan:latest` for testing, but **PyTorch/CUDA is 125x faster** on Blackwell GPUs. Always use `enhance_gpu.py` for cloud upscaling.
 
+### RTX 5090 Optimization Benchmarks (1920x1200, 2x scale)
+
+Comprehensive testing of all PyTorch/CUDA optimizations on RTX 5090:
+
+| Optimization | fps | vs baseline | Notes |
+|---|---|---|---|
+| **tile=512 FP16 (baseline)** | **0.45** | — | Our current config |
+| tile=256 FP16 | 0.43 | -4% | More tiles = more overhead |
+| tile=384 FP16 | 0.44 | -2% | |
+| tile=768 FP16 | 0.43 | -4% | Fewer tiles but larger compute per tile |
+| tile=512 FP32 | 0.27 | -40% | FP16 is much faster |
+| tile=512 pad=0 | 0.47 | **+5%** | Slightly faster but may cause tile artifacts |
+| cudnn.benchmark + TF32 | 0.44 | 0% | No effect on Real-ESRGAN |
+| torch.compile() | — | — | Not compatible with Real-ESRGAN tiling |
+
+**Key finding: Real-ESRGAN is framework-limited, not GPU-limited.** The RTX 5090 only draws 208W of its 575W TDP at 1920x1200 — the GPU is idle 64% of the time waiting for PyTorch/CPU overhead.
+
+Per-resolution performance on RTX 5090 (tile=512, FP16):
+
+| Resolution | MP | fps | GPU Power Draw |
+|---|---|---|---|
+| 640x480 (SD) | 0.31 | **3.27** | 340W (59% TDP) |
+| 960x720 | 0.69 | 1.47 | 281W (49% TDP) |
+| 1280x720 | 0.92 | 1.15 | 325W (57% TDP) |
+| 1920x1080 | 2.07 | 0.48 | 227W (39% TDP) |
+| 1920x1200 | 2.30 | 0.44 | 208W (36% TDP) |
+
 ## Performance Reference
 
 | Hardware | Per frame | 11 min video (~16k frames) | Cost |
