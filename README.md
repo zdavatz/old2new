@@ -236,9 +236,12 @@ The RTX 4090 handles all SD videos without tiling. The RTX 5090 handles HD video
 | Cost/hr | ~$0.50 | ~$0.69 |
 | Best for | SD videos ≤1.6 MP | HD videos (any resolution) |
 
-**A100 is NOT suitable for Real-ESRGAN** — despite 80GB VRAM, it runs at 0.07 fps (14s/frame) due to low clock speeds. Never use A100/datacenter GPUs for upscaling.
+**Datacenter GPUs are NOT suitable for Real-ESRGAN** — tested:
+- A100 80GB: 0.07 fps (14s/frame) — low clock speeds
+- L40S 48GB: 0.3 fps (3.3s/frame) — slower than RTX 5090 despite more VRAM, lower TDP (350W vs 575W)
+- RTX Pro 6000 WS Max-Q 96GB: 0.44 fps — power-throttled at 300W
 
-**Rule of thumb**: Use RTX 4090 for SD (≤1.6 MP). Use RTX 5090 for HD. Tiling is auto-enabled for >1.6 MP on any GPU.
+**Rule of thumb**: Use RTX 4090 for SD (≤1.6 MP). Use RTX 5090 for HD. Consumer GPUs with high TDP (>500W) are always faster than datacenter GPUs for Real-ESRGAN.
 
 ### GPU Power Limit & Variant Comparison
 
