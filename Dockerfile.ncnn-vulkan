@@ -130,6 +130,7 @@ print(f'PyTorch tile=512: {avg:.2f}s/frame = {1/avg:.2f} fps')
 echo ""
 echo "=== ALL BENCHMARKS DONE ==="
 BENCHEOF
-chmod +x /root/benchmark.sh
+
+RUN chmod +x /root/benchmark.sh
 
 CMD ["bash"]
