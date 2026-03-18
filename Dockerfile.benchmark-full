@@ -14,15 +14,17 @@ RUN apt-get update -qq && \
 RUN python3 -m venv /opt/venv
 ENV PATH="/opt/venv/bin:$PATH"
 
-# PyTorch (slim GPU wheel)
-RUN pip install --no-cache-dir torch torchvision \
+# PyTorch 2.10 + CUDA 12.8 (latest as of 2026-03)
+RUN pip install --no-cache-dir \
+    torch==2.10.0+cu128 torchvision==0.25.0+cu128 \
     --index-url https://download.pytorch.org/whl/cu128
 
 # Real-ESRGAN + deps
 RUN pip install --no-cache-dir \
     realesrgan "numpy==1.26.4" "basicsr==1.4.2" \
     "opencv-python-headless==4.10.0.84" \
-    yt-dlp google-api-python-client google-auth-oauthlib
+    yt-dlp google-api-python-client google-auth-oauthlib && \
+    pip install --no-cache-dir "numpy==1.26.4"
 
 # TensorRT + ONNX Runtime
 RUN pip install --no-cache-dir \
@@ -35,10 +37,11 @@ RUN DEGRADATIONS_FILE=$(python3 -c "import importlib.util; print(importlib.util.
         sed -i 's/from torchvision.transforms.functional_tensor import rgb_to_grayscale/from torchvision.transforms.functional import rgb_to_grayscale/' "$DEGRADATIONS_FILE"; \
     fi
 
-# Pre-download model weights (curl, no GPU needed)
-RUN mkdir -p /opt/venv/lib/python3.12/site-packages/weights && \
+# Pre-download model weights
+RUN WEIGHTS_DIR=$(python3 -c "import site; print(site.getsitepackages()[0])")/weights && \
+    mkdir -p "$WEIGHTS_DIR" && \
     curl -sL https://github.com/xinntao/Real-ESRGAN/releases/download/v0.1.0/RealESRGAN_x4plus.pth \
-    -o /opt/venv/lib/python3.12/site-packages/weights/RealESRGAN_x4plus.pth
+    -o "$WEIGHTS_DIR/RealESRGAN_x4plus.pth"
 
 # Static ffmpeg 7.x
 RUN curl -sL https://johnvansickle.com/ffmpeg/releases/ffmpeg-release-amd64-static.tar.xz | tar xJ -C /tmp/ && \
@@ -46,8 +49,13 @@ RUN curl -sL https://johnvansickle.com/ffmpeg/releases/ffmpeg-release-amd64-stat
     cp /tmp/ffmpeg-*-amd64-static/ffprobe /usr/local/bin/ffprobe && \
     rm -rf /tmp/ffmpeg-*
 
-# Verify
-RUN python3 -c "import torch; print(f'PyTorch: {torch.__version__}'); import cv2; print(f'OpenCV: {cv2.__version__}'); import numpy as np; print(f'NumPy: {np.__version__}'); from basicsr.archs.rrdbnet_arch import RRDBNet; print('BasicSR: OK'); from realesrgan import RealESRGANer; print('RealESRGAN: OK'); exec('try:\n import torch_tensorrt\n print(f\"TensorRT: {torch_tensorrt.__version__}\")\nexcept:\n print(\"TensorRT: not available\")'); exec('try:\n import onnxruntime\n print(f\"ONNX Runtime: {onnxruntime.__version__}\")\nexcept:\n print(\"ONNX Runtime: not available\")'); print('ALL OK')"
+# Verify (each import separate so we see which one fails)
+RUN python3 -c "import torch; print(f'PyTorch: {torch.__version__}')"
+RUN python3 -c "import cv2; print(f'OpenCV: {cv2.__version__}')"
+RUN python3 -c "import numpy as np; print(f'NumPy: {np.__version__}')"
+RUN python3 -c "from basicsr.archs.rrdbnet_arch import RRDBNet; print('BasicSR: OK')"
+RUN python3 -c "from realesrgan import RealESRGANer; print('RealESRGAN: OK')"
+RUN echo "ALL OK"
 
 WORKDIR /root
 CMD ["bash"]
