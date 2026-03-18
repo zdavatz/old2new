@@ -237,11 +237,12 @@ The RTX 4090 handles all SD videos without tiling. The RTX 5090 handles HD video
 | Best for | SD videos ≤1.6 MP | HD videos (any resolution) |
 
 **Datacenter GPUs are NOT suitable for Real-ESRGAN** — tested:
+- B200 179GB: 0.57 fps (1.76s/frame) — same speed as RTX 5090 but **4x more expensive** ($3.13/hr vs $0.76/hr). Only draws 205W of 1000W TDP — Real-ESRGAN cannot utilize the compute
 - A100 80GB: 0.07 fps (14s/frame) — low clock speeds
 - L40S 48GB: 0.3 fps (3.3s/frame) — slower than RTX 5090 despite more VRAM, lower TDP (350W vs 575W)
 - RTX Pro 6000 WS Max-Q 96GB: 0.44 fps — power-throttled at 300W
 
-**Rule of thumb**: Use RTX 4090 for SD (≤1.6 MP). Use RTX 5090 for HD. Consumer GPUs with high TDP (>500W) are always faster than datacenter GPUs for Real-ESRGAN.
+**Rule of thumb**: Use RTX 4090 for SD (≤1.6 MP). Use RTX 5090 for HD. More VRAM does NOT help — even 179GB B200 is no faster than 32GB RTX 5090. Consumer GPUs always win on price/performance for Real-ESRGAN.
 
 ### GPU Power Limit & Variant Comparison
 
@@ -250,6 +251,7 @@ GPU power limit directly impacts Real-ESRGAN performance. "Max-Q" / workstation 
 | GPU | Power | Clock | fps (1920x1200, tile=512) | $/hr |
 |-----|-------|-------|---------------------------|------|
 | RTX Pro 6000 S (Server, 96GB) | 600W | 2430 MHz | **0.62 fps** | $0.73 |
+| B200 (Datacenter, 179GB) | 1000W (205W actual) | 1965 MHz | 0.57 fps | $3.13 |
 | RTX 5090 (Gaming, 32GB) | 575W | 3090 MHz | **0.56 fps** | $0.76 |
 | RTX Pro 6000 WS (Max-Q, 96GB) | 300W | 3090 MHz | 0.44 fps | $1.20 |
 
