@@ -7,45 +7,45 @@ ENV DEBIAN_FRONTEND=noninteractive
 # System dependencies for Vulkan + ncnn build
 RUN apt-get update -qq && apt-get install -y --no-install-recommends \
     build-essential cmake git curl unzip \
-    libvulkan-dev vulkan-tools libgomp1 libxext6 \
+    libvulkan-dev vulkan-tools glslang-tools \
+    libgomp1 libxext6 \
     python3 python3-pip python3-opencv \
-    ffmpeg \
     && rm -rf /var/lib/apt/lists/*
 
-# Build ncnn with Vulkan support
+# Clone Real-ESRGAN-ncnn-vulkan with submodules (uses HTTPS, not SSH)
 WORKDIR /opt
-RUN git clone --depth 1 https://github.com/Tencent/ncnn.git && \
-    cd ncnn && \
-    git submodule update --init && \
-    mkdir build && cd build && \
+RUN git config --global url.'https://github.com/'.insteadOf 'git@github.com:' && \
+    git clone https://github.com/xinntao/Real-ESRGAN-ncnn-vulkan.git && \
+    cd Real-ESRGAN-ncnn-vulkan && \
+    git submodule update --init --recursive
+
+# Build ncnn (bundled in submodule) with Vulkan
+RUN cd /opt/Real-ESRGAN-ncnn-vulkan/src/ncnn && \
+    mkdir -p build && cd build && \
     cmake -DCMAKE_BUILD_TYPE=Release \
           -DNCNN_VULKAN=ON \
           -DNCNN_BUILD_EXAMPLES=OFF \
           -DNCNN_BUILD_TESTS=OFF \
           -DNCNN_BUILD_BENCHMARK=OFF \
+          -DNCNN_BUILD_TOOLS=OFF \
           .. && \
-    make -j$(nproc) && \
-    make install
+    make -j$(nproc)
 
-# Build Real-ESRGAN-ncnn-vulkan
-RUN git config --global url.'https://github.com/'.insteadOf 'git@github.com:' && \
-    git clone --depth 1 https://github.com/xinntao/Real-ESRGAN-ncnn-vulkan.git && \
-    cd Real-ESRGAN-ncnn-vulkan && \
-    git submodule update --init --recursive && \
-    mkdir build && cd build && \
+# Build Real-ESRGAN-ncnn-vulkan against the bundled ncnn
+RUN cd /opt/Real-ESRGAN-ncnn-vulkan && \
+    mkdir -p build && cd build && \
     cmake -DCMAKE_BUILD_TYPE=Release \
-          -DCMAKE_POLICY_VERSION_MINIMUM=3.5 \
+          -Dncnn_DIR=/opt/Real-ESRGAN-ncnn-vulkan/src/ncnn/build/install/lib/cmake/ncnn \
           ../src && \
     make -j$(nproc) && \
     cp realesrgan-ncnn-vulkan /usr/local/bin/
 
 # Download models
-RUN cd /opt/Real-ESRGAN-ncnn-vulkan && \
-    curl -sL https://github.com/xinntao/Real-ESRGAN/releases/download/v0.2.5.0/realesrgan-ncnn-vulkan-20220424-ubuntu.zip -o /tmp/models.zip && \
-    unzip -o /tmp/models.zip 'models/*' -d /tmp/ && \
+RUN curl -sL https://github.com/xinntao/Real-ESRGAN/releases/download/v0.2.5.0/realesrgan-ncnn-vulkan-20220424-ubuntu.zip -o /tmp/models.zip && \
     mkdir -p /usr/local/share/realesrgan-models && \
+    cd /tmp && unzip -o models.zip 'models/*' && \
     cp /tmp/models/*.param /tmp/models/*.bin /usr/local/share/realesrgan-models/ && \
-    rm /tmp/models.zip
+    rm -rf /tmp/models.zip /tmp/models
 
 # Install static ffmpeg 7.x
 RUN curl -sL https://johnvansickle.com/ffmpeg/releases/ffmpeg-release-amd64-static.tar.xz | tar xJ -C /tmp/ && \
@@ -53,7 +53,7 @@ RUN curl -sL https://johnvansickle.com/ffmpeg/releases/ffmpeg-release-amd64-stat
     cp /tmp/ffmpeg-*-amd64-static/ffprobe /usr/local/bin/ffprobe && \
     rm -rf /tmp/ffmpeg-*
 
-# Also install PyTorch for comparison benchmarks
+# Install PyTorch + Real-ESRGAN Python package for comparison benchmarks
 RUN pip install --break-system-packages -q \
     torch torchvision --index-url https://download.pytorch.org/whl/cu128 && \
     pip install --break-system-packages -q \
@@ -63,19 +63,24 @@ RUN pip install --break-system-packages -q \
     pip install --break-system-packages -q "opencv-python-headless==4.10.0.84" && \
     pip install --break-system-packages -q "numpy==1.26.4"
 
-# Patch basicsr
+# Patch basicsr for newer torchvision
 RUN DEGRADATIONS_FILE=$(python3 -c "import importlib.util; print(importlib.util.find_spec('basicsr').submodule_search_locations[0])")/data/degradations.py && \
     if [ -f "$DEGRADATIONS_FILE" ] && grep -q "functional_tensor" "$DEGRADATIONS_FILE"; then \
         sed -i 's/from torchvision.transforms.functional_tensor import rgb_to_grayscale/from torchvision.transforms.functional import rgb_to_grayscale/' "$DEGRADATIONS_FILE"; \
     fi
 
-# Convenience: symlink models for easy access
+# Symlink models
 RUN ln -s /usr/local/share/realesrgan-models /models
+
+# Download enhance_gpu.py and youtube_upload.py
+RUN curl -sL https://raw.githubusercontent.com/zdavatz/old2new/main/enhance_gpu.py -o /root/enhance_gpu.py && \
+    curl -sL https://raw.githubusercontent.com/zdavatz/old2new/main/youtube_upload.py -o /root/youtube_upload.py && \
+    curl -sL https://raw.githubusercontent.com/zdavatz/old2new/main/status_server.py -o /root/status_server.py
 
 WORKDIR /root
 
-# Benchmark script
-RUN cat > /root/benchmark.sh << 'BENCHEOF'
+# Benchmark script: compares ncnn-vulkan vs PyTorch/CUDA on same frame
+COPY <<'BENCHEOF' /root/benchmark.sh
 #!/bin/bash
 set -e
 echo "=== GPU Info ==="
@@ -130,7 +135,6 @@ print(f'PyTorch tile=512: {avg:.2f}s/frame = {1/avg:.2f} fps')
 echo ""
 echo "=== ALL BENCHMARKS DONE ==="
 BENCHEOF
-
 RUN chmod +x /root/benchmark.sh
 
 CMD ["bash"]
