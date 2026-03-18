@@ -240,6 +240,40 @@ The RTX 4090 handles all SD videos without tiling. The RTX 5090 handles HD video
 
 **Rule of thumb**: Use RTX 4090 for SD (≤1.6 MP). Use RTX 5090 for HD. Tiling is auto-enabled for >1.6 MP on any GPU.
 
+### GPU Power Limit & Variant Comparison
+
+GPU power limit directly impacts Real-ESRGAN performance. "Max-Q" / workstation variants throttle under sustained load:
+
+| GPU | Power | Clock | fps (1920x1200, tile=512) | $/hr |
+|-----|-------|-------|---------------------------|------|
+| RTX Pro 6000 S (Server, 96GB) | 600W | 2430 MHz | **0.62 fps** | $0.73 |
+| RTX 5090 (Gaming, 32GB) | 575W | 3090 MHz | **0.56 fps** | $0.76 |
+| RTX Pro 6000 WS (Max-Q, 96GB) | 300W | 3090 MHz | 0.44 fps | $1.20 |
+
+The pre-flight check now queries `nvidia-smi` for `power.limit` and warns about low-power GPU variants.
+
+### Tiling vs No-Tile Performance
+
+Counter-intuitively, **tiling is faster than no-tile** for high-resolution inputs. RealESRGAN processes at 4x internally, so 1920x1200 becomes 7680x4800 — processing this as one image is slower than 12 smaller tiles:
+
+| Mode | 1920x1200 on RTX 5090 (32GB) | 1920x1200 on Pro 6000 (96GB) |
+|------|------------------------------|------------------------------|
+| tile=512 | **0.56 fps** | **0.62 fps** |
+| no-tile | 0.13 fps (VRAM swapping) | 0.13 fps (compute bottleneck) |
+
+### ncnn-vulkan: NOT Viable on Cloud GPUs
+
+Tested extensively — **ncnn-vulkan does not work for cloud GPU upscaling**:
+
+| Approach | Result | fps |
+|----------|--------|-----|
+| Pre-built binary (2022) | Fails — doesn't know Blackwell GPUs | — |
+| Self-compiled from source | Vulkan ICD fails in Docker (`vkCreateInstance -9`) | — |
+| Custom Docker image with `NVIDIA_DRIVER_CAPABILITIES=all` | Vulkan detects GPU but ncnn falls back to CPU | 0.005 fps |
+| **PyTorch/CUDA (our approach)** | **Works perfectly** | **0.56-0.62 fps** |
+
+A Docker image with ncnn-vulkan is available at `ghcr.io/zdavatz/realesrgan-ncnn-vulkan:latest` for testing, but **PyTorch/CUDA is 125x faster** on Blackwell GPUs. Always use `enhance_gpu.py` for cloud upscaling.
+
 ## Performance Reference
 
 | Hardware | Per frame | 11 min video (~16k frames) | Cost |
@@ -259,7 +293,7 @@ The RTX 4090 handles all SD videos without tiling. The RTX 5090 handles HD video
 - **[RunPod](https://runpod.io)**: **NOT WORKING** (as of 2026-03-18). Pods show "RUNNING" but never actually start — uptime stays 0, no SSH ports assigned. Tested with RTX Pro 6000 Blackwell (96GB, $1.69/hr) and RTX 5090, multiple datacenters, various Docker images, with/without network volumes. Platform-level issue. `runpod_launch.sh` script exists but is unusable until RunPod fixes this.
 - **[Google Cloud](https://cloud.google.com)**: Always available. L4 at ~$0.70/hr. Use `gcp_setup.sh` for one-command setup. Requires GPUS_ALL_REGIONS quota for new projects.
 
-**Note**: On cloud instances, use the Python/CUDA approach (`enhance_gpu.py`) instead of the ncnn-vulkan binary, as Vulkan drivers are often not available in Docker containers.
+**Note**: On cloud instances, always use the Python/CUDA approach (`enhance_gpu.py`). The ncnn-vulkan binary does not work in Docker containers — Vulkan ICD fails or falls back to CPU (125x slower). See "ncnn-vulkan: NOT Viable on Cloud GPUs" above.
 
 ### Enhancement Status Check
 
