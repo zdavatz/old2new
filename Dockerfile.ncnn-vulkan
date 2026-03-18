@@ -1,0 +1,135 @@
+FROM nvidia/cuda:12.8.0-devel-ubuntu24.04
+
+# Force NVIDIA container runtime to expose Vulkan (graphics) in addition to CUDA (compute)
+ENV NVIDIA_DRIVER_CAPABILITIES=all
+ENV DEBIAN_FRONTEND=noninteractive
+
+# System dependencies for Vulkan + ncnn build
+RUN apt-get update -qq && apt-get install -y --no-install-recommends \
+    build-essential cmake git curl unzip \
+    libvulkan-dev vulkan-tools libgomp1 libxext6 \
+    python3 python3-pip python3-opencv \
+    ffmpeg \
+    && rm -rf /var/lib/apt/lists/*
+
+# Build ncnn with Vulkan support
+WORKDIR /opt
+RUN git clone --depth 1 https://github.com/Tencent/ncnn.git && \
+    cd ncnn && \
+    git submodule update --init && \
+    mkdir build && cd build && \
+    cmake -DCMAKE_BUILD_TYPE=Release \
+          -DNCNN_VULKAN=ON \
+          -DNCNN_BUILD_EXAMPLES=OFF \
+          -DNCNN_BUILD_TESTS=OFF \
+          -DNCNN_BUILD_BENCHMARK=OFF \
+          .. && \
+    make -j$(nproc) && \
+    make install
+
+# Build Real-ESRGAN-ncnn-vulkan
+RUN git config --global url.'https://github.com/'.insteadOf 'git@github.com:' && \
+    git clone --depth 1 https://github.com/xinntao/Real-ESRGAN-ncnn-vulkan.git && \
+    cd Real-ESRGAN-ncnn-vulkan && \
+    git submodule update --init --recursive && \
+    mkdir build && cd build && \
+    cmake -DCMAKE_BUILD_TYPE=Release \
+          -DCMAKE_POLICY_VERSION_MINIMUM=3.5 \
+          ../src && \
+    make -j$(nproc) && \
+    cp realesrgan-ncnn-vulkan /usr/local/bin/
+
+# Download models
+RUN cd /opt/Real-ESRGAN-ncnn-vulkan && \
+    curl -sL https://github.com/xinntao/Real-ESRGAN/releases/download/v0.2.5.0/realesrgan-ncnn-vulkan-20220424-ubuntu.zip -o /tmp/models.zip && \
+    unzip -o /tmp/models.zip 'models/*' -d /tmp/ && \
+    mkdir -p /usr/local/share/realesrgan-models && \
+    cp /tmp/models/*.param /tmp/models/*.bin /usr/local/share/realesrgan-models/ && \
+    rm /tmp/models.zip
+
+# Install static ffmpeg 7.x
+RUN curl -sL https://johnvansickle.com/ffmpeg/releases/ffmpeg-release-amd64-static.tar.xz | tar xJ -C /tmp/ && \
+    cp /tmp/ffmpeg-*-amd64-static/ffmpeg /usr/local/bin/ffmpeg && \
+    cp /tmp/ffmpeg-*-amd64-static/ffprobe /usr/local/bin/ffprobe && \
+    rm -rf /tmp/ffmpeg-*
+
+# Also install PyTorch for comparison benchmarks
+RUN pip install --break-system-packages -q \
+    torch torchvision --index-url https://download.pytorch.org/whl/cu128 && \
+    pip install --break-system-packages -q \
+    realesrgan yt-dlp "numpy==1.26.4" "basicsr==1.4.2" \
+    google-api-python-client google-auth-oauthlib google-auth-httplib2 && \
+    pip uninstall --break-system-packages -y opencv-python 2>/dev/null; \
+    pip install --break-system-packages -q "opencv-python-headless==4.10.0.84" && \
+    pip install --break-system-packages -q "numpy==1.26.4"
+
+# Patch basicsr
+RUN DEGRADATIONS_FILE=$(python3 -c "import importlib.util; print(importlib.util.find_spec('basicsr').submodule_search_locations[0])")/data/degradations.py && \
+    if [ -f "$DEGRADATIONS_FILE" ] && grep -q "functional_tensor" "$DEGRADATIONS_FILE"; then \
+        sed -i 's/from torchvision.transforms.functional_tensor import rgb_to_grayscale/from torchvision.transforms.functional import rgb_to_grayscale/' "$DEGRADATIONS_FILE"; \
+    fi
+
+# Convenience: symlink models for easy access
+RUN ln -s /usr/local/share/realesrgan-models /models
+
+WORKDIR /root
+
+# Benchmark script
+RUN cat > /root/benchmark.sh << 'BENCHEOF'
+#!/bin/bash
+set -e
+echo "=== GPU Info ==="
+nvidia-smi --query-gpu=name,memory.total,power.limit,clocks.max.graphics,compute_cap --format=csv
+
+echo ""
+echo "=== Vulkan Check ==="
+vulkaninfo --summary 2>&1 | grep -E 'GPU|device|apiVersion' | head -10 || echo "Vulkan not available"
+
+echo ""
+echo "=== Create test frame 1920x1200 ==="
+python3 -c "
+import numpy as np, cv2
+img = np.random.randint(0, 255, (1200, 1920, 3), dtype=np.uint8)
+cv2.imwrite('/root/test_frame.png', img)
+print('Created 1920x1200 test frame')
+"
+
+echo ""
+echo "=== ncnn-vulkan Benchmark ==="
+cd /usr/local/share/realesrgan-models
+
+echo "--- tile=512, scale=2 ---"
+time realesrgan-ncnn-vulkan -i /root/test_frame.png -o /root/out_ncnn_512.png \
+    -s 2 -n realesrgan-x4plus -t 512 2>&1
+
+echo ""
+echo "--- tile=0 (no tile), scale=2 ---"
+time realesrgan-ncnn-vulkan -i /root/test_frame.png -o /root/out_ncnn_notile.png \
+    -s 2 -n realesrgan-x4plus -t 0 2>&1
+
+echo ""
+echo "=== PyTorch/CUDA Benchmark (same frame) ==="
+python3 -c "
+import torch, time, cv2
+from realesrgan import RealESRGANer
+from basicsr.archs.rrdbnet_arch import RRDBNet
+
+img = cv2.imread('/root/test_frame.png', cv2.IMREAD_UNCHANGED)
+model = RRDBNet(num_in_ch=3, num_out_ch=3, num_feat=64, num_block=23, num_grow_ch=32, scale=4)
+up = RealESRGANer(scale=4, model_path='https://github.com/xinntao/Real-ESRGAN/releases/download/v0.1.0/RealESRGAN_x4plus.pth', model=model, tile=512, tile_pad=10, pre_pad=0, half=True, gpu_id=0)
+up.enhance(img, outscale=2)  # warmup
+times = []
+for i in range(3):
+    t0 = time.time()
+    up.enhance(img, outscale=2)
+    times.append(time.time() - t0)
+avg = sum(times)/len(times)
+print(f'PyTorch tile=512: {avg:.2f}s/frame = {1/avg:.2f} fps')
+"
+
+echo ""
+echo "=== ALL BENCHMARKS DONE ==="
+BENCHEOF
+chmod +x /root/benchmark.sh
+
+CMD ["bash"]
