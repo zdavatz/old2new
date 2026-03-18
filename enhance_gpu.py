@@ -50,6 +50,27 @@ def preflight_check():
             print(f"  Driver:   {gpu_driver}")
             print(f"  Compute:  sm_{gpu_compute.replace('.', '')}")
 
+            # Query power limit and max clock
+            try:
+                pw_result = subprocess.run(
+                    ["nvidia-smi", "--query-gpu=power.limit,clocks.max.graphics",
+                     "--format=csv,noheader,nounits"],
+                    capture_output=True, text=True, timeout=5)
+                if pw_result.returncode == 0:
+                    pw_parts = [p.strip() for p in pw_result.stdout.strip().split(",")]
+                    power_limit = float(pw_parts[0])
+                    max_clock = int(pw_parts[1])
+                    info["power_limit_w"] = power_limit
+                    info["max_clock_mhz"] = max_clock
+                    print(f"  Power:    {power_limit:.0f}W")
+                    print(f"  MaxClock: {max_clock} MHz")
+                    # Warn about power-limited GPUs (Max-Q, workstation throttled)
+                    if power_limit < 400 and gpu_vram_mb > 30000:
+                        print(f"  WARNING:  Low power limit ({power_limit:.0f}W) for a {gpu_vram_mb/1024:.0f}GB GPU — may be Max-Q/throttled variant")
+                        print(f"            Real-ESRGAN performance will be significantly lower than full-power GPUs")
+            except Exception:
+                pass
+
             # Check if Blackwell (sm_12x) needs newer PyTorch
             major = int(gpu_compute.split(".")[0])
             if major >= 12:
