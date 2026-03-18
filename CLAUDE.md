@@ -49,9 +49,9 @@ old2new enhances old Da Vaz videos using Real-ESRGAN AI upscaling. There are two
 - CPU cores and disk speed directly impact upscaling fps: 4 vCPUs + 624 MB/s disk = 2.6 fps vs 16 vCPUs + 1207 MB/s NVMe = 7.0 fps (same RTX 4090). The I/O pipeline needs 8 read + 8 write workers to keep GPU fed. Always request 16+ vCPUs and NVMe >=1000 MB/s.
 - CPU single-core speed matters: Xeon Phi (1.4GHz, 272 cores) was 4x slower than EPYC (2.25GHz, 32 cores) with same RTX 5090 GPU because cv2.imread/imwrite bottlenecks on per-core speed. Prefer machines with >2GHz per-core.
 - RTX 5090 (Blackwell, sm_120) needs PyTorch 2.6+ with CUDA 12.8. The `pytorch:2.1.0-cuda12.1` Docker image must be upgraded: `pip install torch torchvision --index-url https://download.pytorch.org/whl/cu128`. Also patch basicsr: `sed -i 's/functional_tensor/functional/' .../degradations.py` and suppress tile spam: `sed -i "s/print(f'.*Tile/pass  # /" .../realesrgan/utils.py`. PyTorch 2.10 tested — no speedup over 2.7 for Real-ESRGAN (0.51 vs 0.50 fps).
-- **Docker images** for cloud deployment (pre-built, all deps included):
-  - `ghcr.io/zdavatz/realesrgan-benchmark:latest` — slim ~4.5GB (PyTorch 2.10 + CUDA 12.8 + Real-ESRGAN + ffmpeg + gcc)
-  - `ghcr.io/zdavatz/realesrgan-benchmark-full:latest` — full ~8GB (+ TensorRT + ONNX Runtime + g++)
+- **Docker images** for cloud deployment — **always use the slim image as default** for new setups on vast.ai, TensorDock, RunPod, and Packet.ai. All deps pre-installed = no pip install, no patching, no ffmpeg download. Saves 5-8 min setup per instance.
+  - `ghcr.io/zdavatz/realesrgan-benchmark:latest` — **slim ~4.5GB, USE THIS** (PyTorch 2.10 + CUDA 12.8 + Real-ESRGAN + ffmpeg + gcc). Default for all new deployments.
+  - `ghcr.io/zdavatz/realesrgan-benchmark-full:latest` — full ~8GB (+ TensorRT + ONNX Runtime + g++). Only for optimization benchmarks.
   - `ghcr.io/zdavatz/realesrgan-ncnn-vulkan:latest` — ncnn-vulkan build (reference only, doesn't work on cloud)
   - Built from `nvidia/cuda:12.8.0-runtime-ubuntu24.04` base (not `base` — base lacks CUDA runtime libs, PyTorch falls back to CPU)
 - Processing is resumable: each step checks for existing output before re-running
