@@ -1,7 +1,9 @@
 {
   "gpu": "RTX 5090",
-  "total_videos": 65,
-  "total_duration_hours": 23.4,
+  "scale": "2x",
+  "definition": "hd",
+  "total_videos": 143,
+  "total_duration_hours": 33.5,
   "videos": [
     {
       "youtube_id": "o_nM2N-03UI",
@@ -85,12 +87,48 @@
       "scale": 2
     },
     {
+      "youtube_id": "WwHJW39JqPk",
+      "title": "050c BORN to MOVE / X-treams, X-dreams - K/Hsub",
+      "duration_seconds": 3068,
+      "width": 960,
+      "height": 720,
+      "megapixels": 0.69,
+      "scale": 2
+    },
+    {
       "youtube_id": "u9LHBYxyj5w",
       "title": "VERGANGENHEIT als VERMÄCHTNIS – work in progress 1.0",
       "duration_seconds": 2701,
       "width": 1920,
       "height": 1080,
       "megapixels": 2.07,
+      "scale": 2
+    },
+    {
+      "youtube_id": "rXUD-jxOCuM",
+      "title": "051a MISHA goes to SCHOOL - R/Esub",
+      "duration_seconds": 2368,
+      "width": 1280,
+      "height": 718,
+      "megapixels": 0.92,
+      "scale": 2
+    },
+    {
+      "youtube_id": "SHFqywMgx1Q",
+      "title": "007b BUDAPESTEN NAPLO - H",
+      "duration_seconds": 2344,
+      "width": 960,
+      "height": 720,
+      "megapixels": 0.69,
+      "scale": 2
+    },
+    {
+      "youtube_id": "X3J2WOb0FyI",
+      "title": "030a ALICE in WONDERLAND - E",
+      "duration_seconds": 2097,
+      "width": 960,
+      "height": 720,
+      "megapixels": 0.69,
       "scale": 2
     },
     {
@@ -112,12 +150,57 @@
       "scale": 2
     },
     {
+      "youtube_id": "t6YvdmcGdo8",
+      "title": "049b Liebe Anna - D",
+      "duration_seconds": 2042,
+      "width": 960,
+      "height": 720,
+      "megapixels": 0.69,
+      "scale": 2
+    },
+    {
+      "youtube_id": "KHRHsyGIRlI",
+      "title": "049a Liebe Anna - E",
+      "duration_seconds": 2033,
+      "width": 960,
+      "height": 720,
+      "megapixels": 0.69,
+      "scale": 2
+    },
+    {
+      "youtube_id": "UExLHdyGfwA",
+      "title": "049c Liebe Anna - H",
+      "duration_seconds": 2020,
+      "width": 960,
+      "height": 720,
+      "megapixels": 0.69,
+      "scale": 2
+    },
+    {
       "youtube_id": "e1e-_J0PzTY",
       "title": "Museum Rundgang Werni 2024",
       "duration_seconds": 2014,
       "width": 1920,
       "height": 1080,
       "megapixels": 2.07,
+      "scale": 2
+    },
+    {
+      "youtube_id": "IBfMLZghog0",
+      "title": "044 Book of Eyes classic.",
+      "duration_seconds": 1948,
+      "width": 960,
+      "height": 720,
+      "megapixels": 0.69,
+      "scale": 2
+    },
+    {
+      "youtube_id": "oUnnIVKwxv0",
+      "title": "052d / Itzhak Frey & Mal'chik - Russian sub",
+      "duration_seconds": 1948,
+      "width": 1440,
+      "height": 1080,
+      "megapixels": 1.56,
       "scale": 2
     },
     {
@@ -130,12 +213,39 @@
       "scale": 2
     },
     {
+      "youtube_id": "wxJ7SGgb42c",
+      "title": "052a  Itzhak  Frey & Sohn - D",
+      "duration_seconds": 1936,
+      "width": 1280,
+      "height": 718,
+      "megapixels": 0.92,
+      "scale": 2
+    },
+    {
       "youtube_id": "cgHVbxV64VU",
       "title": "068 / SEX on the STEPS - Yellow Mountains",
       "duration_seconds": 1900,
       "width": 1920,
       "height": 1080,
       "megapixels": 2.07,
+      "scale": 2
+    },
+    {
+      "youtube_id": "CAbPfoe5B_Q",
+      "title": "045a SIBERIA YOU ARE MY LIMIT - R/Esub",
+      "duration_seconds": 1775,
+      "width": 960,
+      "height": 720,
+      "megapixels": 0.69,
+      "scale": 2
+    },
+    {
+      "youtube_id": "FaRUcjDYZis",
+      "title": "001b MAS SZEMMEL - H",
+      "duration_seconds": 1759,
+      "width": 960,
+      "height": 720,
+      "megapixels": 0.69,
       "scale": 2
     },
     {
@@ -175,12 +285,30 @@
       "scale": 2
     },
     {
+      "youtube_id": "x6S8pAmrv94",
+      "title": "046b EGYENSULYBAN / Babushka Masha - H",
+      "duration_seconds": 1609,
+      "width": 960,
+      "height": 720,
+      "megapixels": 0.69,
+      "scale": 2
+    },
+    {
       "youtube_id": "I-W2hJc6q1U",
       "title": "053a / JASMINE and OLIVES",
       "duration_seconds": 1597,
       "width": 1920,
       "height": 1080,
       "megapixels": 2.07,
+      "scale": 2
+    },
+    {
+      "youtube_id": "nACZdLod2mU",
+      "title": "030b ALICE CSODAORSZAGBAN - H",
+      "duration_seconds": 1524,
+      "width": 960,
+      "height": 720,
+      "megapixels": 0.69,
       "scale": 2
     },
     {
@@ -208,6 +336,24 @@
       "width": null,
       "height": null,
       "megapixels": null,
+      "scale": 2
+    },
+    {
+      "youtube_id": "L8kk5d87jnk",
+      "title": "038b IFJU FARKAS / Smolensk - H",
+      "duration_seconds": 1304,
+      "width": 960,
+      "height": 720,
+      "megapixels": 0.69,
+      "scale": 2
+    },
+    {
+      "youtube_id": "yPJT2-Bodhw",
+      "title": "038a YOUNG WOLF / Smolensk - R/G, Esub",
+      "duration_seconds": 1295,
+      "width": 960,
+      "height": 720,
+      "megapixels": 0.69,
       "scale": 2
     },
     {
@@ -262,6 +408,15 @@
       "width": 1920,
       "height": 1080,
       "megapixels": 2.07,
+      "scale": 2
+    },
+    {
+      "youtube_id": "qeNigfxHkEo",
+      "title": "033 The Takami Family, Tokyo",
+      "duration_seconds": 937,
+      "width": 960,
+      "height": 720,
+      "megapixels": 0.69,
       "scale": 2
     },
     {
@@ -328,6 +483,15 @@
       "scale": 2
     },
     {
+      "youtube_id": "QfQyjfQTPjw",
+      "title": "035 Rettungsmarsch 1913",
+      "duration_seconds": 820,
+      "width": 960,
+      "height": 720,
+      "megapixels": 0.69,
+      "scale": 2
+    },
+    {
       "youtube_id": "HcWVqIwrBE4",
       "title": "093 / Karpfen and Mirage, Winniza, Ukraine",
       "duration_seconds": 789,
@@ -352,6 +516,15 @@
       "width": 1920,
       "height": 1200,
       "megapixels": 2.3,
+      "scale": 2
+    },
+    {
+      "youtube_id": "rX4ADnOa3G4",
+      "title": "006 MTV2 Window on Europe -- Európa Ablak",
+      "duration_seconds": 657,
+      "width": 960,
+      "height": 720,
+      "megapixels": 0.69,
       "scale": 2
     },
     {
@@ -397,6 +570,24 @@
       "width": 1920,
       "height": 1200,
       "megapixels": 2.3,
+      "scale": 2
+    },
+    {
+      "youtube_id": "f1FFHaB68UY",
+      "title": "043 Land Inside Me - Almaty",
+      "duration_seconds": 588,
+      "width": 960,
+      "height": 720,
+      "megapixels": 0.69,
+      "scale": 2
+    },
+    {
+      "youtube_id": "FKkFMCWm0HI",
+      "title": "042 Behind the Curtain - Interview H/E",
+      "duration_seconds": 560,
+      "width": 960,
+      "height": 720,
+      "megapixels": 0.69,
       "scale": 2
     },
     {
@@ -481,6 +672,24 @@
       "scale": 2
     },
     {
+      "youtube_id": "HM8JI7LlMU0",
+      "title": "039a Kazakh Television / Interview - E",
+      "duration_seconds": 305,
+      "width": 960,
+      "height": 720,
+      "megapixels": 0.69,
+      "scale": 2
+    },
+    {
+      "youtube_id": "ouzpBuJuCJk",
+      "title": "039b Kazakh Television / Interview - R",
+      "duration_seconds": 305,
+      "width": 960,
+      "height": 720,
+      "megapixels": 0.69,
+      "scale": 2
+    },
+    {
       "youtube_id": "M7pLqiSxJ8c",
       "title": "Visual Thinking - inner landscapes - out of a black whole",
       "duration_seconds": 286,
@@ -517,12 +726,30 @@
       "scale": 2
     },
     {
+      "youtube_id": "86Njsv89dlo",
+      "title": "Wunderblock",
+      "duration_seconds": 192,
+      "width": 1424,
+      "height": 1080,
+      "megapixels": 1.54,
+      "scale": 2
+    },
+    {
       "youtube_id": "hYvlNNcPPEI",
       "title": "90 / Heavenly Private Papamobil",
       "duration_seconds": 165,
       "width": 1920,
       "height": 1080,
       "megapixels": 2.07,
+      "scale": 2
+    },
+    {
+      "youtube_id": "nIjgA9_9tgM",
+      "title": "DPRK / KIM JONG IL / moviemaker - all about love",
+      "duration_seconds": 158,
+      "width": 960,
+      "height": 720,
+      "megapixels": 0.69,
       "scale": 2
     },
     {
@@ -541,6 +768,15 @@
       "width": 1920,
       "height": 1080,
       "megapixels": 2.07,
+      "scale": 2
+    },
+    {
+      "youtube_id": "5AdE5zNRq6w",
+      "title": "DPRK / KIM DYNASTY - teaching method",
+      "duration_seconds": 54,
+      "width": 960,
+      "height": 720,
+      "megapixels": 0.69,
       "scale": 2
     },
     {
@@ -580,12 +816,480 @@
       "scale": 2
     },
     {
+      "youtube_id": "uGvmLs3uBys",
+      "title": "FAMILY LIFE",
+      "duration_seconds": 16,
+      "width": 720,
+      "height": 1280,
+      "megapixels": 0.92,
+      "scale": 2
+    },
+    {
+      "youtube_id": "wzgdTKkEQCo",
+      "title": "to TOO  to TOOO  to TOOOO",
+      "duration_seconds": 16,
+      "width": 720,
+      "height": 1280,
+      "megapixels": 0.92,
+      "scale": 2
+    },
+    {
+      "youtube_id": "-77BxiZaqeQ",
+      "title": "WILL TO SURVIVE",
+      "duration_seconds": 15,
+      "width": 720,
+      "height": 1280,
+      "megapixels": 0.92,
+      "scale": 2
+    },
+    {
+      "youtube_id": "0lyreCd3gdY",
+      "title": "🎁PRESENT🎁",
+      "duration_seconds": 15,
+      "width": 720,
+      "height": 1280,
+      "megapixels": 0.92,
+      "scale": 2
+    },
+    {
+      "youtube_id": "2BZktntJTUk",
+      "title": "🐔C🐓H🐔I🐓C🐔K🐓E🐔N🐓",
+      "duration_seconds": 15,
+      "width": 720,
+      "height": 1280,
+      "megapixels": 0.92,
+      "scale": 2
+    },
+    {
+      "youtube_id": "4QTgJf8Pr44",
+      "title": "🌝oo🌚",
+      "duration_seconds": 15,
+      "width": 720,
+      "height": 1280,
+      "megapixels": 0.92,
+      "scale": 2
+    },
+    {
+      "youtube_id": "8AW2b8VvDtk",
+      "title": "hard BEAT",
+      "duration_seconds": 15,
+      "width": 720,
+      "height": 1280,
+      "megapixels": 0.92,
+      "scale": 2
+    },
+    {
+      "youtube_id": "8Nj1D0wWu1I",
+      "title": "WUNDERBLOCK",
+      "duration_seconds": 15,
+      "width": 720,
+      "height": 1280,
+      "megapixels": 0.92,
+      "scale": 2
+    },
+    {
+      "youtube_id": "BLP5KBjSHaU",
+      "title": "HELLO 👋 HELLO",
+      "duration_seconds": 15,
+      "width": 720,
+      "height": 1280,
+      "megapixels": 0.92,
+      "scale": 2
+    },
+    {
+      "youtube_id": "EG4aSSkrKT8",
+      "title": "😃EVERY✍️HAND✍️Is different✍️",
+      "duration_seconds": 15,
+      "width": 720,
+      "height": 1280,
+      "megapixels": 0.92,
+      "scale": 2
+    },
+    {
+      "youtube_id": "Gz-ulMPi8R8",
+      "title": "EMOTIONS",
+      "duration_seconds": 15,
+      "width": 720,
+      "height": 1280,
+      "megapixels": 0.92,
+      "scale": 2
+    },
+    {
+      "youtube_id": "J42Hm1gVt_U",
+      "title": "?🎞?🎥?",
+      "duration_seconds": 15,
+      "width": 720,
+      "height": 1280,
+      "megapixels": 0.92,
+      "scale": 2
+    },
+    {
+      "youtube_id": "J5Sn3T0eSFU",
+      "title": "MY STUDENTS",
+      "duration_seconds": 15,
+      "width": 720,
+      "height": 1280,
+      "megapixels": 0.92,
+      "scale": 2
+    },
+    {
+      "youtube_id": "J9poOhWeG54",
+      "title": "process is🔑is process",
+      "duration_seconds": 15,
+      "width": 720,
+      "height": 1280,
+      "megapixels": 0.92,
+      "scale": 2
+    },
+    {
+      "youtube_id": "MKwI2DLtPos",
+      "title": "drip drip",
+      "duration_seconds": 15,
+      "width": 720,
+      "height": 1280,
+      "megapixels": 0.92,
+      "scale": 2
+    },
+    {
+      "youtube_id": "NqqHRvsDek8",
+      "title": "the OTHER EYE",
+      "duration_seconds": 15,
+      "width": 720,
+      "height": 1280,
+      "megapixels": 0.92,
+      "scale": 2
+    },
+    {
+      "youtube_id": "P5eG6xQ1gJg",
+      "title": "CABBAGE NETWORK",
+      "duration_seconds": 15,
+      "width": 720,
+      "height": 1280,
+      "megapixels": 0.92,
+      "scale": 2
+    },
+    {
+      "youtube_id": "QPQyVHtCyho",
+      "title": "CUTTING-EDGE",
+      "duration_seconds": 15,
+      "width": 720,
+      "height": 1280,
+      "megapixels": 0.92,
+      "scale": 2
+    },
+    {
+      "youtube_id": "RTcR_xd9S_I",
+      "title": "CROSS BORDERS",
+      "duration_seconds": 15,
+      "width": 720,
+      "height": 1280,
+      "megapixels": 0.92,
+      "scale": 2
+    },
+    {
+      "youtube_id": "RkRryabSdiw",
+      "title": "MATTER OF CHANCE",
+      "duration_seconds": 15,
+      "width": 720,
+      "height": 1280,
+      "megapixels": 0.92,
+      "scale": 2
+    },
+    {
+      "youtube_id": "UWMqbzQUfI0",
+      "title": "PICK AND PEN",
+      "duration_seconds": 15,
+      "width": 720,
+      "height": 1280,
+      "megapixels": 0.92,
+      "scale": 2
+    },
+    {
+      "youtube_id": "UvrS8IpQSl8",
+      "title": "FORCED adjustment",
+      "duration_seconds": 15,
+      "width": 720,
+      "height": 1280,
+      "megapixels": 0.92,
+      "scale": 2
+    },
+    {
+      "youtube_id": "_aB3Pc7krPw",
+      "title": "roadside 🇧🇹BHUTAN🇧🇹",
+      "duration_seconds": 15,
+      "width": 720,
+      "height": 1280,
+      "megapixels": 0.92,
+      "scale": 2
+    },
+    {
+      "youtube_id": "aqs-jHb2pnk",
+      "title": "Bei meiner Ehre…",
+      "duration_seconds": 15,
+      "width": 720,
+      "height": 1280,
+      "megapixels": 0.92,
+      "scale": 2
+    },
+    {
+      "youtube_id": "b1Vst4OlmWY",
+      "title": "WHY?🤫WHY?🤪WHY?",
+      "duration_seconds": 15,
+      "width": 720,
+      "height": 1280,
+      "megapixels": 0.92,
+      "scale": 2
+    },
+    {
+      "youtube_id": "c6soqG3ZYMA",
+      "title": "MAKE-UP",
+      "duration_seconds": 15,
+      "width": 720,
+      "height": 1280,
+      "megapixels": 0.92,
+      "scale": 2
+    },
+    {
+      "youtube_id": "cbAE4XrqJqc",
+      "title": "SINGING BEAUTY",
+      "duration_seconds": 15,
+      "width": 720,
+      "height": 1280,
+      "megapixels": 0.92,
+      "scale": 2
+    },
+    {
+      "youtube_id": "dqiDqnYOHrU",
+      "title": "nur für DOKUMENT‼️",
+      "duration_seconds": 15,
+      "width": 720,
+      "height": 1280,
+      "megapixels": 0.92,
+      "scale": 2
+    },
+    {
+      "youtube_id": "eaeJozXNBPA",
+      "title": "🙂CHICKEN🐓WORLD🙂",
+      "duration_seconds": 15,
+      "width": 720,
+      "height": 1280,
+      "megapixels": 0.92,
+      "scale": 2
+    },
+    {
+      "youtube_id": "ef1zAYI6Akg",
+      "title": "enter 🇧🇹BHUTAN🇧🇹",
+      "duration_seconds": 15,
+      "width": 720,
+      "height": 1280,
+      "megapixels": 0.92,
+      "scale": 2
+    },
+    {
+      "youtube_id": "f4x_p_zRons",
+      "title": "WE ARE THE WORLD",
+      "duration_seconds": 15,
+      "width": 720,
+      "height": 1280,
+      "megapixels": 0.92,
+      "scale": 2
+    },
+    {
+      "youtube_id": "fwSfBzIftJI",
+      "title": "COME WITH ME",
+      "duration_seconds": 15,
+      "width": 720,
+      "height": 1280,
+      "megapixels": 0.92,
+      "scale": 2
+    },
+    {
+      "youtube_id": "hFL_Ct-qBRI",
+      "title": "🦜🐈🐛🪰🦅🐒🐸",
+      "duration_seconds": 15,
+      "width": 720,
+      "height": 1280,
+      "megapixels": 0.92,
+      "scale": 2
+    },
+    {
+      "youtube_id": "iLdhxG2KPoM",
+      "title": "😴DREAM 🛌WORLD😴",
+      "duration_seconds": 15,
+      "width": 720,
+      "height": 1280,
+      "megapixels": 0.92,
+      "scale": 2
+    },
+    {
+      "youtube_id": "nt_PzgdjJ2Y",
+      "title": "It’s a Family Game",
+      "duration_seconds": 15,
+      "width": 720,
+      "height": 1280,
+      "megapixels": 0.92,
+      "scale": 2
+    },
+    {
+      "youtube_id": "pi9sOSMrEqY",
+      "title": "HEY 🦛 HEY",
+      "duration_seconds": 15,
+      "width": 720,
+      "height": 1280,
+      "megapixels": 0.92,
+      "scale": 2
+    },
+    {
+      "youtube_id": "qnQMFzoMsHA",
+      "title": "At natives deep inside Kamchatka",
+      "duration_seconds": 15,
+      "width": 720,
+      "height": 1280,
+      "megapixels": 0.92,
+      "scale": 2
+    },
+    {
+      "youtube_id": "vpNjxCy99Fs",
+      "title": "WE🔍CANNOT🔍IMAGINE",
+      "duration_seconds": 15,
+      "width": 720,
+      "height": 1280,
+      "megapixels": 0.92,
+      "scale": 2
+    },
+    {
+      "youtube_id": "wjAkVoSN8jE",
+      "title": "Itzhak Frei, working in his own bakery 🥯 in Mea Shearim, Jerusalem",
+      "duration_seconds": 15,
+      "width": 720,
+      "height": 1280,
+      "megapixels": 0.92,
+      "scale": 2
+    },
+    {
+      "youtube_id": "xiFVzz_x5PU",
+      "title": "Where? Where? 🤸‍♀️‼️HERE‼️🤸‍♀️",
+      "duration_seconds": 15,
+      "width": 720,
+      "height": 1280,
+      "megapixels": 0.92,
+      "scale": 2
+    },
+    {
       "youtube_id": "yt1tQsqYI1s",
       "title": "kids🤸‍♀️KIDS🤸‍♀️kids🤸‍♀️KIDS🤸‍♀️kids",
       "duration_seconds": 15,
       "width": null,
       "height": null,
       "megapixels": null,
+      "scale": 2
+    },
+    {
+      "youtube_id": "ytPO9BNAVLg",
+      "title": "…for DISCOVERY 💡",
+      "duration_seconds": 15,
+      "width": 720,
+      "height": 1280,
+      "megapixels": 0.92,
+      "scale": 2
+    },
+    {
+      "youtube_id": "EnnKos4thVc",
+      "title": "PHILOMENA",
+      "duration_seconds": 14,
+      "width": 720,
+      "height": 1280,
+      "megapixels": 0.92,
+      "scale": 2
+    },
+    {
+      "youtube_id": "I0HeJAlbtY4",
+      "title": "FATHER SAID:",
+      "duration_seconds": 14,
+      "width": 720,
+      "height": 1280,
+      "megapixels": 0.92,
+      "scale": 2
+    },
+    {
+      "youtube_id": "R4bK1jJSfQc",
+      "title": "1997 HAND OVER",
+      "duration_seconds": 14,
+      "width": 720,
+      "height": 1280,
+      "megapixels": 0.92,
+      "scale": 2
+    },
+    {
+      "youtube_id": "UG1krgFORrk",
+      "title": "paphlipff…pap-philipff…ppflapilphfefe",
+      "duration_seconds": 14,
+      "width": 720,
+      "height": 1280,
+      "megapixels": 0.92,
+      "scale": 2
+    },
+    {
+      "youtube_id": "WO3jbQwqrxc",
+      "title": "REFLECTION",
+      "duration_seconds": 14,
+      "width": 720,
+      "height": 1280,
+      "megapixels": 0.92,
+      "scale": 2
+    },
+    {
+      "youtube_id": "TXE3bBaK8zY",
+      "title": "GRILLED PIG",
+      "duration_seconds": 13,
+      "width": 720,
+      "height": 1280,
+      "megapixels": 0.92,
+      "scale": 2
+    },
+    {
+      "youtube_id": "wAUvvktUoOc",
+      "title": "What‘s your name?",
+      "duration_seconds": 13,
+      "width": 720,
+      "height": 1280,
+      "megapixels": 0.92,
+      "scale": 2
+    },
+    {
+      "youtube_id": "akfCabK-6jA",
+      "title": "MAMA TALK",
+      "duration_seconds": 12,
+      "width": 720,
+      "height": 1280,
+      "megapixels": 0.92,
+      "scale": 2
+    },
+    {
+      "youtube_id": "YX0zzFIzkW4",
+      "title": "THE MESSAGE OF COLOR",
+      "duration_seconds": 11,
+      "width": 720,
+      "height": 1280,
+      "megapixels": 0.92,
+      "scale": 2
+    },
+    {
+      "youtube_id": "gDSPYgEWlMc",
+      "title": "UNEXPECTEDLY SIGNIFICANT",
+      "duration_seconds": 8,
+      "width": 720,
+      "height": 1280,
+      "megapixels": 0.92,
+      "scale": 2
+    },
+    {
+      "youtube_id": "UbZzwqQ1ocw",
+      "title": "FISH n‘ PISS",
+      "duration_seconds": 7,
+      "width": 720,
+      "height": 1280,
+      "megapixels": 0.92,
       "scale": 2
     }
   ]

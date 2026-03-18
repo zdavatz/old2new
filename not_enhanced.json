@@ -3,8 +3,8 @@
   "generated": "2026-03-18",
   "total": 215,
   "summary": {
-    "rtx_4090": 150,
-    "rtx_5090": 65
+    "rtx_4090": 72,
+    "rtx_5090": 143
   },
   "videos": [
     {
@@ -148,7 +148,7 @@
       "height": 720,
       "megapixels": 0.69,
       "scale": 2,
-      "gpu": "RTX 4090"
+      "gpu": "RTX 5090"
     },
     {
       "youtube_id": "R2zxpDOmjfA",
@@ -225,7 +225,7 @@
       "height": 718,
       "megapixels": 0.92,
       "scale": 2,
-      "gpu": "RTX 4090"
+      "gpu": "RTX 5090"
     },
     {
       "youtube_id": "8wqZivWVLZs",
@@ -247,7 +247,7 @@
       "height": 720,
       "megapixels": 0.69,
       "scale": 2,
-      "gpu": "RTX 4090"
+      "gpu": "RTX 5090"
     },
     {
       "youtube_id": "c62HSWqoxKo",
@@ -280,7 +280,7 @@
       "height": 720,
       "megapixels": 0.69,
       "scale": 2,
-      "gpu": "RTX 4090"
+      "gpu": "RTX 5090"
     },
     {
       "youtube_id": "4_gaU85Zzog",
@@ -335,7 +335,7 @@
       "height": 720,
       "megapixels": 0.69,
       "scale": 2,
-      "gpu": "RTX 4090"
+      "gpu": "RTX 5090"
     },
     {
       "youtube_id": "KHRHsyGIRlI",
@@ -346,7 +346,7 @@
       "height": 720,
       "megapixels": 0.69,
       "scale": 2,
-      "gpu": "RTX 4090"
+      "gpu": "RTX 5090"
     },
     {
       "youtube_id": "UExLHdyGfwA",
@@ -357,7 +357,7 @@
       "height": 720,
       "megapixels": 0.69,
       "scale": 2,
-      "gpu": "RTX 4090"
+      "gpu": "RTX 5090"
     },
     {
       "youtube_id": "XtzTRGmGWuM",
@@ -434,7 +434,7 @@
       "height": 720,
       "megapixels": 0.69,
       "scale": 2,
-      "gpu": "RTX 4090"
+      "gpu": "RTX 5090"
     },
     {
       "youtube_id": "oUnnIVKwxv0",
@@ -445,7 +445,7 @@
       "height": 1080,
       "megapixels": 1.56,
       "scale": 2,
-      "gpu": "RTX 4090"
+      "gpu": "RTX 5090"
     },
     {
       "youtube_id": "zPTk4BzdBu8",
@@ -478,7 +478,7 @@
       "height": 718,
       "megapixels": 0.92,
       "scale": 2,
-      "gpu": "RTX 4090"
+      "gpu": "RTX 5090"
     },
     {
       "youtube_id": "cgHVbxV64VU",
@@ -511,7 +511,7 @@
       "height": 720,
       "megapixels": 0.69,
       "scale": 2,
-      "gpu": "RTX 4090"
+      "gpu": "RTX 5090"
     },
     {
       "youtube_id": "WBsY8GGMOBE",
@@ -544,7 +544,7 @@
       "height": 720,
       "megapixels": 0.69,
       "scale": 2,
-      "gpu": "RTX 4090"
+      "gpu": "RTX 5090"
     },
     {
       "youtube_id": "qSgiCb2aJa4",
@@ -654,7 +654,7 @@
       "height": 720,
       "megapixels": 0.69,
       "scale": 2,
-      "gpu": "RTX 4090"
+      "gpu": "RTX 5090"
     },
     {
       "youtube_id": "I-W2hJc6q1U",
@@ -676,7 +676,7 @@
       "height": 720,
       "megapixels": 0.69,
       "scale": 2,
-      "gpu": "RTX 4090"
+      "gpu": "RTX 5090"
     },
     {
       "youtube_id": "M3D3Gxo4AEQ",
@@ -797,7 +797,7 @@
       "height": 720,
       "megapixels": 0.69,
       "scale": 2,
-      "gpu": "RTX 4090"
+      "gpu": "RTX 5090"
     },
     {
       "youtube_id": "yPJT2-Bodhw",
@@ -808,7 +808,7 @@
       "height": 720,
       "megapixels": 0.69,
       "scale": 2,
-      "gpu": "RTX 4090"
+      "gpu": "RTX 5090"
     },
     {
       "youtube_id": "AtuAAkLGRPo",
@@ -973,7 +973,7 @@
       "height": 720,
       "megapixels": 0.69,
       "scale": 2,
-      "gpu": "RTX 4090"
+      "gpu": "RTX 5090"
     },
     {
       "youtube_id": "1W9mjMtxVSw",
@@ -1127,7 +1127,7 @@
       "height": 720,
       "megapixels": 0.69,
       "scale": 2,
-      "gpu": "RTX 4090"
+      "gpu": "RTX 5090"
     },
     {
       "youtube_id": "W8aE4bWqX-U",
@@ -1182,7 +1182,7 @@
       "height": 720,
       "megapixels": 0.69,
       "scale": 2,
-      "gpu": "RTX 4090"
+      "gpu": "RTX 5090"
     },
     {
       "youtube_id": "UrwKbdcn5DY",
@@ -1248,7 +1248,7 @@
       "height": 720,
       "megapixels": 0.69,
       "scale": 2,
-      "gpu": "RTX 4090"
+      "gpu": "RTX 5090"
     },
     {
       "youtube_id": "FKkFMCWm0HI",
@@ -1259,7 +1259,7 @@
       "height": 720,
       "megapixels": 0.69,
       "scale": 2,
-      "gpu": "RTX 4090"
+      "gpu": "RTX 5090"
     },
     {
       "youtube_id": "lBtqIR7eu5A",
@@ -1413,7 +1413,7 @@
       "height": 720,
       "megapixels": 0.69,
       "scale": 2,
-      "gpu": "RTX 4090"
+      "gpu": "RTX 5090"
     },
     {
       "youtube_id": "ouzpBuJuCJk",
@@ -1424,7 +1424,7 @@
       "height": 720,
       "megapixels": 0.69,
       "scale": 2,
-      "gpu": "RTX 4090"
+      "gpu": "RTX 5090"
     },
     {
       "youtube_id": "M7pLqiSxJ8c",
@@ -1545,7 +1545,7 @@
       "height": 1080,
       "megapixels": 1.54,
       "scale": 2,
-      "gpu": "RTX 4090"
+      "gpu": "RTX 5090"
     },
     {
       "youtube_id": "hYvlNNcPPEI",
@@ -1578,7 +1578,7 @@
       "height": 720,
       "megapixels": 0.69,
       "scale": 2,
-      "gpu": "RTX 4090"
+      "gpu": "RTX 5090"
     },
     {
       "youtube_id": "6L-z22_WnvA",
@@ -1721,7 +1721,7 @@
       "height": 720,
       "megapixels": 0.69,
       "scale": 2,
-      "gpu": "RTX 4090"
+      "gpu": "RTX 5090"
     },
     {
       "youtube_id": "28sD05dtKzE",
@@ -1798,7 +1798,7 @@
       "height": 1280,
       "megapixels": 0.92,
       "scale": 2,
-      "gpu": "RTX 4090"
+      "gpu": "RTX 5090"
     },
     {
       "youtube_id": "wzgdTKkEQCo",
@@ -1809,7 +1809,7 @@
       "height": 1280,
       "megapixels": 0.92,
       "scale": 2,
-      "gpu": "RTX 4090"
+      "gpu": "RTX 5090"
     },
     {
       "youtube_id": "-77BxiZaqeQ",
@@ -1820,7 +1820,7 @@
       "height": 1280,
       "megapixels": 0.92,
       "scale": 2,
-      "gpu": "RTX 4090"
+      "gpu": "RTX 5090"
     },
     {
       "youtube_id": "0lyreCd3gdY",
@@ -1831,7 +1831,7 @@
       "height": 1280,
       "megapixels": 0.92,
       "scale": 2,
-      "gpu": "RTX 4090"
+      "gpu": "RTX 5090"
     },
     {
       "youtube_id": "2BZktntJTUk",
@@ -1842,7 +1842,7 @@
       "height": 1280,
       "megapixels": 0.92,
       "scale": 2,
-      "gpu": "RTX 4090"
+      "gpu": "RTX 5090"
     },
     {
       "youtube_id": "4QTgJf8Pr44",
@@ -1853,7 +1853,7 @@
       "height": 1280,
       "megapixels": 0.92,
       "scale": 2,
-      "gpu": "RTX 4090"
+      "gpu": "RTX 5090"
     },
     {
       "youtube_id": "8AW2b8VvDtk",
@@ -1864,7 +1864,7 @@
       "height": 1280,
       "megapixels": 0.92,
       "scale": 2,
-      "gpu": "RTX 4090"
+      "gpu": "RTX 5090"
     },
     {
       "youtube_id": "8Nj1D0wWu1I",
@@ -1875,7 +1875,7 @@
       "height": 1280,
       "megapixels": 0.92,
       "scale": 2,
-      "gpu": "RTX 4090"
+      "gpu": "RTX 5090"
     },
     {
       "youtube_id": "BLP5KBjSHaU",
@@ -1886,7 +1886,7 @@
       "height": 1280,
       "megapixels": 0.92,
       "scale": 2,
-      "gpu": "RTX 4090"
+      "gpu": "RTX 5090"
     },
     {
       "youtube_id": "EG4aSSkrKT8",
@@ -1897,7 +1897,7 @@
       "height": 1280,
       "megapixels": 0.92,
       "scale": 2,
-      "gpu": "RTX 4090"
+      "gpu": "RTX 5090"
     },
     {
       "youtube_id": "Gz-ulMPi8R8",
@@ -1908,7 +1908,7 @@
       "height": 1280,
       "megapixels": 0.92,
       "scale": 2,
-      "gpu": "RTX 4090"
+      "gpu": "RTX 5090"
     },
     {
       "youtube_id": "J42Hm1gVt_U",
@@ -1919,7 +1919,7 @@
       "height": 1280,
       "megapixels": 0.92,
       "scale": 2,
-      "gpu": "RTX 4090"
+      "gpu": "RTX 5090"
     },
     {
       "youtube_id": "J5Sn3T0eSFU",
@@ -1930,7 +1930,7 @@
       "height": 1280,
       "megapixels": 0.92,
       "scale": 2,
-      "gpu": "RTX 4090"
+      "gpu": "RTX 5090"
     },
     {
       "youtube_id": "J9poOhWeG54",
@@ -1941,7 +1941,7 @@
       "height": 1280,
       "megapixels": 0.92,
       "scale": 2,
-      "gpu": "RTX 4090"
+      "gpu": "RTX 5090"
     },
     {
       "youtube_id": "MKwI2DLtPos",
@@ -1952,7 +1952,7 @@
       "height": 1280,
       "megapixels": 0.92,
       "scale": 2,
-      "gpu": "RTX 4090"
+      "gpu": "RTX 5090"
     },
     {
       "youtube_id": "NqqHRvsDek8",
@@ -1963,7 +1963,7 @@
       "height": 1280,
       "megapixels": 0.92,
       "scale": 2,
-      "gpu": "RTX 4090"
+      "gpu": "RTX 5090"
     },
     {
       "youtube_id": "P5eG6xQ1gJg",
@@ -1974,7 +1974,7 @@
       "height": 1280,
       "megapixels": 0.92,
       "scale": 2,
-      "gpu": "RTX 4090"
+      "gpu": "RTX 5090"
     },
     {
       "youtube_id": "QPQyVHtCyho",
@@ -1985,7 +1985,7 @@
       "height": 1280,
       "megapixels": 0.92,
       "scale": 2,
-      "gpu": "RTX 4090"
+      "gpu": "RTX 5090"
     },
     {
       "youtube_id": "RTcR_xd9S_I",
@@ -1996,7 +1996,7 @@
       "height": 1280,
       "megapixels": 0.92,
       "scale": 2,
-      "gpu": "RTX 4090"
+      "gpu": "RTX 5090"
     },
     {
       "youtube_id": "RkRryabSdiw",
@@ -2007,7 +2007,7 @@
       "height": 1280,
       "megapixels": 0.92,
       "scale": 2,
-      "gpu": "RTX 4090"
+      "gpu": "RTX 5090"
     },
     {
       "youtube_id": "UWMqbzQUfI0",
@@ -2018,7 +2018,7 @@
       "height": 1280,
       "megapixels": 0.92,
       "scale": 2,
-      "gpu": "RTX 4090"
+      "gpu": "RTX 5090"
     },
     {
       "youtube_id": "UvrS8IpQSl8",
@@ -2029,7 +2029,7 @@
       "height": 1280,
       "megapixels": 0.92,
       "scale": 2,
-      "gpu": "RTX 4090"
+      "gpu": "RTX 5090"
     },
     {
       "youtube_id": "_aB3Pc7krPw",
@@ -2040,7 +2040,7 @@
       "height": 1280,
       "megapixels": 0.92,
       "scale": 2,
-      "gpu": "RTX 4090"
+      "gpu": "RTX 5090"
     },
     {
       "youtube_id": "aqs-jHb2pnk",
@@ -2051,7 +2051,7 @@
       "height": 1280,
       "megapixels": 0.92,
       "scale": 2,
-      "gpu": "RTX 4090"
+      "gpu": "RTX 5090"
     },
     {
       "youtube_id": "b1Vst4OlmWY",
@@ -2062,7 +2062,7 @@
       "height": 1280,
       "megapixels": 0.92,
       "scale": 2,
-      "gpu": "RTX 4090"
+      "gpu": "RTX 5090"
     },
     {
       "youtube_id": "c6soqG3ZYMA",
@@ -2073,7 +2073,7 @@
       "height": 1280,
       "megapixels": 0.92,
       "scale": 2,
-      "gpu": "RTX 4090"
+      "gpu": "RTX 5090"
     },
     {
       "youtube_id": "cbAE4XrqJqc",
@@ -2084,7 +2084,7 @@
       "height": 1280,
       "megapixels": 0.92,
       "scale": 2,
-      "gpu": "RTX 4090"
+      "gpu": "RTX 5090"
     },
     {
       "youtube_id": "dqiDqnYOHrU",
@@ -2095,7 +2095,7 @@
       "height": 1280,
       "megapixels": 0.92,
       "scale": 2,
-      "gpu": "RTX 4090"
+      "gpu": "RTX 5090"
     },
     {
       "youtube_id": "eaeJozXNBPA",
@@ -2106,7 +2106,7 @@
       "height": 1280,
       "megapixels": 0.92,
       "scale": 2,
-      "gpu": "RTX 4090"
+      "gpu": "RTX 5090"
     },
     {
       "youtube_id": "ef1zAYI6Akg",
@@ -2117,7 +2117,7 @@
       "height": 1280,
       "megapixels": 0.92,
       "scale": 2,
-      "gpu": "RTX 4090"
+      "gpu": "RTX 5090"
     },
     {
       "youtube_id": "f4x_p_zRons",
@@ -2128,7 +2128,7 @@
       "height": 1280,
       "megapixels": 0.92,
       "scale": 2,
-      "gpu": "RTX 4090"
+      "gpu": "RTX 5090"
     },
     {
       "youtube_id": "fwSfBzIftJI",
@@ -2139,7 +2139,7 @@
       "height": 1280,
       "megapixels": 0.92,
       "scale": 2,
-      "gpu": "RTX 4090"
+      "gpu": "RTX 5090"
     },
     {
       "youtube_id": "hFL_Ct-qBRI",
@@ -2150,7 +2150,7 @@
       "height": 1280,
       "megapixels": 0.92,
       "scale": 2,
-      "gpu": "RTX 4090"
+      "gpu": "RTX 5090"
     },
     {
       "youtube_id": "iLdhxG2KPoM",
@@ -2161,7 +2161,7 @@
       "height": 1280,
       "megapixels": 0.92,
       "scale": 2,
-      "gpu": "RTX 4090"
+      "gpu": "RTX 5090"
     },
     {
       "youtube_id": "nt_PzgdjJ2Y",
@@ -2172,7 +2172,7 @@
       "height": 1280,
       "megapixels": 0.92,
       "scale": 2,
-      "gpu": "RTX 4090"
+      "gpu": "RTX 5090"
     },
     {
       "youtube_id": "pi9sOSMrEqY",
@@ -2183,7 +2183,7 @@
       "height": 1280,
       "megapixels": 0.92,
       "scale": 2,
-      "gpu": "RTX 4090"
+      "gpu": "RTX 5090"
     },
     {
       "youtube_id": "qnQMFzoMsHA",
@@ -2194,7 +2194,7 @@
       "height": 1280,
       "megapixels": 0.92,
       "scale": 2,
-      "gpu": "RTX 4090"
+      "gpu": "RTX 5090"
     },
     {
       "youtube_id": "vpNjxCy99Fs",
@@ -2205,7 +2205,7 @@
       "height": 1280,
       "megapixels": 0.92,
       "scale": 2,
-      "gpu": "RTX 4090"
+      "gpu": "RTX 5090"
     },
     {
       "youtube_id": "wjAkVoSN8jE",
@@ -2216,7 +2216,7 @@
       "height": 1280,
       "megapixels": 0.92,
       "scale": 2,
-      "gpu": "RTX 4090"
+      "gpu": "RTX 5090"
     },
     {
       "youtube_id": "xiFVzz_x5PU",
@@ -2227,7 +2227,7 @@
       "height": 1280,
       "megapixels": 0.92,
       "scale": 2,
-      "gpu": "RTX 4090"
+      "gpu": "RTX 5090"
     },
     {
       "youtube_id": "yt1tQsqYI1s",
@@ -2249,7 +2249,7 @@
       "height": 1280,
       "megapixels": 0.92,
       "scale": 2,
-      "gpu": "RTX 4090"
+      "gpu": "RTX 5090"
     },
     {
       "youtube_id": "EnnKos4thVc",
@@ -2260,7 +2260,7 @@
       "height": 1280,
       "megapixels": 0.92,
       "scale": 2,
-      "gpu": "RTX 4090"
+      "gpu": "RTX 5090"
     },
     {
       "youtube_id": "I0HeJAlbtY4",
@@ -2271,7 +2271,7 @@
       "height": 1280,
       "megapixels": 0.92,
       "scale": 2,
-      "gpu": "RTX 4090"
+      "gpu": "RTX 5090"
     },
     {
       "youtube_id": "R4bK1jJSfQc",
@@ -2282,7 +2282,7 @@
       "height": 1280,
       "megapixels": 0.92,
       "scale": 2,
-      "gpu": "RTX 4090"
+      "gpu": "RTX 5090"
     },
     {
       "youtube_id": "UG1krgFORrk",
@@ -2293,7 +2293,7 @@
       "height": 1280,
       "megapixels": 0.92,
       "scale": 2,
-      "gpu": "RTX 4090"
+      "gpu": "RTX 5090"
     },
     {
       "youtube_id": "WO3jbQwqrxc",
@@ -2304,7 +2304,7 @@
       "height": 1280,
       "megapixels": 0.92,
       "scale": 2,
-      "gpu": "RTX 4090"
+      "gpu": "RTX 5090"
     },
     {
       "youtube_id": "TXE3bBaK8zY",
@@ -2315,7 +2315,7 @@
       "height": 1280,
       "megapixels": 0.92,
       "scale": 2,
-      "gpu": "RTX 4090"
+      "gpu": "RTX 5090"
     },
     {
       "youtube_id": "wAUvvktUoOc",
@@ -2326,7 +2326,7 @@
       "height": 1280,
       "megapixels": 0.92,
       "scale": 2,
-      "gpu": "RTX 4090"
+      "gpu": "RTX 5090"
     },
     {
       "youtube_id": "akfCabK-6jA",
@@ -2337,7 +2337,7 @@
       "height": 1280,
       "megapixels": 0.92,
       "scale": 2,
-      "gpu": "RTX 4090"
+      "gpu": "RTX 5090"
     },
     {
       "youtube_id": "YX0zzFIzkW4",
@@ -2348,7 +2348,7 @@
       "height": 1280,
       "megapixels": 0.92,
       "scale": 2,
-      "gpu": "RTX 4090"
+      "gpu": "RTX 5090"
     },
     {
       "youtube_id": "gDSPYgEWlMc",
@@ -2359,7 +2359,7 @@
       "height": 1280,
       "megapixels": 0.92,
       "scale": 2,
-      "gpu": "RTX 4090"
+      "gpu": "RTX 5090"
     },
     {
       "youtube_id": "UbZzwqQ1ocw",
@@ -2370,7 +2370,7 @@
       "height": 1280,
       "megapixels": 0.92,
       "scale": 2,
-      "gpu": "RTX 4090"
+      "gpu": "RTX 5090"
     }
   ]
 }

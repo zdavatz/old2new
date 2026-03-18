@@ -272,10 +272,10 @@ venv/bin/python3 fetch_missing_videos.py  # fetches actual resolution for missin
 Results are saved to:
 - `enhanced_status.json` — summary of enhanced vs non-enhanced videos
 - `not_enhanced.json` — detailed list with youtube_id, resolution, GPU requirement per video
-- `not_enhanced_rtx4090.json` — SD videos for RTX 4090 (150 videos, 35.0h, 4x upscale)
-- `not_enhanced_rtx5090.json` — HD videos for RTX 5090 (65 videos, 23.4h, 2x upscale)
+- `not_enhanced_rtx4090.json` — SD videos for RTX 4090 (72 videos, 24.8h, 4x upscale)
+- `not_enhanced_rtx5090.json` — HD videos for RTX 5090 (143 videos, 33.5h, 2x upscale)
 
-As of March 2026: 11 of 226 videos enhanced, 215 remaining (150 need RTX 4090, 65 need RTX 5090).
+As of March 2026: 11 of 226 videos enhanced, 215 remaining (72 SD → RTX 4090 4x, 143 HD → RTX 5090 2x). Videos are split by YouTube definition (hd/sd), not by resolution.
 
 ## License
 
