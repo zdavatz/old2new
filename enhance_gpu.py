@@ -581,15 +581,18 @@ def main():
     # Empirical data points (no-tile mode, RealESRGAN_x4plus):
     #   1430x1080 (1.54 MP) = OK on 24GB GPU
     #   1920x1200 (2.30 MP) = OOM on 48GB GPU (needed ~50GB total)
+    #   960x720 (0.69 MP) = OK on 32GB RTX 5090 (no-tile, 1.7 fps)
     # VRAM scales super-linearly with resolution due to model internals.
+    # RealESRGAN_x4plus always processes at 4x internally, so VRAM usage
+    # is based on 4x the input resolution regardless of output scale.
     # Safe limits per GPU size (conservative):
     mpixels = pixels / 1e6
     if gpu_mem_gb >= 70:
-        safe_mp = 4.0   # 80GB A100: safe up to ~4.0 MP (e.g. 2560x1440)
+        safe_mp = 4.0   # 80GB: safe up to ~4.0 MP
     elif gpu_mem_gb >= 40:
-        safe_mp = 2.5   # 48GB: safe up to ~2.5 MP (e.g. 1920x1200)
+        safe_mp = 2.0   # 48GB: safe up to ~2.0 MP (2.3 MP OOMs on 48GB!)
     elif gpu_mem_gb >= 28:
-        safe_mp = 2.4   # 32GB RTX 5090: safe for 1920x1200 (2.304 MP, confirmed no-tile on BORN to MOVE)
+        safe_mp = 1.8   # 32GB RTX 5090: safe up to ~1.8 MP (2.3 MP = 7.5s/frame due to VRAM swapping)
     elif gpu_mem_gb >= 20:
         safe_mp = 1.6   # 24GB RTX 4090: safe up to ~1.6 MP (e.g. 1430x1080)
     elif gpu_mem_gb >= 10:
