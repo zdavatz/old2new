@@ -1,20 +1,28 @@
-FROM pytorch/pytorch:2.7.0-cuda12.8-cudnn9-runtime
+FROM nvidia/cuda:12.8.0-base-ubuntu24.04
 
-ENV DEBIAN_FRONTEND=noninteractive
+ENV DEBIAN_FRONTEND=noninteractive \
+    PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1
 
-# Minimal system deps (gcc for torch.compile, curl for scripts)
+# Minimal system deps
 RUN apt-get update -qq && \
-    apt-get install -y --no-install-recommends gcc curl xz-utils && \
+    apt-get install -y --no-install-recommends \
+    python3 python3-pip python3-venv gcc curl xz-utils && \
     rm -rf /var/lib/apt/lists/*
 
-# Real-ESRGAN + minimal deps (single layer, cleanup pip cache)
-RUN pip install --no-cache-dir -q \
+# Venv to avoid --break-system-packages
+RUN python3 -m venv /opt/venv
+ENV PATH="/opt/venv/bin:$PATH"
+
+# PyTorch (slim GPU wheel from official index, no cache)
+RUN pip install --no-cache-dir torch torchvision \
+    --index-url https://download.pytorch.org/whl/cu128
+
+# Real-ESRGAN + minimal deps
+RUN pip install --no-cache-dir \
     realesrgan "numpy==1.26.4" "basicsr==1.4.2" \
-    yt-dlp google-api-python-client google-auth-oauthlib && \
-    pip uninstall -y opencv-python 2>/dev/null; \
-    pip install --no-cache-dir -q "opencv-python-headless==4.10.0.84" && \
-    pip install --no-cache-dir -q "numpy==1.26.4" && \
-    rm -rf /root/.cache/pip
+    "opencv-python-headless==4.10.0.84" \
+    yt-dlp google-api-python-client google-auth-oauthlib
 
 # Patch basicsr + pre-download model weights
 RUN DEGRADATIONS_FILE=$(python3 -c "import importlib.util; print(importlib.util.find_spec('basicsr').submodule_search_locations[0])")/data/degradations.py && \
@@ -25,10 +33,10 @@ from realesrgan import RealESRGANer; \
 model = RRDBNet(num_in_ch=3, num_out_ch=3, num_feat=64, num_block=23, num_grow_ch=32, scale=4); \
 RealESRGANer(scale=4, model_path='https://github.com/xinntao/Real-ESRGAN/releases/download/v0.1.0/RealESRGAN_x4plus.pth', model=model, tile=0, pre_pad=0, half=True, gpu_id=None)"
 
-# Static ffmpeg 7.x (replace conda's old ffmpeg)
+# Static ffmpeg 7.x
 RUN curl -sL https://johnvansickle.com/ffmpeg/releases/ffmpeg-release-amd64-static.tar.xz | tar xJ -C /tmp/ && \
-    cp /tmp/ffmpeg-*-amd64-static/ffmpeg /opt/conda/bin/ffmpeg && \
-    cp /tmp/ffmpeg-*-amd64-static/ffprobe /opt/conda/bin/ffprobe && \
+    cp /tmp/ffmpeg-*-amd64-static/ffmpeg /usr/local/bin/ffmpeg && \
+    cp /tmp/ffmpeg-*-amd64-static/ffprobe /usr/local/bin/ffprobe && \
     rm -rf /tmp/ffmpeg-*
 
 # Verify
