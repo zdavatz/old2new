@@ -47,16 +47,7 @@ RUN curl -sL https://johnvansickle.com/ffmpeg/releases/ffmpeg-release-amd64-stat
     rm -rf /tmp/ffmpeg-*
 
 # Verify
-RUN python3 -c "import torch; print(f'PyTorch: {torch.__version__}'); \
-import cv2; print(f'OpenCV: {cv2.__version__}'); \
-import numpy as np; print(f'NumPy: {np.__version__}'); \
-from basicsr.archs.rrdbnet_arch import RRDBNet; print('BasicSR: OK'); \
-from realesrgan import RealESRGANer; print('RealESRGAN: OK'); \
-try: import torch_tensorrt; print(f'TensorRT: {torch_tensorrt.__version__}')
-except: print('TensorRT: not available'); \
-try: import onnxruntime; print(f'ONNX Runtime: {onnxruntime.__version__}')
-except: print('ONNX Runtime: not available'); \
-print('ALL OK')"
+RUN python3 -c "import torch; print(f'PyTorch: {torch.__version__}'); import cv2; print(f'OpenCV: {cv2.__version__}'); import numpy as np; print(f'NumPy: {np.__version__}'); from basicsr.archs.rrdbnet_arch import RRDBNet; print('BasicSR: OK'); from realesrgan import RealESRGANer; print('RealESRGAN: OK'); exec('try:\n import torch_tensorrt\n print(f\"TensorRT: {torch_tensorrt.__version__}\")\nexcept:\n print(\"TensorRT: not available\")'); exec('try:\n import onnxruntime\n print(f\"ONNX Runtime: {onnxruntime.__version__}\")\nexcept:\n print(\"ONNX Runtime: not available\")'); print('ALL OK')"
 
 WORKDIR /root
 CMD ["bash"]
