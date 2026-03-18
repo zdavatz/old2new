@@ -31,11 +31,11 @@ RP_API="https://rest.runpod.io/v1"
 RP_KEY="${RUNPOD_API_KEY:-}"
 
 # GPU config
-GPU_TYPE="${GPU_TYPE:-NVIDIA RTX PRO 6000 Blackwell Server Edition}"
-GPU_DISPLAY="RTX Pro 6000 (96GB)"
+GPU_TYPE="${GPU_TYPE:-NVIDIA GeForce RTX 5090}"
+GPU_DISPLAY="RTX 5090 (32GB)"
 
-# Docker image — lightweight Ubuntu with NVIDIA drivers (no PyTorch needed for ncnn-vulkan)
-DOCKER_IMAGE="nvidia/cuda:12.8.1-base-ubuntu22.04"
+# Docker image — PyTorch with CUDA 12.8 (Blackwell sm_120 support)
+DOCKER_IMAGE="pytorch/pytorch:2.7.0-cuda12.8-cudnn9-runtime"
 
 # Preferred datacenter (EU-RO-1 = Romania, closest to CH)
 # Override with: DATACENTER=US-KS-2 ./runpod_launch.sh ...
@@ -227,100 +227,79 @@ generate_startup_script() {
     cat << 'SETUP_HEADER'
 #!/bin/bash
 set -e
+export DEBIAN_FRONTEND=noninteractive
 
+exec > >(tee -a /root/enhance.log) 2>&1
 echo "=== Setup started at $(date) ==="
 
-# Install system packages (lean — no PyTorch, no pip dependency hell)
-apt-get update -qq && apt-get install -y --no-install-recommends \
-    ffmpeg nginx python3 python3-pip curl unzip \
-    libvulkan1 vulkan-tools 2>&1
-
-# === Vulkan check ===
+# Step 1: System packages
 echo ""
-echo "[Vulkan]"
-if vulkaninfo --summary 2>/dev/null | grep -q "GPU"; then
-    vulkaninfo --summary 2>&1 | grep -E "GPU|driver|apiVersion" || true
-    echo "Vulkan: OK"
-    VULKAN_OK=1
+echo "=== Step 1: System packages ==="
+apt-get update -qq
+apt-get install -y -qq xz-utils curl git > /dev/null 2>&1
+echo "System packages installed."
+
+# Step 2: Static ffmpeg 7.x
+echo ""
+echo "=== Step 2: Static ffmpeg 7.x ==="
+curl -sL https://johnvansickle.com/ffmpeg/releases/ffmpeg-release-amd64-static.tar.xz | tar xJ -C /tmp/
+cp /tmp/ffmpeg-*-amd64-static/ffmpeg /opt/conda/bin/ffmpeg
+cp /tmp/ffmpeg-*-amd64-static/ffprobe /opt/conda/bin/ffprobe
+ffmpeg -version 2>&1 | head -1
+echo "ffmpeg installed."
+
+# Step 3: Python packages
+echo ""
+echo "=== Step 3: Python packages ==="
+# PyTorch 2.7 + CUDA 12.8 already in Docker image
+python3 -c "import torch; print(f'PyTorch: {torch.__version__}, CUDA: {torch.cuda.is_available()}')"
+
+pip install -q realesrgan yt-dlp "numpy==1.26.4" "basicsr==1.4.2" 2>&1 | tail -3
+pip uninstall -y opencv-python opencv-contrib-python 2>/dev/null || true
+pip install -q "opencv-python-headless==4.10.0.84" 2>&1 | tail -2
+pip install -q "numpy==1.26.4" 2>&1 | tail -1
+pip install -q google-api-python-client google-auth-oauthlib google-auth-httplib2 2>&1 | tail -1
+echo "Python packages installed."
+
+# Step 4: Patch basicsr
+echo ""
+echo "=== Step 4: Patch basicsr ==="
+DEGRADATIONS_FILE=$(python3 -c "import importlib.util; print(importlib.util.find_spec('basicsr').submodule_search_locations[0])" 2>/dev/null)/data/degradations.py
+if [ -f "$DEGRADATIONS_FILE" ] && grep -q "functional_tensor" "$DEGRADATIONS_FILE"; then
+    sed -i 's/from torchvision.transforms.functional_tensor import rgb_to_grayscale/from torchvision.transforms.functional import rgb_to_grayscale/' "$DEGRADATIONS_FILE"
+    echo "Patched basicsr for torchvision compatibility."
 else
-    echo "WARNING: Vulkan not available!"
-    echo "Trying to fix with NVIDIA ICD..."
-    # Create ICD manifest if missing
-    mkdir -p /etc/vulkan/icd.d
-    cat > /etc/vulkan/icd.d/nvidia_icd.json << 'ICDEOF'
-{
-    "file_format_version": "1.0.0",
-    "ICD": {
-        "library_path": "libGLX_nvidia.so.0",
-        "api_version": "1.3.0"
-    }
-}
-ICDEOF
-    # Also try the lib path directly
-    ldconfig 2>/dev/null || true
-    if vulkaninfo --summary 2>/dev/null | grep -q "GPU"; then
-        vulkaninfo --summary 2>&1 | grep -E "GPU|driver|apiVersion" || true
-        echo "Vulkan: OK (after ICD fix)"
-        VULKAN_OK=1
-    else
-        echo "FATAL: Vulkan still not available. Cannot run ncnn-vulkan."
-        echo "GPU info:"
-        nvidia-smi 2>&1 | head -5 || true
-        echo "Vulkan debug:"
-        VK_LOADER_DEBUG=all vulkaninfo --summary 2>&1 | tail -20 || true
-        exit 1
-    fi
+    echo "basicsr already patched or not needed."
 fi
 
-# Configure nginx as reverse proxy to status server
-cat > /etc/nginx/sites-available/default << 'NGINXCONF'
-server {
-    listen 8080 default_server;
-    server_name _;
-    location / {
-        proxy_pass http://127.0.0.1:8081;
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-        proxy_read_timeout 300;
-        proxy_connect_timeout 5;
-    }
-}
-NGINXCONF
-systemctl enable nginx
-systemctl restart nginx
-echo "nginx configured on port 8080 -> status server on 8081"
+# Step 5: Download scripts
+echo ""
+echo "=== Step 5: Download scripts ==="
+curl -sL -H "Accept: application/vnd.github.v3.raw" "https://api.github.com/repos/zdavatz/old2new/contents/enhance_gpu.py" -o /root/enhance_gpu.py
+curl -sL -H "Accept: application/vnd.github.v3.raw" "https://api.github.com/repos/zdavatz/old2new/contents/youtube_upload.py" -o /root/youtube_upload.py
+curl -sL -H "Accept: application/vnd.github.v3.raw" "https://api.github.com/repos/zdavatz/old2new/contents/status_server.py" -o /root/status_server.py
+echo "Scripts downloaded."
 
-# Use /workspace (network volume) for jobs
-mkdir -p /workspace/jobs
-ln -sf /workspace/jobs /root/jobs
-echo "Jobs directory: /workspace/jobs (symlinked from /root/jobs)"
-
-# Download Real-ESRGAN ncnn-vulkan binary (44MB — vs 12GB PyTorch image)
-echo "Downloading Real-ESRGAN ncnn-vulkan..."
-curl -sL "https://github.com/xinntao/Real-ESRGAN/releases/download/v0.2.5.0/realesrgan-ncnn-vulkan-20220424-ubuntu.zip" -o /tmp/realesrgan.zip
-cd /tmp && unzip -o realesrgan.zip -d /opt/realesrgan
-chmod +x /opt/realesrgan/realesrgan-ncnn-vulkan
-ln -sf /opt/realesrgan/realesrgan-ncnn-vulkan /usr/local/bin/realesrgan-ncnn-vulkan
-echo "Real-ESRGAN ncnn-vulkan installed."
-
-# Verify it can see the GPU
-echo "[Real-ESRGAN GPU test]"
-/opt/realesrgan/realesrgan-ncnn-vulkan -i /dev/null -o /dev/null 2>&1 | head -5 || true
-
-# Install minimal Python deps (yt-dlp for download, Google API for upload)
-pip install --break-system-packages -q yt-dlp google-api-python-client google-auth-oauthlib google-auth-httplib2 2>&1 || true
-
-# Install static ffmpeg 7.x if system version is old
-if ! ffmpeg -version 2>/dev/null | grep -q "7\."; then
-    echo "Installing static ffmpeg 7.x..."
-    curl -sL https://johnvansickle.com/ffmpeg/releases/ffmpeg-release-amd64-static.tar.xz | tar xJ -C /tmp/
-    cp /tmp/ffmpeg-*-amd64-static/ffmpeg /usr/local/bin/ffmpeg
-    cp /tmp/ffmpeg-*-amd64-static/ffprobe /usr/local/bin/ffprobe
-fi
-
-# Download youtube_upload.py
-curl -sL "https://raw.githubusercontent.com/zdavatz/old2new/main/youtube_upload.py" -o /root/youtube_upload.py
-echo "Dependencies installed."
+# Step 6: Verify
+echo ""
+echo "=== Step 6: Verification ==="
+python3 -c "
+import torch
+print(f'PyTorch: {torch.__version__}')
+print(f'CUDA: {torch.cuda.is_available()}, GPU: {torch.cuda.get_device_name(0)}')
+print(f'VRAM: {torch.cuda.get_device_properties(0).total_memory / 1024**3:.0f} GB')
+import cv2; print(f'OpenCV: {cv2.__version__}')
+import numpy as np; print(f'NumPy: {np.__version__}')
+from basicsr.archs.rrdbnet_arch import RRDBNet; print('BasicSR: OK')
+from realesrgan import RealESRGANer; print('RealESRGAN: OK')
+import subprocess
+r = subprocess.run(['ffmpeg', '-version'], capture_output=True, text=True)
+print(f'ffmpeg: {r.stdout.split(chr(10))[0]}')
+r = subprocess.run(['yt-dlp', '--version'], capture_output=True, text=True)
+print(f'yt-dlp: {r.stdout.strip()}')
+print()
+print('ALL CHECKS PASSED')
+"
 
 SETUP_HEADER
 
@@ -372,100 +351,39 @@ echo "Status server started on port 8081 (nginx proxy on 8080)"
 
 STATUSEOF
 
-    # Video processing — ncnn-vulkan pipeline (no Python/PyTorch)
+    # Video processing — PyTorch/CUDA pipeline via enhance_gpu.py
     cat << VIDEOEOF
+# Step 7: Start status server
+echo ""
+echo "=== Step 7: Start status server ==="
+python3 /root/status_server.py &
+echo "Status server started on port 8080"
+
+# Step 8: Process video
 echo ""
 echo "=========================================="
 echo "Processing: $display_title ($vid, scale=${scale}x)"
 echo "Started at: \$(date)"
 echo "=========================================="
 
-JOB_DIR="/root/jobs/$title"
-mkdir -p "\$JOB_DIR/frames_in" "\$JOB_DIR/frames_out"
 URL="https://www.youtube.com/watch?v=$vid"
-
-# Step 1: Download video
-echo "[1/4] Downloading video..."
-if [[ ! -f "\$JOB_DIR/$title.mkv" ]]; then
-    yt-dlp -f "bestvideo[ext=mp4]+bestaudio[ext=m4a]/bestvideo+bestaudio/best" \\
-        --merge-output-format mkv \\
-        -o "\$JOB_DIR/$title.mkv" "\$URL"
-fi
-echo "Download complete: \$(du -h "\$JOB_DIR/$title.mkv" | cut -f1)"
-
-# Get video info
-FPS=\$(ffprobe -v error -select_streams v:0 -show_entries stream=r_frame_rate -of csv=p=0 "\$JOB_DIR/$title.mkv" | head -1)
-FPS_NUM=\$(echo "\$FPS" | cut -d/ -f1)
-FPS_DEN=\$(echo "\$FPS" | cut -d/ -f2)
-FPS_FLOAT=\$(python3 -c "print(f'{\${FPS_NUM}/\${FPS_DEN:-1}:.3f}')")
-echo "Video FPS: \$FPS_FLOAT (\$FPS)"
-
-# Step 2: Extract frames (parallel ffmpeg)
-echo "[2/4] Extracting frames..."
-FRAME_COUNT=\$(ls "\$JOB_DIR/frames_in/" 2>/dev/null | wc -l)
-if [[ \$FRAME_COUNT -eq 0 ]]; then
-    ffmpeg -i "\$JOB_DIR/$title.mkv" -qscale:v 1 -qmin 1 -qmax 1 -vsync 0 \\
-        "\$JOB_DIR/frames_in/frame_%08d.png" 2>&1 | tail -3
-    FRAME_COUNT=\$(ls "\$JOB_DIR/frames_in/" | wc -l)
-fi
-echo "Extracted \$FRAME_COUNT frames"
-
-# Step 3: Upscale with ncnn-vulkan
-echo "[3/4] Upscaling with Real-ESRGAN ncnn-vulkan (${scale}x)..."
-UPSCALED_COUNT=\$(ls "\$JOB_DIR/frames_out/" 2>/dev/null | wc -l)
-if [[ \$UPSCALED_COUNT -lt \$FRAME_COUNT ]]; then
-    START_TIME=\$(date +%s)
-    realesrgan-ncnn-vulkan \\
-        -i "\$JOB_DIR/frames_in" \\
-        -o "\$JOB_DIR/frames_out" \\
-        -s $scale \\
-        -n realesrgan-x4plus \\
-        -m /opt/realesrgan/models \\
-        -f png \\
-        -g 0 \\
-        -j 4:4:4
-    END_TIME=\$(date +%s)
-    ELAPSED=\$(( END_TIME - START_TIME ))
-    UPSCALED_COUNT=\$(ls "\$JOB_DIR/frames_out/" | wc -l)
-    if [[ \$ELAPSED -gt 0 ]]; then
-        FPS_ACTUAL=\$(python3 -c "print(f'{\$UPSCALED_COUNT/\$ELAPSED:.2f}')")
-        echo "Upscaled \$UPSCALED_COUNT frames in \${ELAPSED}s (\${FPS_ACTUAL} fps)"
+if python3 -u /root/enhance_gpu.py "\$URL" $scale --job-name "$title"; then
+    echo "SUCCESS: $display_title upscaled at \$(date)"
+    ENHANCED_FILE=\$(ls /root/jobs/$title/${title}_${scale}x.mkv /root/jobs/$title/enhanced_${scale}x.mkv 2>/dev/null | head -1)
+    if [[ -n "\$ENHANCED_FILE" && -f "/root/client_secret.json" && -f "/root/youtube_token.json" ]]; then
+        echo "Uploading to YouTube..."
+        if python3 /root/youtube_upload.py "$vid" "\$ENHANCED_FILE" \\
+            --client-secret /root/client_secret.json \\
+            --token /root/youtube_token.json; then
+            echo "YouTube upload + email done at \$(date)"
+            rm -rf "/root/jobs/$title"
+        else
+            echo "WARNING: YouTube upload failed — keeping files"
+        fi
     fi
 else
-    echo "Frames already upscaled (\$UPSCALED_COUNT frames)"
+    echo "FAILED: $display_title at \$(date)"
 fi
-
-# Step 4: Reassemble video
-ENHANCED_FILE="\$JOB_DIR/${title}_${scale}x.mkv"
-echo "[4/4] Reassembling video..."
-if [[ ! -f "\$ENHANCED_FILE" ]]; then
-    ffmpeg -framerate "\$FPS" -i "\$JOB_DIR/frames_out/frame_%08d.png" \\
-        -i "\$JOB_DIR/$title.mkv" \\
-        -map 0:v -map 1:a? \\
-        -c:v libx264 -crf 18 -preset medium -pix_fmt yuv420p \\
-        -c:a copy \\
-        "\$ENHANCED_FILE" 2>&1 | tail -3
-    echo "Enhanced video: \$(du -h "\$ENHANCED_FILE" | cut -f1)"
-fi
-
-# Upload to YouTube
-if [[ -f "\$ENHANCED_FILE" && -f "/root/client_secret.json" && -f "/root/youtube_token.json" ]]; then
-    echo "Uploading to YouTube..."
-    if python3 /root/youtube_upload.py "$vid" "\$ENHANCED_FILE" \\
-        --client-secret /root/client_secret.json \\
-        --token /root/youtube_token.json; then
-        echo "YouTube upload + email notification done at \$(date)"
-        touch "\$JOB_DIR/.uploaded"
-        rm -rf "\$JOB_DIR"
-        echo "Cleaned up job dir (uploaded to YouTube)"
-    else
-        echo "WARNING: YouTube upload failed — keeping ALL files"
-    fi
-else
-    echo "Skipping YouTube upload (missing credentials or file) — keeping files"
-fi
-
-echo "$vid $title" >> /root/completed.txt
 
 echo ""
 echo "=========================================="
@@ -508,7 +426,7 @@ cmd_launch() {
     log "Resolution: ${width}x${height} (${mpixels} MP)"
     log "Duration:   $dur_str"
     log "Scale:      ${scale}x"
-    log "GPU:        $GPU_DISPLAY (96GB VRAM — no tiling needed)"
+    log "GPU:        $GPU_DISPLAY"
     log "Datacenter: $DATACENTER"
     log ""
 
