@@ -717,7 +717,7 @@ def main():
     cpu_count = os.cpu_count() or 1
     read_workers = min(max(cpu_count // 4, 2), 8)
     write_workers = min(max(cpu_count // 4, 2), 8)
-    prefetch_size = read_workers * 2  # buffer ahead of GPU
+    prefetch_size = read_workers * 4  # larger buffer: parallel readers can fill faster
 
     print(f"I/O pipeline: {read_workers} read workers, {write_workers} write workers, prefetch={prefetch_size}")
     sys.stdout.flush()
@@ -731,16 +731,16 @@ def main():
             todo.append((i, fpath, fname, out_path))
 
     if todo:
-        # Pre-read queue: (index, img, frame_num, out_path)
+        # Pre-read queue: (seq, index, img, out_path)
+        # Use ordered slots so GPU receives frames in sequence despite parallel reads
         read_queue = queue.Queue(maxsize=prefetch_size)
         write_queue = queue.Queue(maxsize=prefetch_size)
-        read_done = [False]
 
-        def reader():
-            for i, fpath, fname, out_path in todo:
+        def reader_worker(chunk):
+            """Read a chunk of frames and place them into read_queue in order using slots."""
+            for seq, (i, fpath, fname, out_path) in chunk:
                 img = cv2.imread(fpath, cv2.IMREAD_UNCHANGED)
-                read_queue.put((i, img, out_path))
-            read_done[0] = True
+                read_queue.put((seq, i, img, out_path))
 
         def writer():
             while True:
@@ -752,8 +752,19 @@ def main():
                 write_queue.task_done()
 
         import threading
-        read_thread = threading.Thread(target=reader, daemon=True)
-        read_thread.start()
+
+        # Split todo list into read_workers chunks for parallel reading
+        # Each worker reads its own chunk sequentially; GPU drains read_queue in arrival order
+        # and re-sorts by seq to maintain frame order
+        chunk_size = max(1, (len(todo) + read_workers - 1) // read_workers)
+        indexed_todo = list(enumerate(todo))  # (seq, (i, fpath, fname, out_path))
+        chunks = [indexed_todo[k:k+chunk_size] for k in range(0, len(indexed_todo), chunk_size)]
+
+        read_threads = []
+        for chunk in chunks:
+            t = threading.Thread(target=reader_worker, args=(chunk,), daemon=True)
+            t.start()
+            read_threads.append(t)
 
         write_threads = []
         for _ in range(write_workers):
@@ -761,9 +772,18 @@ def main():
             t.start()
             write_threads.append(t)
 
+        # GPU loop: drain read_queue, reorder by seq, process in order
         processed = 0
-        for _ in range(len(todo)):
-            i, img, out_path = read_queue.get()
+        pending = {}  # seq -> (i, img, out_path) for out-of-order arrivals
+        next_seq = 0
+        total_todo = len(todo)
+        while processed < total_todo:
+            # Fill pending buffer from queue until we have the next expected seq
+            while next_seq not in pending:
+                seq, i, img, out_path = read_queue.get()
+                pending[seq] = (i, img, out_path)
+            i, img, out_path = pending.pop(next_seq)
+            next_seq += 1
             output = enhance_frame(img, frame_num=i)
             write_queue.put((out_path, output))
             processed += 1
