@@ -254,7 +254,7 @@ The RTX 4090 is the workhorse — faster per frame, cheaper, handles 79 of 83 SD
 
 - **[vast.ai](https://vast.ai)**: Cheapest option. RTX 4090 at ~$0.34/hr, RTX 5090 at ~$0.34/hr, A100 80GB at ~$0.66/hr. CLI: `pip install vastai`. Use `vast_batch.sh` for automated batch processing.
 - **[TensorDock](https://tensordock.com)**: SSH VMs with auto-sized disk. RTX 4090 at ~$0.41/hr (SD videos), RTX 5090 at ~$0.75/hr (HD videos). Auto-detects tiling risk and selects correct GPU. Proven: 2.6 fps on SD-4x, queue 10+ videos per instance. Use `tensordock_batch.sh`.
-- **[RunPod](https://runpod.io)**: More GPU variety but often sold out. RTX 4090 at ~$0.34-0.59/hr. CLI: `pipx install runpod`
+- **[RunPod](https://runpod.io)**: **NOT WORKING** (as of 2026-03-18). Pods show "RUNNING" but never actually start — uptime stays 0, no SSH ports assigned. Tested with RTX Pro 6000 Blackwell (96GB, $1.69/hr) and RTX 5090, multiple datacenters, various Docker images, with/without network volumes. Platform-level issue. `runpod_launch.sh` script exists but is unusable until RunPod fixes this.
 - **[Google Cloud](https://cloud.google.com)**: Always available. L4 at ~$0.70/hr. Use `gcp_setup.sh` for one-command setup. Requires GPUS_ALL_REGIONS quota for new projects.
 
 **Note**: On cloud instances, use the Python/CUDA approach (`enhance_gpu.py`) instead of the ncnn-vulkan binary, as Vulkan drivers are often not available in Docker containers.
