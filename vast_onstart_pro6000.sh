@@ -25,13 +25,8 @@ echo "ffmpeg installed."
 echo ""
 echo "=== Step 3: Python packages ==="
 
-# Detect GPU arch — Blackwell (sm_120+) needs PyTorch with CUDA 12.8
-GPU_ARCH=$(nvidia-smi --query-gpu=compute_cap --format=csv,noheader 2>/dev/null | head -1 | tr -d '.')
-if [ "${GPU_ARCH:-0}" -ge 120 ]; then
-    echo "Blackwell GPU detected (sm_${GPU_ARCH}) — upgrading PyTorch to CUDA 12.8"
-    pip install -q torch torchvision --index-url https://download.pytorch.org/whl/cu128 2>&1 | tail -3
-fi
-
+# PyTorch 2.7 + CUDA 12.8 is already in the Docker image (pytorch:2.7.0-cuda12.8)
+# No upgrade needed when using the correct base image
 python3 -c "import torch; print(f'PyTorch: {torch.__version__}, CUDA: {torch.cuda.is_available()}')"
 
 # Install realesrgan and deps
