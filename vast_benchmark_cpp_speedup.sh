@@ -10,15 +10,16 @@ echo ""
 echo "=== Setup ==="
 apt-get update -qq && apt-get install -y -qq xz-utils curl gcc g++ > /dev/null 2>&1
 
-# Upgrade to PyTorch 2.8.0
-pip install -q torch torchvision --index-url https://download.pytorch.org/whl/cu128 --upgrade 2>&1 | tail -3
+# Keep PyTorch from Docker image (2.7.0+cu128) — upgrading breaks torchvision compatibility
+python3 -c "import torch; print(f'PyTorch: {torch.__version__}')"
 pip install -q realesrgan "numpy==1.26.4" "basicsr==1.4.2" 2>&1 | tail -2
 pip uninstall -y opencv-python opencv-contrib-python 2>/dev/null || true
 pip install -q "opencv-python-headless==4.10.0.84" 2>&1 | tail -1
 pip install -q "numpy==1.26.4" 2>&1 | tail -1
 
-# Install TensorRT and ONNX Runtime
-pip install -q tensorrt torch-tensorrt onnxruntime-gpu onnx 2>&1 | tail -3
+# Install TensorRT and ONNX Runtime (large downloads, ~10 min)
+pip install -q torch-tensorrt --extra-index-url https://download.pytorch.org/whl/cu128 2>&1 | tail -3
+pip install -q onnxruntime-gpu onnx 2>&1 | tail -3
 
 DEGRADATIONS_FILE=$(python3 -c "import importlib.util; print(importlib.util.find_spec('basicsr').submodule_search_locations[0])" 2>/dev/null)/data/degradations.py
 [ -f "$DEGRADATIONS_FILE" ] && sed -i 's/from torchvision.transforms.functional_tensor import rgb_to_grayscale/from torchvision.transforms.functional import rgb_to_grayscale/' "$DEGRADATIONS_FILE"
