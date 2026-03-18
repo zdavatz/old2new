@@ -1,0 +1,592 @@
+{
+  "gpu": "RTX 5090",
+  "total_videos": 65,
+  "total_duration_hours": 23.4,
+  "videos": [
+    {
+      "youtube_id": "o_nM2N-03UI",
+      "title": "064 / S(T)INGING BEAUTY / Kamchatka - Russian/Esub",
+      "duration_seconds": 6840,
+      "width": 1920,
+      "height": 1200,
+      "megapixels": 2.3,
+      "scale": 2
+    },
+    {
+      "youtube_id": "l8szkLe2eiM",
+      "title": "077c / Grúz Köztársaság / Ahol Isten Leszállt - Hsub",
+      "duration_seconds": 3876,
+      "width": 1920,
+      "height": 1200,
+      "megapixels": 2.3,
+      "scale": 2
+    },
+    {
+      "youtube_id": "cWGbmkCvGHA",
+      "title": "077b / Republik Georgien / FUSSTRITTE GOTTES - R/G/A/O/Dsub",
+      "duration_seconds": 3872,
+      "width": 1920,
+      "height": 1200,
+      "megapixels": 2.3,
+      "scale": 2
+    },
+    {
+      "youtube_id": "q_UgL0Pbet8",
+      "title": "077a / Republic of Georgia / WHERE GOD LANDED - R/G/A/O/Esub",
+      "duration_seconds": 3872,
+      "width": 1920,
+      "height": 1200,
+      "megapixels": 2.3,
+      "scale": 2
+    },
+    {
+      "youtube_id": "tljAVZCj6lw",
+      "title": "BLUEPRINTS of LIFE",
+      "duration_seconds": 3602,
+      "width": 1920,
+      "height": 1440,
+      "megapixels": 2.76,
+      "scale": 2
+    },
+    {
+      "youtube_id": "N_Ui88q-gy8",
+      "title": "072a / Iran / CHADOR CONDOM COFFEESHOP - Farsi/Esub",
+      "duration_seconds": 3377,
+      "width": 1920,
+      "height": 1200,
+      "megapixels": 2.3,
+      "scale": 2
+    },
+    {
+      "youtube_id": "opavvOpVpUM",
+      "title": "072b / Iran / KOPFTUCH PARISER KAFFEEHAUS - Farsi/Dsub",
+      "duration_seconds": 3376,
+      "width": 1920,
+      "height": 1200,
+      "megapixels": 2.3,
+      "scale": 2
+    },
+    {
+      "youtube_id": "9lZDEOnRgSU",
+      "title": "054b HUMUS for HAMAS - Arabic/Hsub",
+      "duration_seconds": 3200,
+      "width": 1920,
+      "height": 1080,
+      "megapixels": 2.07,
+      "scale": 2
+    },
+    {
+      "youtube_id": "G9Whw4gJCeY",
+      "title": "054a / HUMUS for HAMAS / Gaza Strip - Arabic/Esub",
+      "duration_seconds": 3132,
+      "width": 1920,
+      "height": 1040,
+      "megapixels": 2.0,
+      "scale": 2
+    },
+    {
+      "youtube_id": "u9LHBYxyj5w",
+      "title": "VERGANGENHEIT als VERMÄCHTNIS – work in progress 1.0",
+      "duration_seconds": 2701,
+      "width": 1920,
+      "height": 1080,
+      "megapixels": 2.07,
+      "scale": 2
+    },
+    {
+      "youtube_id": "4_gaU85Zzog",
+      "title": "075a  / MAO's BARBERSHOP - chinese/Esub",
+      "duration_seconds": 2072,
+      "width": 1920,
+      "height": 1200,
+      "megapixels": 2.3,
+      "scale": 2
+    },
+    {
+      "youtube_id": "v27m8UT4w0M",
+      "title": "074c / ЗАВЕЩАНИЕ / ЕВГЕНИЮ БУРАКУ - R",
+      "duration_seconds": 2059,
+      "width": 1920,
+      "height": 1200,
+      "megapixels": 2.3,
+      "scale": 2
+    },
+    {
+      "youtube_id": "e1e-_J0PzTY",
+      "title": "Museum Rundgang Werni 2024",
+      "duration_seconds": 2014,
+      "width": 1920,
+      "height": 1080,
+      "megapixels": 2.07,
+      "scale": 2
+    },
+    {
+      "youtube_id": "zPTk4BzdBu8",
+      "title": "052b Itzhak Frey & Son - D/Esub",
+      "duration_seconds": 1945,
+      "width": 1920,
+      "height": 1200,
+      "megapixels": 2.3,
+      "scale": 2
+    },
+    {
+      "youtube_id": "cgHVbxV64VU",
+      "title": "068 / SEX on the STEPS - Yellow Mountains",
+      "duration_seconds": 1900,
+      "width": 1920,
+      "height": 1080,
+      "megapixels": 2.07,
+      "scale": 2
+    },
+    {
+      "youtube_id": "qSgiCb2aJa4",
+      "title": "070c / KMARA - ELÉG! / ROZSAS FORRADALOM",
+      "duration_seconds": 1758,
+      "width": 1920,
+      "height": 1200,
+      "megapixels": 2.3,
+      "scale": 2
+    },
+    {
+      "youtube_id": "hH_E66CkUjQ",
+      "title": "070b / KMARA - GENUG! / ROSEN-REVOLUTION - G/R/D",
+      "duration_seconds": 1757,
+      "width": 1920,
+      "height": 1200,
+      "megapixels": 2.3,
+      "scale": 2
+    },
+    {
+      "youtube_id": "7qQ47AhQca4",
+      "title": "060b / LAZAC ÉS MACKO / PARADICSOM - R/Hsub",
+      "duration_seconds": 1753,
+      "width": 1920,
+      "height": 1200,
+      "megapixels": 2.3,
+      "scale": 2
+    },
+    {
+      "youtube_id": "EywN1gXXrAQ",
+      "title": "085 DEER VISION - Kenya",
+      "duration_seconds": 1720,
+      "width": 1920,
+      "height": 1440,
+      "megapixels": 2.76,
+      "scale": 2
+    },
+    {
+      "youtube_id": "I-W2hJc6q1U",
+      "title": "053a / JASMINE and OLIVES",
+      "duration_seconds": 1597,
+      "width": 1920,
+      "height": 1080,
+      "megapixels": 2.07,
+      "scale": 2
+    },
+    {
+      "youtube_id": "yRT12zdB0V4",
+      "title": "059b / KRAPIVNAJA - LOST in TRANSITION - R/Hsub",
+      "duration_seconds": 1434,
+      "width": 1920,
+      "height": 1080,
+      "megapixels": 2.07,
+      "scale": 2
+    },
+    {
+      "youtube_id": "509HaQXlkL0",
+      "title": "Republic of GEORGIA / TeaTime in TBILISI",
+      "duration_seconds": 1414,
+      "width": 1920,
+      "height": 1078,
+      "megapixels": 2.07,
+      "scale": 2
+    },
+    {
+      "youtube_id": "NllpHjWcq1k",
+      "title": "055 / Syria / M'eat - eat meat - meet A SACRIFICE",
+      "duration_seconds": 1321,
+      "width": null,
+      "height": null,
+      "megapixels": null,
+      "scale": 2
+    },
+    {
+      "youtube_id": "OiVFgnVqVpk",
+      "title": "053b  JASMINE and OLIVES - Hsub",
+      "duration_seconds": 1288,
+      "width": 1920,
+      "height": 1080,
+      "megapixels": 2.07,
+      "scale": 2
+    },
+    {
+      "youtube_id": "-wKR0jcUVMU",
+      "title": "Suchen, Schnüffeln, Scharren... Zupacken",
+      "duration_seconds": 1140,
+      "width": 2048,
+      "height": 1080,
+      "megapixels": 2.21,
+      "scale": 2
+    },
+    {
+      "youtube_id": "KR9bAUPmCPc",
+      "title": "FUNdaziun DA VAZ – mumaints dal temp",
+      "duration_seconds": 1140,
+      "width": null,
+      "height": null,
+      "megapixels": null,
+      "scale": 2
+    },
+    {
+      "youtube_id": "k3nEp6-h5ZA",
+      "title": "MACH aus dem VERGANGENEN, was Du KANNST",
+      "duration_seconds": 1138,
+      "width": 1920,
+      "height": 1080,
+      "megapixels": 2.07,
+      "scale": 2
+    },
+    {
+      "youtube_id": "0LdSpIR6x2I",
+      "title": "078 / The FURNITURE in AFGHANISTAN - Afghan/Russian/English",
+      "duration_seconds": 1086,
+      "width": null,
+      "height": null,
+      "megapixels": null,
+      "scale": 2
+    },
+    {
+      "youtube_id": "FPuC6oD03Ic",
+      "title": "TIBET / Sera Monastery –  Debating Monks",
+      "duration_seconds": 986,
+      "width": 1920,
+      "height": 1080,
+      "megapixels": 2.07,
+      "scale": 2
+    },
+    {
+      "youtube_id": "csxaS-i3wtw",
+      "title": "061b Volcano TOLBACHIK - time change",
+      "duration_seconds": 928,
+      "width": 1920,
+      "height": 1080,
+      "megapixels": 2.07,
+      "scale": 2
+    },
+    {
+      "youtube_id": "uFI77oD4K_k",
+      "title": "061a / TOLBACHIK - Ludmilla's Volcano - E",
+      "duration_seconds": 928,
+      "width": 1920,
+      "height": 1080,
+      "megapixels": 2.07,
+      "scale": 2
+    },
+    {
+      "youtube_id": "n4Vn38iOsw0",
+      "title": "079a Iran / HANDSHAKE -- sometimes KISSES - Farsi/Esub",
+      "duration_seconds": 907,
+      "width": 1920,
+      "height": 1200,
+      "megapixels": 2.3,
+      "scale": 2
+    },
+    {
+      "youtube_id": "sQdMKkCuXkc",
+      "title": "079b / Iran / KÉZFOGAS -- és néha csók - Farsi/Hsub",
+      "duration_seconds": 907,
+      "width": 1920,
+      "height": 1200,
+      "megapixels": 2.3,
+      "scale": 2
+    },
+    {
+      "youtube_id": "1iN1Fvei5Jk",
+      "title": "082a / Syria / DEIR ez-ZOR دير الزور / CAMELS for BABIES - Arabic/Esub",
+      "duration_seconds": 848,
+      "width": 1920,
+      "height": 1080,
+      "megapixels": 2.07,
+      "scale": 2
+    },
+    {
+      "youtube_id": "IDZ3VoE3bNo",
+      "title": "082b / Syria / Tevéket Gyerekekért - Arabic/Hsub",
+      "duration_seconds": 848,
+      "width": 1920,
+      "height": 1080,
+      "megapixels": 2.07,
+      "scale": 2
+    },
+    {
+      "youtube_id": "d6ph7n4k35Y",
+      "title": "Pick and Pen",
+      "duration_seconds": 831,
+      "width": 2700,
+      "height": 2160,
+      "megapixels": 5.83,
+      "scale": 2
+    },
+    {
+      "youtube_id": "HcWVqIwrBE4",
+      "title": "093 / Karpfen and Mirage, Winniza, Ukraine",
+      "duration_seconds": 789,
+      "width": 1920,
+      "height": 1080,
+      "megapixels": 2.07,
+      "scale": 2
+    },
+    {
+      "youtube_id": "uew-t12ZP5Q",
+      "title": "088 / Ukraine's Maidan, Kyiv",
+      "duration_seconds": 783,
+      "width": 1920,
+      "height": 1080,
+      "megapixels": 2.07,
+      "scale": 2
+    },
+    {
+      "youtube_id": "n8nej0rLYG4",
+      "title": "080 / Zhou Tie Hai / MR. CAMEL - Chinese/English",
+      "duration_seconds": 668,
+      "width": 1920,
+      "height": 1200,
+      "megapixels": 2.3,
+      "scale": 2
+    },
+    {
+      "youtube_id": "UrwKbdcn5DY",
+      "title": "Museum Da Vaz Februar 2024 Santa Maria",
+      "duration_seconds": 628,
+      "width": 1920,
+      "height": 1080,
+      "megapixels": 2.07,
+      "scale": 2
+    },
+    {
+      "youtube_id": "BR5U-miBmt4",
+      "title": "073 / WANG GUANGYI - Communism Pops - C",
+      "duration_seconds": 610,
+      "width": 1920,
+      "height": 1200,
+      "megapixels": 2.3,
+      "scale": 2
+    },
+    {
+      "youtube_id": "Jp2_TDjkTQo",
+      "title": "TIBET / LHASA Barkhor Square – Potala Palace",
+      "duration_seconds": 599,
+      "width": 1920,
+      "height": 1078,
+      "megapixels": 2.07,
+      "scale": 2
+    },
+    {
+      "youtube_id": "AWblTn9NeBQ",
+      "title": "081b / ZENG FANZHI / EMBER és FENEDAD - Chinese/Hsub",
+      "duration_seconds": 593,
+      "width": 1920,
+      "height": 1200,
+      "megapixels": 2.3,
+      "scale": 2
+    },
+    {
+      "youtube_id": "35EDsDp4aI0",
+      "title": "081a / ZENG FANZHI / meat and mask - Chinese/Esub",
+      "duration_seconds": 591,
+      "width": 1920,
+      "height": 1200,
+      "megapixels": 2.3,
+      "scale": 2
+    },
+    {
+      "youtube_id": "lBtqIR7eu5A",
+      "title": "084 South Korea / Penis Parc - Korean/Esub",
+      "duration_seconds": 517,
+      "width": 1920,
+      "height": 1080,
+      "megapixels": 2.07,
+      "scale": 2
+    },
+    {
+      "youtube_id": "otseQlbkGRE",
+      "title": "TIBET / Rongbuk Monastery",
+      "duration_seconds": 504,
+      "width": 1920,
+      "height": 1080,
+      "megapixels": 2.07,
+      "scale": 2
+    },
+    {
+      "youtube_id": "CM_Qhcpc1us",
+      "title": "091 / Dinner at Natasha and Petro",
+      "duration_seconds": 492,
+      "width": 1920,
+      "height": 1080,
+      "megapixels": 2.07,
+      "scale": 2
+    },
+    {
+      "youtube_id": "mlPRxM0RY3E",
+      "title": "Fundaziun Da Vaz – Ein Einblick",
+      "duration_seconds": 486,
+      "width": 1920,
+      "height": 1080,
+      "megapixels": 2.07,
+      "scale": 2
+    },
+    {
+      "youtube_id": "3teIj0Rttzg",
+      "title": "066 / The BEATLES in GEORGIA - Georgian/Esub",
+      "duration_seconds": 417,
+      "width": 1920,
+      "height": 1200,
+      "megapixels": 2.3,
+      "scale": 2
+    },
+    {
+      "youtube_id": "g_ynBcYgNoM",
+      "title": "092 / Tatra Tram in Kyiv, Ukraine",
+      "duration_seconds": 415,
+      "width": 1920,
+      "height": 1080,
+      "megapixels": 2.07,
+      "scale": 2
+    },
+    {
+      "youtube_id": "WPV3ysAX_Dg",
+      "title": "TIBET – till & mill",
+      "duration_seconds": 391,
+      "width": 1920,
+      "height": 1040,
+      "megapixels": 2.0,
+      "scale": 2
+    },
+    {
+      "youtube_id": "aNzqomzOaUo",
+      "title": "063 HARD TALK /  Biene und Mensch - D",
+      "duration_seconds": 391,
+      "width": 1920,
+      "height": 1080,
+      "megapixels": 2.07,
+      "scale": 2
+    },
+    {
+      "youtube_id": "Md53nopQbck",
+      "title": "TIBET / Sandpainting Mandalas – Kumbum Monastery",
+      "duration_seconds": 324,
+      "width": 1920,
+      "height": 1080,
+      "megapixels": 2.07,
+      "scale": 2
+    },
+    {
+      "youtube_id": "M7pLqiSxJ8c",
+      "title": "Visual Thinking - inner landscapes - out of a black whole",
+      "duration_seconds": 286,
+      "width": 1920,
+      "height": 1080,
+      "megapixels": 2.07,
+      "scale": 2
+    },
+    {
+      "youtube_id": "Tg8RccQYnPA",
+      "title": "094 / Welcome to Ukraine",
+      "duration_seconds": 286,
+      "width": 1920,
+      "height": 1080,
+      "megapixels": 2.07,
+      "scale": 2
+    },
+    {
+      "youtube_id": "gJe-iNomJLk",
+      "title": "089 / Sberbank Kyiv",
+      "duration_seconds": 232,
+      "width": 1920,
+      "height": 1080,
+      "megapixels": 2.07,
+      "scale": 2
+    },
+    {
+      "youtube_id": "V1k1xyzaGzY",
+      "title": "067 / SOMETHING to SAY to the WORLD - Bests from Lis out of Kenya",
+      "duration_seconds": 220,
+      "width": 1920,
+      "height": 1200,
+      "megapixels": 2.3,
+      "scale": 2
+    },
+    {
+      "youtube_id": "hYvlNNcPPEI",
+      "title": "90 / Heavenly Private Papamobil",
+      "duration_seconds": 165,
+      "width": 1920,
+      "height": 1080,
+      "megapixels": 2.07,
+      "scale": 2
+    },
+    {
+      "youtube_id": "B3p6iPx0EM0",
+      "title": "052ad ITZHAK FREY / Gedanken zu Gebildeten Menschen / Erdbeben / FC Barcelona - D",
+      "duration_seconds": 84,
+      "width": 1920,
+      "height": 1080,
+      "megapixels": 2.07,
+      "scale": 2
+    },
+    {
+      "youtube_id": "1OGG_98oRqY",
+      "title": "052ac ITZHAK FREY / Gedanken zum Antisemitismus in der Schweiz - D",
+      "duration_seconds": 78,
+      "width": 1920,
+      "height": 1080,
+      "megapixels": 2.07,
+      "scale": 2
+    },
+    {
+      "youtube_id": "28sD05dtKzE",
+      "title": "052ab ITZHAK FREY / Gedanken zur Gründung des Slowakischen Staates - D",
+      "duration_seconds": 46,
+      "width": 1920,
+      "height": 1080,
+      "megapixels": 2.07,
+      "scale": 2
+    },
+    {
+      "youtube_id": "aV-BtCv_vzs",
+      "title": "052af David Frey / Kindheitserinnerungen",
+      "duration_seconds": 37,
+      "width": 1920,
+      "height": 1080,
+      "megapixels": 2.07,
+      "scale": 2
+    },
+    {
+      "youtube_id": "T5H9nBJ99SU",
+      "title": "Museum Elephant",
+      "duration_seconds": 29,
+      "width": 1920,
+      "height": 1080,
+      "megapixels": 2.07,
+      "scale": 2
+    },
+    {
+      "youtube_id": "TPxRCZqsrPo",
+      "title": "DON'T LOOK HERE",
+      "duration_seconds": 16,
+      "width": 1080,
+      "height": 1920,
+      "megapixels": 2.07,
+      "scale": 2
+    },
+    {
+      "youtube_id": "yt1tQsqYI1s",
+      "title": "kids🤸‍♀️KIDS🤸‍♀️kids🤸‍♀️KIDS🤸‍♀️kids",
+      "duration_seconds": 15,
+      "width": null,
+      "height": null,
+      "megapixels": null,
+      "scale": 2
+    }
+  ]
+}
