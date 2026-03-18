@@ -225,18 +225,18 @@ Two GPU profiles handle the entire davaz.com video collection:
 
 The RTX 4090 is the workhorse — faster per frame, cheaper, handles 79 of 83 SD videos. The RTX 5090 is needed for HD videos where the 4090's 24GB VRAM causes tiling (8x slower). The script auto-detects resolution and selects the right GPU.
 
-### RTX 4090 vs RTX 5090 vs A100 for Real-ESRGAN
+### RTX 4090 vs RTX 5090 for Real-ESRGAN
 
-| Aspect | RTX 4090 (24GB) | RTX 5090 (32GB) | A100 (80GB) |
-|--------|-----------------|-----------------|-------------|
-| SD 4x (640x480) | **2.6 fps** | ~2+ fps | 0.07 fps |
-| HD 2x (1920x1200) | 0.3 fps (tiling) | **1.7 fps** | 0.07 fps |
-| Cost/hr | ~$0.41 | ~$0.75-1.07 | ~$1.05 |
-| Best for | SD videos ≤1.6 MP | HD videos ≤2.3 MP | NOT recommended |
+| Aspect | RTX 4090 (24GB) | RTX 5090 (32GB) |
+|--------|-----------------|-----------------|
+| SD 4x (640x480) | **2.6 fps** | ~2+ fps |
+| HD 2x (1920x1200) | 0.3 fps (tiling) | **1.7 fps** |
+| Cost/hr | ~$0.41 | ~$0.75 |
+| Best for | SD videos ≤1.6 MP | HD videos ≤2.3 MP |
 
-**A100 is NOT suitable for Real-ESRGAN** — despite 80GB VRAM, it runs at 0.07 fps (14s/frame) due to low clock speeds optimized for training/inference, not single-frame super-resolution. An RTX 4090 with tiling is still 4x faster and 15x cheaper.
+**A100 is NOT suitable for Real-ESRGAN** — despite 80GB VRAM, it runs at 0.07 fps (14s/frame) due to low clock speeds. Never use A100/datacenter GPUs for upscaling.
 
-**Rule of thumb**: Use RTX 4090 for SD (≤1.6 MP). Use RTX 5090 for HD (≤2.3 MP). Never use A100/datacenter GPUs.
+**Rule of thumb**: Use RTX 4090 for SD (≤1.6 MP). Use RTX 5090 for HD (≤2.3 MP).
 
 ## Performance Reference
 
@@ -258,6 +258,22 @@ The RTX 4090 is the workhorse — faster per frame, cheaper, handles 79 of 83 SD
 - **[Google Cloud](https://cloud.google.com)**: Always available. L4 at ~$0.70/hr. Use `gcp_setup.sh` for one-command setup. Requires GPUS_ALL_REGIONS quota for new projects.
 
 **Note**: On cloud instances, use the Python/CUDA approach (`enhance_gpu.py`) instead of the ncnn-vulkan binary, as Vulkan drivers are often not available in Docker containers.
+
+### Enhancement Status Check
+
+Check which videos already have an Enhanced 4K version on YouTube:
+
+```bash
+# Check enhancement status (requires YouTube OAuth credentials)
+venv/bin/python3 check_enhanced.py       # finds enhanced vs missing videos
+venv/bin/python3 fetch_missing_videos.py  # fetches actual resolution for missing videos
+```
+
+Results are saved to:
+- `enhanced_status.json` — summary of enhanced vs non-enhanced videos
+- `not_enhanced.json` — detailed list with youtube_id, resolution, GPU requirement per video
+
+As of March 2026: 11 of 226 videos enhanced, 215 remaining (150 need RTX 4090, 65 need RTX 5090).
 
 ## License
 
