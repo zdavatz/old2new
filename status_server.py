@@ -18,7 +18,7 @@ def get_system_specs():
     import subprocess
     specs = {}
 
-    # GPU info via nvidia-smi
+    # GPU info via nvidia-smi (supports multiple GPUs)
     try:
         result = subprocess.run(
             ["nvidia-smi", "--query-gpu=name,memory.total,memory.used,memory.free,temperature.gpu,utilization.gpu,driver_version,pci.bus_id",
@@ -26,18 +26,26 @@ def get_system_specs():
             capture_output=True, text=True, timeout=5
         )
         if result.returncode == 0:
-            parts = [p.strip() for p in result.stdout.strip().split(",")]
-            if len(parts) >= 8:
-                specs["gpu"] = {
-                    "name": parts[0],
-                    "vram_total_mb": int(parts[1]),
-                    "vram_used_mb": int(parts[2]),
-                    "vram_free_mb": int(parts[3]),
-                    "temp_c": int(parts[4]),
-                    "util_pct": int(parts[5]),
-                    "driver": parts[6],
-                    "pci_bus": parts[7],
-                }
+            gpu_lines = [l.strip() for l in result.stdout.strip().split("\n") if l.strip()]
+            gpus = []
+            for line in gpu_lines:
+                parts = [p.strip() for p in line.split(",")]
+                if len(parts) >= 8:
+                    gpus.append({
+                        "name": parts[0],
+                        "vram_total_mb": int(parts[1]),
+                        "vram_used_mb": int(parts[2]),
+                        "vram_free_mb": int(parts[3]),
+                        "temp_c": int(parts[4]),
+                        "util_pct": int(parts[5]),
+                        "driver": parts[6],
+                        "pci_bus": parts[7],
+                    })
+            # Keep backward compat: specs["gpu"] = first GPU
+            if gpus:
+                specs["gpu"] = gpus[0]
+                specs["gpus"] = gpus
+                specs["gpu_count"] = len(gpus)
     except Exception:
         pass
 
@@ -313,7 +321,7 @@ class StatusHandler(http.server.BaseHTTPRequestHandler):
                 "timing": timing,
             })
 
-        # Read last lines of enhance.log
+        # Read last lines of enhance.log + per-GPU logs
         log_tail = ""
         log_path = os.path.expanduser("~/enhance.log")
         if os.path.exists(log_path):
@@ -323,6 +331,20 @@ class StatusHandler(http.server.BaseHTTPRequestHandler):
                 f.seek(max(0, size - 4096))
                 log_tail = f.read().decode("utf-8", errors="replace")
                 log_tail = "\n".join(log_tail.split("\n")[-30:])
+
+        # Multi-GPU: read per-GPU logs for fps info
+        gpu_logs = {}
+        for gpu_log in sorted(glob.glob(os.path.expanduser("~/gpu*.log"))):
+            gpu_id = os.path.basename(gpu_log).replace("gpu", "").replace(".log", "")
+            try:
+                with open(gpu_log, "rb") as f:
+                    f.seek(0, 2)
+                    size = f.tell()
+                    f.seek(max(0, size - 2048))
+                    tail = f.read().decode("utf-8", errors="replace")
+                    gpu_logs[gpu_id] = "\n".join(tail.split("\n")[-10:])
+            except Exception:
+                pass
 
         total = len(videos)
         done = sum(1 for v in videos if v["status"] == "done")
@@ -341,57 +363,79 @@ class StatusHandler(http.server.BaseHTTPRequestHandler):
             done_frames_all += v["done_frames"]
         overall_pct = round(done_frames_all / total_frames_all * 100, 1) if total_frames_all > 0 else 0
 
-        # Extract speed info from log
+        # Extract speed info from logs (single-GPU and multi-GPU)
         import re
         fps = 0
         eta_str = ""
         dl_speed = ""
         dl_progress = ""
+
+        # Multi-GPU: aggregate fps from per-GPU logs
+        per_gpu_fps = {}
+        for gpu_id, gtail in gpu_logs.items():
+            fps_matches = re.findall(r'([\d.]+)\s+fps', gtail)
+            if fps_matches:
+                per_gpu_fps[gpu_id] = float(fps_matches[-1])
+
+        if per_gpu_fps:
+            fps = sum(per_gpu_fps.values())  # combined fps across all GPUs
+
+        # Fallback: single-GPU log
+        if not per_gpu_fps and log_tail:
+            fps_matches = re.findall(r'([\d.]+)\s+fps', log_tail)
+            if fps_matches:
+                fps = float(fps_matches[-1])
+
         if log_tail:
-            # Download speed from speed test
             dl_speed_match = re.findall(r'Download speed:\s*([\d.]+)\s*Mbps', log_tail)
             if dl_speed_match:
                 dl_speed = f"{dl_speed_match[-1]} Mbps"
-
-            # Video download progress (yt-dlp output)
             dl_pct_matches = re.findall(r'\[download\]\s+([\d.]+)%\s+of\s+[\d.]+\w+\s+at\s+([\d.]+\w+/s)', log_tail)
             if dl_pct_matches:
                 dl_progress = f"{dl_pct_matches[-1][0]}% at {dl_pct_matches[-1][1]}"
-
-            # Video download completed
             dl_done_match = re.findall(r'Downloaded\s+([\d.]+)\s*MB\s+in\s+([\d.]+)s\s+\(([\d.]+)\s*Mbps\)', log_tail)
             if dl_done_match:
                 dl_speed = f"{dl_done_match[-1][2]} Mbps (actual)"
                 dl_progress = ""
 
-            fps_matches = re.findall(r'([\d.]+)\s+fps', log_tail)
-            if fps_matches:
-                fps = float(fps_matches[-1])
-                remaining = total_frames_all - done_frames_all
-                if fps > 0:
-                    eta_secs = remaining / fps
-                    eta_h = int(eta_secs // 3600)
-                    eta_m = int((eta_secs % 3600) // 60)
-                    if eta_h >= 24:
-                        eta_d = eta_h // 24
-                        eta_h_rem = eta_h % 24
-                        eta_str = f"{eta_d}d {eta_h_rem}h {eta_m}m"
-                    elif eta_h > 0:
-                        eta_str = f"{eta_h}h {eta_m}m"
-                    else:
-                        eta_str = f"{eta_m}m"
+        # Calculate ETA from combined fps
+        remaining = total_frames_all - done_frames_all
+        if fps > 0 and remaining > 0:
+            eta_secs = remaining / fps
+            eta_h = int(eta_secs // 3600)
+            eta_m = int((eta_secs % 3600) // 60)
+            if eta_h >= 24:
+                eta_d = eta_h // 24
+                eta_h_rem = eta_h % 24
+                eta_str = f"{eta_d}d {eta_h_rem}h {eta_m}m"
+            elif eta_h > 0:
+                eta_str = f"{eta_h}h {eta_m}m"
+            else:
+                eta_str = f"{eta_m}m"
+
+        # Build per-GPU log tail for display
+        multi_log = ""
+        if gpu_logs:
+            for gpu_id in sorted(gpu_logs.keys()):
+                gtail = gpu_logs[gpu_id]
+                gfps = per_gpu_fps.get(gpu_id, 0)
+                # Get last 3 lines only
+                last_lines = "\n".join(gtail.strip().split("\n")[-3:])
+                multi_log += f"[GPU {gpu_id}] {gfps:.1f} fps\n{last_lines}\n\n"
 
         return {
             "total": total,
             "done": done,
-            "active": active[0]["title"] if active else None,
+            "active": len(active),
+            "active_count": len(active),
             "videos": videos,
-            "log_tail": log_tail,
+            "log_tail": multi_log if multi_log else log_tail,
             "timestamp": datetime.now().isoformat(),
             "total_frames": total_frames_all,
             "done_frames": done_frames_all,
             "overall_pct": overall_pct,
             "fps": fps,
+            "per_gpu_fps": per_gpu_fps,
             "eta": eta_str,
             "dl_speed": dl_speed,
             "dl_progress": dl_progress,
@@ -465,7 +509,9 @@ async function update() {
     const queued = d.videos.filter(v => v.status === 'queued');
     const other = d.videos.filter(v => !['done','upscaling','queued'].includes(v.status));
 
-    const fpsStr = d.fps > 0 ? d.fps.toFixed(1) + ' fps' : '—';
+    const perGpu = d.per_gpu_fps || {};
+    const gpuCount = Object.keys(perGpu).length || (d.system.gpu_count || 1);
+    const fpsStr = d.fps > 0 ? d.fps.toFixed(1) + ' fps' + (gpuCount > 1 ? ' (' + gpuCount + ' GPUs)' : '') : '—';
     const etaStr = d.eta || '—';
     const framesStr = d.done_frames + ' / ' + d.total_frames;
     const dlStr = d.dl_progress || d.dl_speed || '—';
@@ -526,8 +572,22 @@ async function update() {
     if (d.system) {
       const s = d.system;
       h += '<div class="specs">';
-      if (s.gpu) {
-        const g = s.gpu;
+      // Multi-GPU: show all GPUs in a compact table
+      const gpus = s.gpus || (s.gpu ? [s.gpu] : []);
+      if (gpus.length > 1) {
+        h += `<div class="spec-card"><h3>GPUs (${gpus.length}x ${gpus[0].name})</h3>`;
+        const perGpu = d.per_gpu_fps || {};
+        for (let i = 0; i < gpus.length; i++) {
+          const g = gpus[i];
+          const vramPct = g.vram_total_mb > 0 ? ((g.vram_used_mb / g.vram_total_mb) * 100).toFixed(0) : 0;
+          const tempClass = g.temp_c >= 80 ? 'hot' : 'ok';
+          const gfps = perGpu[String(i)] ? perGpu[String(i)].toFixed(1) + ' fps' : '—';
+          h += `<div class="spec-row"><span class="label">GPU ${i}</span><span class="value">${gfps} | ${g.temp_c}°C | ${g.util_pct}% | ${(g.vram_used_mb/1024).toFixed(1)}/${(g.vram_total_mb/1024).toFixed(0)}GB</span></div>`;
+        }
+        h += `<div class="spec-row"><span class="label">Driver</span><span class="value">${gpus[0].driver}</span></div>`;
+        h += '</div>';
+      } else if (gpus.length === 1) {
+        const g = gpus[0];
         const vramPct = g.vram_total_mb > 0 ? ((g.vram_used_mb / g.vram_total_mb) * 100).toFixed(0) : 0;
         const tempClass = g.temp_c >= 80 ? 'hot' : 'ok';
         h += `<div class="spec-card"><h3>GPU</h3>
@@ -536,8 +596,6 @@ async function update() {
           <div class="spec-row"><span class="label">Temperature</span><span class="value ${tempClass}">${g.temp_c}°C</span></div>
           <div class="spec-row"><span class="label">Utilization</span><span class="value">${g.util_pct}%</span></div>
           <div class="spec-row"><span class="label">Driver</span><span class="value">${g.driver}</span></div>
-          ${g.cuda ? '<div class="spec-row"><span class="label">CUDA</span><span class="value">'+g.cuda+'</span></div>' : ''}
-          <div class="spec-row"><span class="label">PCIe Bus</span><span class="value">${g.pci_bus}</span></div>
         </div>`;
       }
       if (s.cpu) {
