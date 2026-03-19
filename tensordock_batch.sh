@@ -594,6 +594,9 @@ FFMPEG_PID=$!
 # Step 4: pip install (runs in parallel with ffmpeg download)
 PIP="pip install --break-system-packages -q"
 
+# Force-upgrade typing_extensions first (Ubuntu's dpkg version blocks torch install)
+$PIP --ignore-installed typing_extensions 2>&1 | tail -1
+
 # Pick PyTorch version based on GPU arch
 if [ "${GPU_ARCH:-0}" -ge 120 ]; then
     echo "Blackwell GPU — PyTorch cu128"
