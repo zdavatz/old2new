@@ -358,8 +358,12 @@ Check which videos already have an Enhanced 4K version on YouTube:
 
 ```bash
 # Check enhancement status (requires YouTube OAuth credentials)
-venv/bin/python3 check_enhanced.py       # finds enhanced vs missing videos
-venv/bin/python3 fetch_missing_videos.py  # fetches actual resolution for missing videos
+python3 check_enhanced.py       # finds enhanced vs missing videos
+python3 fetch_missing_videos.py  # fetches actual resolution for missing videos
+
+# Auto-close GitHub issues for uploaded Enhanced 4K videos
+python3 close_enhanced_issues.py          # dry-run (shows what would be closed)
+python3 close_enhanced_issues.py --close  # actually close matching issues
 ```
 
 Results are saved to:
