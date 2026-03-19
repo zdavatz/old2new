@@ -567,101 +567,73 @@ export DEBIAN_FRONTEND=noninteractive
 echo "=== Setup started at $(date) ==="
 
 # Kill any residual unattended-upgrades (bootcmd disables it, but belt-and-suspenders)
-echo "Stopping unattended-upgrades..."
 systemctl stop unattended-upgrades 2>/dev/null || true
-# Wait for dpkg lock to release
 for i in $(seq 1 15); do fuser /var/lib/dpkg/lock-frontend >/dev/null 2>&1 || break; sleep 1; done
 
-# Install minimal system packages (no apt update — saves 3-5 min on throwaway instances)
-echo "Installing system packages..."
-apt-get install -y --no-install-recommends python3-pip ffmpeg nginx 2>/dev/null || {
-    # Only run apt-get update if install fails (package cache missing)
-    apt-get update -qq && apt-get install -y --no-install-recommends python3-pip ffmpeg nginx
+# Step 1: Install Docker + NVIDIA Container Toolkit (~1 min)
+echo "=== Step 1: Installing Docker + NVIDIA runtime ==="
+apt-get install -y --no-install-recommends docker.io nvidia-container-toolkit 2>/dev/null || {
+    apt-get update -qq && apt-get install -y --no-install-recommends docker.io nvidia-container-toolkit
 }
+systemctl start docker
+nvidia-ctk runtime configure --runtime=docker
+systemctl restart docker
+echo "Docker + NVIDIA runtime installed."
 
-# Configure nginx as reverse proxy to status server (more reliable than Python http.server)
-cat > /etc/nginx/sites-available/default << 'NGINXCONF'
-server {
-    listen 8080 default_server;
-    server_name _;
-    location / {
-        proxy_pass http://127.0.0.1:8081;
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-        proxy_read_timeout 300;
-        proxy_connect_timeout 5;
-    }
-}
-NGINXCONF
-systemctl enable nginx
-systemctl restart nginx
-echo "nginx configured on port 8080 -> status server on 8081"
+# Step 2: Pull slim image (~1 min for 4.5GB)
+echo "=== Step 2: Pulling slim image ==="
+DOCKER_IMAGE="ghcr.io/zdavatz/realesrgan-benchmark:latest"
+docker pull "$DOCKER_IMAGE"
+echo "Image pulled."
 
-# Install Python dependencies
-echo "Installing Python dependencies..."
-# Ubuntu 24.04 requires --break-system-packages for system pip
-PIP="pip install --break-system-packages -q"
+# Step 3: Download scripts (not baked into image — always latest from GitHub)
+echo "=== Step 3: Downloading scripts ==="
+curl -sL -H "Accept: application/vnd.github.v3.raw" "https://api.github.com/repos/zdavatz/old2new/contents/enhance_gpu.py" -o /root/enhance_gpu.py
+curl -sL -H "Accept: application/vnd.github.v3.raw" "https://api.github.com/repos/zdavatz/old2new/contents/youtube_upload.py" -o /root/youtube_upload.py
+curl -sL -H "Accept: application/vnd.github.v3.raw" "https://api.github.com/repos/zdavatz/old2new/contents/status_server.py" -o /root/status_server.py
+echo "Scripts downloaded."
 
-# Fix typing_extensions (broken RECORD file on Ubuntu 24.04)
-$PIP --ignore-installed typing_extensions 2>&1 || true
+# Step 4: Start status server on host (outside Docker, for port forwarding)
+echo "=== Step 4: Starting status server ==="
+# Install minimal python3 http server deps (already on Ubuntu 24.04)
+python3 /root/status_server.py &
+echo "Status server started on port 8080."
 
-# Install PyTorch with CUDA first (not bundled with base Ubuntu)
-# Detect GPU arch to pick correct CUDA version
-GPU_ARCH=$(nvidia-smi --query-gpu=compute_cap --format=csv,noheader 2>/dev/null | head -1 | tr -d '.')
-if [ "${GPU_ARCH:-0}" -ge 120 ]; then
-    echo "Blackwell GPU detected (sm_${GPU_ARCH}) — using PyTorch with CUDA 12.8"
-    $PIP torch torchvision --index-url https://download.pytorch.org/whl/cu128 2>&1 || true
-else
-    $PIP torch torchvision --index-url https://download.pytorch.org/whl/cu121 2>&1 || true
-fi
+# Step 5: Create wrapper to run enhance_gpu.py inside Docker container
+echo "=== Step 5: Creating Docker wrapper ==="
+cat > /root/docker_enhance.sh << 'DOCKERWRAP'
+#!/bin/bash
+# Run enhance_gpu.py inside the slim Docker container with GPU access
+# Usage: /root/docker_enhance.sh <youtube-url> <scale> --job-name <name>
+docker run --rm --gpus all \
+    -v /root/jobs:/root/jobs \
+    -v /root/enhance_gpu.py:/root/enhance_gpu.py \
+    -v /root/youtube_upload.py:/root/youtube_upload.py \
+    -v /root/client_secret.json:/root/client_secret.json \
+    -v /root/youtube_token.json:/root/youtube_token.json \
+    -v /root/enhance.log:/root/enhance.log \
+    -v /root/instance_meta.json:/root/instance_meta.json \
+    -e HOME=/root \
+    ghcr.io/zdavatz/realesrgan-benchmark:latest \
+    python3 /root/enhance_gpu.py "$@"
+DOCKERWRAP
+chmod +x /root/docker_enhance.sh
 
-# Install realesrgan and deps
-$PIP realesrgan yt-dlp "numpy==1.26.4" "basicsr==1.4.2" 2>&1 || true
+# Verify Docker + GPU works
+echo "=== Step 6: Verification ==="
+docker run --rm --gpus all "$DOCKER_IMAGE" python3 -c "
+import torch
+print(f'PyTorch: {torch.__version__}')
+print(f'CUDA: {torch.cuda.is_available()}, GPU: {torch.cuda.get_device_name(0)}')
+from basicsr.archs.rrdbnet_arch import RRDBNet; print('BasicSR: OK')
+from realesrgan import RealESRGANer; print('RealESRGAN: OK')
+import subprocess
+r = subprocess.run(['ffmpeg', '-version'], capture_output=True, text=True)
+print(f'ffmpeg: {r.stdout.split(chr(10))[0]}')
+print('ALL CHECKS PASSED')
+"
 
-# Install Google API deps for YouTube upload + email notification
-$PIP google-api-python-client google-auth-oauthlib google-auth-httplib2 2>&1 || true
-
-# Fix opencv: remove full version, install headless (avoids libGL issues)
-pip uninstall --break-system-packages -y opencv-python opencv-contrib-python 2>/dev/null || true
-$PIP "opencv-python-headless==4.10.0.84" 2>&1 || true
-
-# Re-pin numpy (opencv install may have upgraded it)
-$PIP "numpy==1.26.4" 2>&1 || true
-
-# Patch basicsr for newer torchvision (functional_tensor removed)
-DEGRADATIONS_FILE=$(python3 -c "import importlib.util; print(importlib.util.find_spec('basicsr').submodule_search_locations[0])" 2>/dev/null)/data/degradations.py
-if [ -f "$DEGRADATIONS_FILE" ] && grep -q "functional_tensor" "$DEGRADATIONS_FILE"; then
-    sed -i 's/from torchvision.transforms.functional_tensor import rgb_to_grayscale/from torchvision.transforms.functional import rgb_to_grayscale/' "$DEGRADATIONS_FILE"
-    echo "Patched basicsr for torchvision compatibility"
-fi
-
-# Install static ffmpeg (system ffmpeg may be old or missing codecs)
-if ! ffmpeg -version 2>/dev/null | grep -q "7\."; then
-    echo "Installing static ffmpeg 7.x..."
-    curl -sL https://johnvansickle.com/ffmpeg/releases/ffmpeg-release-amd64-static.tar.xz | tar xJ -C /tmp/
-    cp /tmp/ffmpeg-*-amd64-static/ffmpeg /usr/local/bin/ffmpeg
-    cp /tmp/ffmpeg-*-amd64-static/ffprobe /usr/local/bin/ffprobe
-fi
-
-echo "Dependencies installed."
-
-# Speed test
-echo "Testing download speed..."
-SPEED_START=$(date +%s%N)
-curl -sL "https://speed.cloudflare.com/__down?bytes=10000000" -o /dev/null
-SPEED_END=$(date +%s%N)
-SPEED_MS=$(( (SPEED_END - SPEED_START) / 1000000 ))
-if [ "$SPEED_MS" -gt 0 ]; then
-    SPEED_MBPS=$(( 10 * 8 * 1000 / SPEED_MS ))
-    echo "Download speed: ${SPEED_MBPS} Mbps"
-else
-    echo "Speed test too fast to measure"
-fi
-
-# Download enhance_gpu.py and youtube_upload.py
-curl -sL "https://raw.githubusercontent.com/zdavatz/old2new/main/enhance_gpu.py" -o /root/enhance_gpu.py
-curl -sL "https://raw.githubusercontent.com/zdavatz/old2new/main/youtube_upload.py" -o /root/youtube_upload.py
-echo "enhance_gpu.py and youtube_upload.py downloaded."
+echo "=== Setup complete at $(date) ==="
 
 SETUP_HEADER
 
@@ -740,9 +712,13 @@ for entry in "${VIDEOS[@]}"; do
         continue
     fi
 
-    # Run enhance_gpu.py with --job-name to use movie title as directory name
+    # Run enhance_gpu.py (via Docker wrapper if available, otherwise direct)
     URL="https://www.youtube.com/watch?v=$vid"
-    if python3 /root/enhance_gpu.py "$URL" "$scale" --job-name "$title"; then
+    ENHANCE_CMD="python3 /root/enhance_gpu.py"
+    if [ -x /root/docker_enhance.sh ]; then
+        ENHANCE_CMD="/root/docker_enhance.sh"
+    fi
+    if $ENHANCE_CMD "$URL" "$scale" --job-name "$title"; then
         echo "SUCCESS: $title upscaled at $(date)"
 
         # Find the enhanced .mkv file
@@ -751,7 +727,12 @@ for entry in "${VIDEOS[@]}"; do
         # Upload to YouTube and send email notification to juerg@davaz.com
         if [[ -n "$ENHANCED_FILE" && -f "/root/client_secret.json" && -f "/root/youtube_token.json" ]]; then
             echo "Uploading to YouTube..."
-            if python3 /root/youtube_upload.py "$vid" "$ENHANCED_FILE" \
+            UPLOAD_CMD="python3 /root/youtube_upload.py"
+            if [ -x /root/docker_enhance.sh ]; then
+                # Run upload inside Docker container (has google-api deps)
+                UPLOAD_CMD="docker run --rm -v /root/jobs:/root/jobs -v /root/youtube_upload.py:/root/youtube_upload.py -v /root/client_secret.json:/root/client_secret.json -v /root/youtube_token.json:/root/youtube_token.json ghcr.io/zdavatz/realesrgan-benchmark:latest python3 /root/youtube_upload.py"
+            fi
+            if $UPLOAD_CMD "$vid" "$ENHANCED_FILE" \
                 --client-secret /root/client_secret.json \
                 --token /root/youtube_token.json; then
                 echo "YouTube upload + email notification done at $(date)"
