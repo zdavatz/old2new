@@ -566,6 +566,24 @@ export DEBIAN_FRONTEND=noninteractive
 
 echo "=== Setup started at $(date) ==="
 
+# Step 0: Check CUDA driver version — need >=12.8 for our slim Docker image
+echo "=== Step 0: Checking CUDA driver ==="
+CUDA_VER=$(nvidia-smi --query-gpu=driver_version --format=csv,noheader 2>/dev/null | head -1)
+CUDA_RUNTIME=$(nvidia-smi 2>/dev/null | grep "CUDA Version" | awk '{print $9}')
+echo "Driver: $CUDA_VER, CUDA: $CUDA_RUNTIME"
+
+# Compare CUDA version (need >=12.8)
+CUDA_MAJOR=$(echo "$CUDA_RUNTIME" | cut -d. -f1)
+CUDA_MINOR=$(echo "$CUDA_RUNTIME" | cut -d. -f2)
+if [ "${CUDA_MAJOR:-0}" -lt 12 ] || { [ "${CUDA_MAJOR:-0}" -eq 12 ] && [ "${CUDA_MINOR:-0}" -lt 8 ]; }; then
+    echo ""
+    echo "ERROR: CUDA $CUDA_RUNTIME too old — need >=12.8 for slim Docker image"
+    echo "This host has driver $CUDA_VER which only supports CUDA $CUDA_RUNTIME"
+    echo "ABORTING — destroy this instance and try another host with newer drivers"
+    exit 1
+fi
+echo "CUDA $CUDA_RUNTIME >= 12.8 — OK"
+
 # Kill any residual unattended-upgrades (bootcmd disables it, but belt-and-suspenders)
 systemctl stop unattended-upgrades 2>/dev/null || true
 for i in $(seq 1 15); do fuser /var/lib/dpkg/lock-frontend >/dev/null 2>&1 || break; sleep 1; done
