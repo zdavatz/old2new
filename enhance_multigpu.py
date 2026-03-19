@@ -173,6 +173,20 @@ def main():
 
     print(f"Video: {src_w}x{src_h} @ {fps:.1f}fps, ~{total_frames_est} frames")
 
+    # Disk space pre-check
+    input_frame_bytes = src_w * src_h * 3
+    output_frame_bytes = (src_w * scale) * (src_h * scale) * 3
+    est_disk_gb = total_frames_est * (input_frame_bytes + output_frame_bytes) / 2.5 / (1024**3) * 1.2 + 5
+    st = os.statvfs(workdir)
+    avail_gb = (st.f_frsize * st.f_bavail) / (1024**3)
+    print(f"Disk needed: ~{est_disk_gb:.0f} GB (frames_in + frames_out)")
+    print(f"Disk available: {avail_gb:.0f} GB")
+    if est_disk_gb > avail_gb:
+        print(f"\nERROR: Not enough disk space! Need ~{est_disk_gb:.0f} GB but only {avail_gb:.0f} GB available.")
+        print(f"Create instance with at least --disk {int(est_disk_gb * 1.2)}")
+        sys.exit(1)
+    print(f"Disk OK: {avail_gb - est_disk_gb:.0f} GB headroom")
+
     # Step 2: Extract frames
     existing = sorted(glob.glob(os.path.join(frames_in, "frame_*.png")))
     if len(existing) < total_frames_est * 0.9:
