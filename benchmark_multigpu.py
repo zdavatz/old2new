@@ -10,6 +10,8 @@ import cv2
 import numpy as np
 import subprocess
 import sys
+import multiprocessing
+multiprocessing.set_start_method('spawn', force=True)
 from multiprocessing import Process, Queue
 
 
