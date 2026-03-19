@@ -240,9 +240,10 @@ The RTX 4090 handles all SD videos without tiling. The RTX 5090 handles HD video
 | Cost/hr | ~$0.50 | ~$0.69 |
 | Best for | SD videos ≤1.6 MP | HD videos (any resolution) |
 
-**Datacenter GPUs are NOT suitable for Real-ESRGAN** — tested:
-- RTX Pro 6000 S Server 96GB (600W): 0.6 fps with tile=512 — only 20% faster than RTX 5090 but **5x more expensive** ($3.41/hr vs $0.69/hr)
-- B200 179GB: 0.57 fps (1.76s/frame) — same speed as RTX 5090 but **4x more expensive** ($3.13/hr vs $0.76/hr). Only draws 205W of 1000W TDP
+**Datacenter GPUs are NOT suitable for Real-ESRGAN** (except GH200) — tested:
+- **GH200 Grace Hopper 96GB: 0.74 fps** — FASTEST GPU tested! ARM Grace CPU + NVLink eliminates CPU↔GPU bottleneck. But $2.26/hr and ARM64 (no x86 Docker images)
+- RTX Pro 6000 S Server 96GB (600W): 0.62 fps — 5x more expensive per frame than RTX 5090
+- B200 179GB: 0.57 fps — same speed as RTX 5090 but 4x more expensive. Only draws 205W of 1000W TDP
 - H100 PCIe 80GB (350W): 0.46 fps — only 147W/350W utilized, $1.90/hr
 - RTX Pro 6000 WS Max-Q 96GB (300W): 0.44 fps — power-throttled
 - L40S 48GB (350W): 0.3 fps — slower than RTX 5090 despite more VRAM
@@ -256,11 +257,12 @@ GPU power limit directly impacts Real-ESRGAN performance. "Max-Q" / workstation 
 
 | GPU | Power | Clock | fps (1920x1200, tile=512) | $/hr |
 |-----|-------|-------|---------------------------|------|
-| RTX Pro 6000 S (Server, 96GB) | 600W | 2430 MHz | **0.62 fps** | $0.73 |
+| **GH200 Grace Hopper (96GB)** | **900W (292W actual)** | **1980 MHz** | **0.74 fps** | **$2.26** |
+| RTX Pro 6000 S (Server, 96GB) | 600W (354W actual) | 2430 MHz | 0.62 fps | $0.73 |
 | B200 (Datacenter, 179GB) | 1000W (205W actual) | 1965 MHz | 0.57 fps | $3.13 |
-| RTX 5090 (Gaming, 32GB) | 575W | 3090 MHz | **0.56 fps** | $0.76 |
+| RTX 5090 (Gaming, 32GB) | 575W (262W actual) | 3090 MHz | **0.51 fps** | **$0.76** |
 | H100 PCIe (Datacenter, 80GB) | 350W (147W actual) | 1755 MHz | 0.46 fps | $1.90 |
-| RTX Pro 6000 WS (Max-Q, 96GB) | 300W | 3090 MHz | 0.44 fps | $1.20 |
+| RTX Pro 6000 WS (Max-Q, 96GB) | 300W (280W actual) | 3090 MHz | 0.44 fps | $1.20 |
 
 The pre-flight check now queries `nvidia-smi` for `power.limit` and warns about low-power GPU variants.
 
@@ -333,6 +335,7 @@ Per-resolution performance on RTX 5090 (tile=512, FP16):
 - **[Packet.ai](https://packet.ai)**: GPU aggregator (by hosted.ai). **DEPLOYMENT API BROKEN** (as of 2026-03-18). Lists offers correctly (B300 262GB from $3.45/hr, H100 80GB from $0.92/hr, RTX Pro 6000 96GB from $0.83/hr) but POST /deployments returns INTERNAL_ERROR for all GPUs, all regions, all providers. Bug report sent. Requires $50 minimum wallet balance.
 - **[Lambda Labs](https://lambdalabs.com)**: **NOT SUITABLE**. No consumer GPUs (only A10/A100/H100/B200/GH200), perpetually sold out (zero capacity across all regions as of 2026-03-18), and expensive ($1.48-$6.08/hr for single GPU). Datacenter GPUs are proven unsuitable for Real-ESRGAN.
 - **[Hyperstack](https://hyperstack.cloud)**: Bare-metal VMs (NexGenCloud). H100 PCIe benchmarked: **0.46 fps at $1.90/hr** — not cost-effective vs RTX 5090. Only datacenter GPUs (no RTX 4090/5090). Useful for Docker-based testing with `docker run --gpus all ghcr.io/zdavatz/realesrgan-benchmark:latest`.
+- **[RunCrate](https://runcrate.ai)**: GPU aggregator. No REST API — dashboard only (app.runcrate.ai). Docker images supported. **GH200 Grace Hopper benchmarked: 0.74 fps — fastest GPU tested** (ARM64, $2.26/hr). RTX Pro 6000 S also tested (0.62 fps). GPUs: RTX 4090 $0.36/hr, RTX 5090 $0.55/hr, GH200 $2.26/hr. $10 free credits.
 - **[Google Cloud](https://cloud.google.com)**: Always available. L4 at ~$0.70/hr. Use `gcp_setup.sh` for one-command setup. Requires GPUS_ALL_REGIONS quota for new projects.
 
 **Note**: On cloud instances, always use the Python/CUDA approach (`enhance_gpu.py`). The ncnn-vulkan binary does not work in Docker containers — Vulkan ICD fails or falls back to CPU (125x slower). See "ncnn-vulkan: NOT Viable on Cloud GPUs" above.
