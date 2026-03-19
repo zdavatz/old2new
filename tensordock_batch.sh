@@ -566,90 +566,65 @@ export DEBIAN_FRONTEND=noninteractive
 
 echo "=== Setup started at $(date) ==="
 
-# Step 0: Check CUDA driver version — need >=12.8 for our slim Docker image
-echo "=== Step 0: Checking CUDA driver ==="
-CUDA_VER=$(nvidia-smi --query-gpu=driver_version --format=csv,noheader 2>/dev/null | head -1)
-CUDA_RUNTIME=$(nvidia-smi 2>/dev/null | grep "CUDA Version" | awk '{print $9}')
-echo "Driver: $CUDA_VER, CUDA: $CUDA_RUNTIME"
-
-# Compare CUDA version (need >=12.8)
-CUDA_MAJOR=$(echo "$CUDA_RUNTIME" | cut -d. -f1)
-CUDA_MINOR=$(echo "$CUDA_RUNTIME" | cut -d. -f2)
-if [ "${CUDA_MAJOR:-0}" -lt 12 ] || { [ "${CUDA_MAJOR:-0}" -eq 12 ] && [ "${CUDA_MINOR:-0}" -lt 8 ]; }; then
-    echo ""
-    echo "ERROR: CUDA $CUDA_RUNTIME too old — need >=12.8 for slim Docker image"
-    echo "This host has driver $CUDA_VER which only supports CUDA $CUDA_RUNTIME"
-    echo "ABORTING — destroy this instance and try another host with newer drivers"
-    exit 1
-fi
-echo "CUDA $CUDA_RUNTIME >= 12.8 — OK"
-
-# Kill any residual unattended-upgrades (bootcmd disables it, but belt-and-suspenders)
+# Kill unattended-upgrades immediately
 systemctl stop unattended-upgrades 2>/dev/null || true
 for i in $(seq 1 15); do fuser /var/lib/dpkg/lock-frontend >/dev/null 2>&1 || break; sleep 1; done
 
-# Step 1: Install Docker + NVIDIA Container Toolkit (~1 min)
-echo "=== Step 1: Installing Docker + NVIDIA runtime ==="
-apt-get install -y --no-install-recommends docker.io nvidia-container-toolkit 2>/dev/null || {
-    apt-get update -qq && apt-get install -y --no-install-recommends docker.io nvidia-container-toolkit
+# Step 1: Check CUDA + detect GPU arch
+echo "=== Step 1: GPU detection ==="
+nvidia-smi -L
+GPU_ARCH=$(nvidia-smi --query-gpu=compute_cap --format=csv,noheader 2>/dev/null | head -1 | tr -d '.')
+CUDA_RUNTIME=$(nvidia-smi 2>/dev/null | grep "CUDA Version" | awk '{print $9}')
+echo "CUDA: $CUDA_RUNTIME, GPU arch: sm_$GPU_ARCH"
+
+# Step 2: Install only python3-pip + xz-utils (for static ffmpeg) — skip ffmpeg/nginx from apt
+echo "=== Step 2: Minimal apt packages ==="
+apt-get install -y --no-install-recommends python3-pip xz-utils 2>/dev/null || {
+    apt-get update -qq && apt-get install -y --no-install-recommends python3-pip xz-utils
 }
-systemctl start docker
-nvidia-ctk runtime configure --runtime=docker
-systemctl restart docker
-echo "Docker + NVIDIA runtime installed."
 
-# Step 2: Pull slim image (~1 min for 4.5GB)
-echo "=== Step 2: Pulling slim image ==="
-DOCKER_IMAGE="ghcr.io/zdavatz/realesrgan-benchmark:latest"
-docker pull "$DOCKER_IMAGE"
-echo "Image pulled."
+# Step 3: Static ffmpeg 7.x (in background while pip installs)
+echo "=== Step 3: ffmpeg + pip install (parallel) ==="
+(curl -sL https://johnvansickle.com/ffmpeg/releases/ffmpeg-release-amd64-static.tar.xz | tar xJ -C /tmp/ && \
+ cp /tmp/ffmpeg-*-amd64-static/ffmpeg /usr/local/bin/ffmpeg && \
+ cp /tmp/ffmpeg-*-amd64-static/ffprobe /usr/local/bin/ffprobe && \
+ echo "ffmpeg installed") &
+FFMPEG_PID=$!
 
-# Step 3: Download scripts (not baked into image — always latest from GitHub)
-echo "=== Step 3: Downloading scripts ==="
+# Step 4: pip install (runs in parallel with ffmpeg download)
+PIP="pip install --break-system-packages -q"
+
+# Pick PyTorch version based on GPU arch
+if [ "${GPU_ARCH:-0}" -ge 120 ]; then
+    echo "Blackwell GPU — PyTorch cu128"
+    $PIP torch torchvision --index-url https://download.pytorch.org/whl/cu128 2>&1 | tail -3
+else
+    echo "Ada/Ampere GPU — PyTorch cu121"
+    $PIP torch torchvision --index-url https://download.pytorch.org/whl/cu121 2>&1 | tail -3
+fi
+
+$PIP realesrgan yt-dlp "numpy==1.26.4" "basicsr==1.4.2" 2>&1 | tail -3
+$PIP google-api-python-client google-auth-oauthlib google-auth-httplib2 2>&1 | tail -1
+pip uninstall --break-system-packages -y opencv-python opencv-contrib-python 2>/dev/null || true
+$PIP "opencv-python-headless==4.10.0.84" "numpy==1.26.4" 2>&1 | tail -2
+
+# Patch basicsr
+DFILE=$(python3 -c "import importlib.util; print(importlib.util.find_spec('basicsr').submodule_search_locations[0])" 2>/dev/null)/data/degradations.py
+[ -f "$DFILE" ] && sed -i 's/from torchvision.transforms.functional_tensor import rgb_to_grayscale/from torchvision.transforms.functional import rgb_to_grayscale/' "$DFILE" 2>/dev/null && echo "Patched basicsr"
+
+# Wait for ffmpeg
+wait $FFMPEG_PID
+echo "All deps installed."
+
+# Step 5: Download scripts
+echo "=== Step 5: Scripts ==="
 curl -sL -H "Accept: application/vnd.github.v3.raw" "https://api.github.com/repos/zdavatz/old2new/contents/enhance_gpu.py" -o /root/enhance_gpu.py
 curl -sL -H "Accept: application/vnd.github.v3.raw" "https://api.github.com/repos/zdavatz/old2new/contents/youtube_upload.py" -o /root/youtube_upload.py
 curl -sL -H "Accept: application/vnd.github.v3.raw" "https://api.github.com/repos/zdavatz/old2new/contents/status_server.py" -o /root/status_server.py
-echo "Scripts downloaded."
 
-# Step 4: Start status server on host (outside Docker, for port forwarding)
-echo "=== Step 4: Starting status server ==="
-# Install minimal python3 http server deps (already on Ubuntu 24.04)
+# Step 6: Start status server
 python3 /root/status_server.py &
-echo "Status server started on port 8080."
-
-# Step 5: Create wrapper to run enhance_gpu.py inside Docker container
-echo "=== Step 5: Creating Docker wrapper ==="
-cat > /root/docker_enhance.sh << 'DOCKERWRAP'
-#!/bin/bash
-# Run enhance_gpu.py inside the slim Docker container with GPU access
-# Usage: /root/docker_enhance.sh <youtube-url> <scale> --job-name <name>
-docker run --rm --gpus all \
-    -v /root/jobs:/root/jobs \
-    -v /root/enhance_gpu.py:/root/enhance_gpu.py \
-    -v /root/youtube_upload.py:/root/youtube_upload.py \
-    -v /root/client_secret.json:/root/client_secret.json \
-    -v /root/youtube_token.json:/root/youtube_token.json \
-    -v /root/enhance.log:/root/enhance.log \
-    -v /root/instance_meta.json:/root/instance_meta.json \
-    -e HOME=/root \
-    ghcr.io/zdavatz/realesrgan-benchmark:latest \
-    python3 /root/enhance_gpu.py "$@"
-DOCKERWRAP
-chmod +x /root/docker_enhance.sh
-
-# Verify Docker + GPU works
-echo "=== Step 6: Verification ==="
-docker run --rm --gpus all "$DOCKER_IMAGE" python3 -c "
-import torch
-print(f'PyTorch: {torch.__version__}')
-print(f'CUDA: {torch.cuda.is_available()}, GPU: {torch.cuda.get_device_name(0)}')
-from basicsr.archs.rrdbnet_arch import RRDBNet; print('BasicSR: OK')
-from realesrgan import RealESRGANer; print('RealESRGAN: OK')
-import subprocess
-r = subprocess.run(['ffmpeg', '-version'], capture_output=True, text=True)
-print(f'ffmpeg: {r.stdout.split(chr(10))[0]}')
-print('ALL CHECKS PASSED')
-"
+echo "Status server on port 8080."
 
 echo "=== Setup complete at $(date) ==="
 
