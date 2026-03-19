@@ -293,6 +293,9 @@ def get_enhanced_videos(youtube):
     print(f"Channel: {channel_name} ({channel_id})")
 
     enhanced = []
+    seen_ids = set()
+
+    # Pass 1: Search by keyword "Enhanced 4K" (relevance order)
     page_token = None
     while True:
         results = youtube.search().list(
@@ -306,9 +309,40 @@ def get_enhanced_videos(youtube):
 
         for item in results.get("items", []):
             title = item["snippet"]["title"]
-            if "(Enhanced" in title:
+            vid_id = item["id"]["videoId"]
+            if "(Enhanced" in title and vid_id not in seen_ids:
+                seen_ids.add(vid_id)
                 enhanced.append({
-                    "video_id": item["id"]["videoId"],
+                    "video_id": vid_id,
+                    "title": title,
+                    "published": item["snippet"]["publishedAt"],
+                })
+
+        page_token = results.get("nextPageToken")
+        if not page_token:
+            break
+
+    # Pass 2: Search by date (catches recently uploaded videos with emoji titles
+    # that keyword search may miss)
+    page_token = None
+    while True:
+        results = youtube.search().list(
+            part="snippet",
+            channelId=channel_id,
+            q="Enhanced",
+            type="video",
+            order="date",
+            maxResults=50,
+            pageToken=page_token,
+        ).execute()
+
+        for item in results.get("items", []):
+            title = item["snippet"]["title"]
+            vid_id = item["id"]["videoId"]
+            if "(Enhanced" in title and vid_id not in seen_ids:
+                seen_ids.add(vid_id)
+                enhanced.append({
+                    "video_id": vid_id,
                     "title": title,
                     "published": item["snippet"]["publishedAt"],
                 })
@@ -345,10 +379,10 @@ def normalize(s):
     s = re.sub(r'\(enhanced\s*4k\)', '', s)
     s = re.sub(r'\[processing\]', '', s)
     s = re.sub(r'\(\d+x upscale\)', '', s)
-    # Remove emoji (Unicode blocks: emoticons, symbols, etc.)
-    s = re.sub(r'[\U0001F000-\U0001FFFF]', '', s)
-    # Remove possessive 's before punctuation cleanup (GIRL'S → GIRL)
-    s = re.sub(r"'s\b", "", s)
+    # Remove all emoji and symbol Unicode blocks
+    s = re.sub(r'[\U0001F000-\U0001FFFF\U00002600-\U000027BF\U0000FE00-\U0000FE0F\U0000200D\U000020E3\U00002702-\U000027B0\U0001F900-\U0001F9FF\U0001FA00-\U0001FA6F\U0001FA70-\U0001FAFF\U00002702-\U000027B0\U0000231A-\U0000231B\U000023E9-\U000023F3\U000023F8-\U000023FA\U000025AA-\U000025AB\U000025B6\U000025C0\U000025FB-\U000025FE\U00002934-\U00002935\U00002B05-\U00002B07\U00002B1B-\U00002B1C\U00002B50\U00002B55\U00003030\U0000303D\U00003297\U00003299]', '', s)
+    # Normalize possessive 's → s (GIRL'S → GIRLS, not GIRL)
+    s = re.sub(r"'s\b", "s", s)
     # Normalize punctuation and whitespace
     s = re.sub(r'[_\-–—/\\,.:;!?\'\"&()%]', ' ', s)
     # Collapse spaces between digits (171 2 → 1712)
@@ -372,12 +406,14 @@ def match_enhanced_to_originals(enhanced_videos, id_to_title):
         enhanced_title = ev["title"]
         norm_enhanced = normalize(enhanced_title)
 
-        # Try exact normalized match
+        # Try normalized match (with and without spaces for emoji-heavy titles)
         best_match = None
         best_score = 0
+        norm_enhanced_nospace = norm_enhanced.replace(" ", "")
         for norm_orig, orig_id in title_to_id.items():
-            # Check if one contains the other
-            if norm_orig == norm_enhanced:
+            norm_orig_nospace = norm_orig.replace(" ", "")
+            # Check exact match (with or without spaces)
+            if norm_orig == norm_enhanced or norm_orig_nospace == norm_enhanced_nospace:
                 best_match = orig_id
                 best_score = 100
                 break
@@ -422,7 +458,10 @@ def match_issues_to_enhanced(issues, matched_originals, id_to_title, all_enhance
             orig_title = id_to_title.get(orig_id, "")
             norm_orig = normalize(orig_title)
 
-            if norm_orig and (norm_orig in norm_issue or norm_issue in norm_orig):
+            norm_orig_ns = norm_orig.replace(" ", "")
+            norm_issue_ns = norm_issue.replace(" ", "")
+            if norm_orig and (norm_orig in norm_issue or norm_issue in norm_orig
+                             or norm_orig_ns == norm_issue_ns):
                 closeable.append({
                     "issue_number": issue["number"],
                     "issue_title": issue["title"],
@@ -437,10 +476,13 @@ def match_issues_to_enhanced(issues, matched_originals, id_to_title, all_enhance
         if issue["number"] in already_matched:
             continue
         norm_issue = normalize(issue["title"])
+        norm_issue_ns = norm_issue.replace(" ", "")
         for ev in all_enhanced:
             norm_enhanced = normalize(ev["title"])
+            norm_enhanced_ns = norm_enhanced.replace(" ", "")
             if norm_enhanced and norm_issue and len(norm_issue) > 3:
-                if norm_enhanced in norm_issue or norm_issue in norm_enhanced:
+                if (norm_enhanced in norm_issue or norm_issue in norm_enhanced
+                        or norm_enhanced_ns == norm_issue_ns):
                     closeable.append({
                         "issue_number": issue["number"],
                         "issue_title": issue["title"],

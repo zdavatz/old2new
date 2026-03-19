@@ -364,6 +364,7 @@ python3 fetch_missing_videos.py  # fetches actual resolution for missing videos
 # Auto-close GitHub issues for uploaded Enhanced 4K videos
 python3 close_enhanced_issues.py          # dry-run (shows what would be closed)
 python3 close_enhanced_issues.py --close  # actually close matching issues
+# Handles emoji titles, HTML entities, possessives, and fuzzy matching
 ```
 
 Results are saved to:
