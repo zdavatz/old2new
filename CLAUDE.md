@@ -72,12 +72,14 @@ old2new enhances old Da Vaz videos using Real-ESRGAN AI upscaling. There are two
 
 ## Cloud GPU Deployment
 
-- **vast.ai**: Use `pytorch/pytorch:2.1.0-cuda12.1-cudnn8-runtime` image (upgrade PyTorch for RTX 5090). SSH access via `vastai` CLI. Cheapest option (~$0.34/hr for RTX 4090/5090). Request >=250GB disk for short videos, >=2TB for long HD films (1920x1200 @ 2x needs ~1.8TB). Use `vast_batch.sh` for automated batch processing. API key stored in `~/.config/vastai/vast_api_key`. When choosing instances: check CPU clock speed (>2GHz), disk space, and PCIe gen — not just GPU and price.
-- **TensorDock**: SSH VMs via API (`dashboard.tensordock.com/api/v2`). Auth: `Authorization: Bearer $TENSORDOCK_API_KEY`. Ubuntu 24.04 base image (no PyTorch pre-installed — cloud-init installs everything, skips apt update for fast startup). Default SSH user is `user` (not root). API key stored in `~/.bashrc` as `TENSORDOCK_API_KEY`. Organization: old2new. Cloud-init `bootcmd` disables `unattended-upgrades` and `apt-daily` timers to prevent Ubuntu from wasting 5-10 min on dist-upgrade at first boot.
+- **vast.ai**: Use slim Docker image `ghcr.io/zdavatz/realesrgan-benchmark:latest` — all deps pre-installed, boots in ~1-4min (vs ~8min pip install on TensorDock). For RTX 5090/Blackwell, use `pytorch/pytorch:2.7.0-cuda12.8-cudnn9-runtime` with onstart script. SSH access via `vastai` CLI. Cheapest option (~$0.27-0.54/hr for RTX 4090). Request >=700GB disk for SD videos, >=2TB for long HD films (1920x1200 @ 2x needs ~1.8TB). Use `vast_batch.sh` for automated batch processing. API key stored in `~/.zshrc` as `VAST_API_KEY`. When choosing instances: check CPU clock speed (>2GHz), vCPUs >=16, disk space, and PCIe gen — not just GPU and price.
+- **TensorDock**: SSH VMs via API (`dashboard.tensordock.com/api/v2`). Auth: `Authorization: Bearer $TENSORDOCK_API_KEY`. Ubuntu 24.04 bare-metal (no Docker — direct pip install). Default SSH user is `user` (not root). API key stored in `~/.bashrc` as `TENSORDOCK_API_KEY`. Organization: old2new. Cloud-init `bootcmd` disables `unattended-upgrades` and `apt-daily` timers to prevent Ubuntu from wasting 5-10 min on dist-upgrade at first boot.
+  - **Pip-based setup** (not Docker — slim Docker image fails on hosts with CUDA <12.8, e.g. Orlando has 12.7). Cloud-init installs: `python3-pip` + `xz-utils` from apt, then pip installs PyTorch (cu121 for Ada/Ampere, cu128 for Blackwell), realesrgan, yt-dlp, etc. Static ffmpeg 7.x downloads in parallel with pip.
+  - **Ubuntu 24.04 typing_extensions fix**: Must `pip install --ignore-installed typing_extensions` before `pip install torch` — Ubuntu's dpkg-installed version blocks pip from upgrading it, causing torch install to fail with "Cannot uninstall typing_extensions, RECORD file not found".
   - `tensordock_batch.sh` auto-calculates disk size via `yt-dlp --dump-json` (exact resolution, 2.5x PNG compression, 20% safety margin). Auto-detects tiling risk: HD videos (>1.6 MP) auto-switch to RTX 5090, refuses to launch on RTX 4090 (tiling = 8x slower).
   - Port forwarding maps internal 22→random and 8080→random external ports. Disk resize requires stop→modify→start (GPU may detach — always create with correct size from the start).
   - RTX 5090 support: auto-switches or override with `GPU_MODEL=geforcertx5090-pcie-32gb`. Auto-detects Blackwell arch (sm_120+) and installs PyTorch with CUDA 12.8.
-  - **Proven profile SD-4x**: RTX 4090, Ottawa, 650GB, AMD EPYC 7F72, 2.6 fps, $0.41/hr. Fits SD videos up to ~55min. Queue multiple videos with frame cleanup between jobs.
+  - **Proven profile SD-4x**: RTX 4090, Ottawa/Orlando, 650-700GB, 2.6-2.9 fps, $0.41-0.50/hr. Queue multiple videos with frame cleanup between jobs.
   - **Proven profile HD-2x**: RTX 5090, Chubbuck Idaho, 1700-3000GB, ~$0.70-0.80/hr. Only location with 5090 + large storage. ~1700GB for 1h HD, ~3000GB for 2h HD.
 - **RunPod**: NOT WORKING as of 2026-03-18. Pods show "RUNNING" but never actually start (uptime stays 0, no ports assigned). Tested with RTX Pro 6000, RTX 5090, multiple datacenters (EU-RO-1, US-KS-2), various images (pytorch, nvidia/cuda, ubuntu:22.04), with/without network volumes, REST and GraphQL APIs. All pods stuck indefinitely. Platform-level issue — not a configuration problem. `runpod_launch.sh` script exists but is unusable until RunPod fixes this. API key stored in `~/.bashrc` as `RUNPOD_API_KEY`.
 - **Google Cloud**: Use `gcp_setup.sh` for automated setup. Image: `pytorch-2-7-cu128-ubuntu-2204-nvidia-570`, machine: `g2-standard-4` + L4 GPU. Requires GPUS_ALL_REGIONS quota increase for new projects.
@@ -91,11 +93,13 @@ old2new enhances old Da Vaz videos using Real-ESRGAN AI upscaling. There are two
 ## Cloud Python Dependency Fixes
 
 The `realesrgan` package has version conflicts on many cloud images:
+- **Ubuntu 24.04 typing_extensions**: `pip install --ignore-installed typing_extensions` BEFORE installing torch — Ubuntu's dpkg version blocks pip upgrade
 - `numpy==1.26.4` required (numpy 2.x breaks basicsr)
 - `torchvision==0.15.2` and `basicsr==1.4.2` needed if torchvision is too new (missing `functional_tensor`)
 - Must uninstall `opencv-python` AND `opencv-contrib-python` before installing `opencv-python-headless<4.11` (4.11+ requires numpy>=2)
 - On cloud images, install `libgl1` and `libglib2.0-0` system packages
 - PyTorch Docker image ships ffmpeg 4.3 which can't merge webm — install static ffmpeg 7.x from johnvansickle.com (replace `/opt/conda/bin/ffmpeg`)
+- **Prefer slim Docker image** (`ghcr.io/zdavatz/realesrgan-benchmark:latest`) over pip install — avoids all dependency conflicts
 
 ## Dependencies
 

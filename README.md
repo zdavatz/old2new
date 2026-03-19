@@ -124,14 +124,14 @@ Enhance videos on TensorDock GPU instances (SSH VMs with RTX 4090, auto-sized di
 
 - **Auto disk sizing**: fetches exact resolution via `yt-dlp --dump-json`, calculates disk with 2.5x PNG compression + 20% safety margin
 - **Auto GPU selection**: HD videos (>1.6 MP) auto-switch to RTX 5090 — refuses to launch on RTX 4090 where tiling would be 8x slower
-- **Proven profiles**: SD-4x on RTX 4090 Ottawa (2.6 fps, $0.41/hr, 650GB) | HD-2x on RTX 5090 Chubbuck (1700-3000GB, ~$0.75/hr)
+- **Proven profiles**: SD-4x on RTX 4090 Ottawa/Orlando (2.6-2.9 fps, $0.41-0.50/hr, 650-700GB) | HD-2x on RTX 5090 Chubbuck (1700-3000GB, ~$0.75/hr)
 - Queue multiple videos on one instance — fully automated pipeline per video:
-  1. Upscale with Real-ESRGAN → 2. Upload to YouTube (copies title + "Enhanced 4K" suffix) → 3. Email juerg@davaz.com with old + new links → 4. Delete .mkv to free disk
+  1. Upscale with Real-ESRGAN → 2. Upload to YouTube (copies title + "Enhanced 4K" suffix) → 3. Email juerg@davaz.com with old + new links → 4. Delete job dir to free disk
 - OAuth credentials (`client_secret.json`, `youtube_token.json`) auto-deployed to instances via cloud-init write_files
-- Fast startup: disables Ubuntu unattended-upgrades via cloud-init bootcmd, skips apt update (~3min vs ~12min)
+- **Pip-based setup** (not Docker — slim image needs CUDA >=12.8 but many hosts have 12.7). Auto-detects GPU arch for correct PyTorch version (cu121 for Ada/Ampere, cu128 for Blackwell). Static ffmpeg downloads in parallel with pip install.
+- Fast startup: disables Ubuntu unattended-upgrades via cloud-init bootcmd (~3-5min setup)
 - Direct SSH access (user `user`, not root)
-- Web dashboard via nginx reverse proxy (reliable, no dropped connections)
-- Cloud-init auto-installs all dependencies (PyTorch, Real-ESRGAN, ffmpeg; auto-detects Blackwell GPUs for CUDA 12.8)
+- Web dashboard on port 8080 via port forwarding
 
 ### Batch Processing (vast.ai — all 226 davaz.com videos)
 
@@ -341,8 +341,8 @@ Per-resolution performance on RTX 5090 (tile=512, FP16):
 
 ### Cloud GPU Providers
 
-- **[vast.ai](https://vast.ai)**: Cheapest option. RTX 4090 at ~$0.34/hr, RTX 5090 at ~$0.34/hr, A100 80GB at ~$0.66/hr. CLI: `pip install vastai`. Use `vast_batch.sh` for automated batch processing.
-- **[TensorDock](https://tensordock.com)**: SSH VMs with auto-sized disk. RTX 4090 at ~$0.41/hr (SD videos), RTX 5090 at ~$0.75/hr (HD videos). Auto-detects tiling risk and selects correct GPU. Proven: 2.6 fps on SD-4x, queue 10+ videos per instance. Use `tensordock_batch.sh`.
+- **[vast.ai](https://vast.ai)**: Fastest boot with slim Docker image (`ghcr.io/zdavatz/realesrgan-benchmark:latest` — all deps pre-installed, ~1-4min startup). RTX 4090 from ~$0.27/hr, RTX 5090 from ~$0.34/hr. CLI: `pip install vastai`. Use `vast_batch.sh` for automated batch processing. Dashboard via SSH tunnel (`ssh -L 8080:localhost:8080`).
+- **[TensorDock](https://tensordock.com)**: SSH VMs with auto-sized disk, pip-based setup (~3-5min). RTX 4090 at ~$0.33-0.50/hr (SD videos), RTX 5090 at ~$0.54-0.80/hr (HD videos). Auto-detects GPU arch and installs correct PyTorch version. Proven: 2.6-2.9 fps on SD-4x, queue 10+ videos per instance. Use `tensordock_batch.sh`.
 - **[RunPod](https://runpod.io)**: **NOT WORKING** (as of 2026-03-18). Pods show "RUNNING" but never actually start — uptime stays 0, no SSH ports assigned. Tested with RTX Pro 6000 Blackwell (96GB, $1.69/hr) and RTX 5090, multiple datacenters, various Docker images, with/without network volumes. Platform-level issue. `runpod_launch.sh` script exists but is unusable until RunPod fixes this.
 - **[Packet.ai](https://packet.ai)**: GPU aggregator (by hosted.ai). **DEPLOYMENT API BROKEN** (as of 2026-03-18). Lists offers correctly (B300 262GB from $3.45/hr, H100 80GB from $0.92/hr, RTX Pro 6000 96GB from $0.83/hr) but POST /deployments returns INTERNAL_ERROR for all GPUs, all regions, all providers. Bug report sent. Requires $50 minimum wallet balance.
 - **[Lambda Labs](https://lambdalabs.com)**: **NOT SUITABLE**. No consumer GPUs (only A10/A100/H100/B200/GH200), perpetually sold out (zero capacity across all regions as of 2026-03-18), and expensive ($1.48-$6.08/hr for single GPU). Datacenter GPUs are proven unsuitable for Real-ESRGAN.
