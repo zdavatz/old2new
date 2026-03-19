@@ -705,13 +705,9 @@ for entry in "${VIDEOS[@]}"; do
         continue
     fi
 
-    # Run enhance_gpu.py (via Docker wrapper if available, otherwise direct)
+    # Run enhance_gpu.py
     URL="https://www.youtube.com/watch?v=$vid"
-    ENHANCE_CMD="python3 /root/enhance_gpu.py"
-    if [ -x /root/docker_enhance.sh ]; then
-        ENHANCE_CMD="/root/docker_enhance.sh"
-    fi
-    if $ENHANCE_CMD "$URL" "$scale" --job-name "$title"; then
+    if python3 /root/enhance_gpu.py "$URL" "$scale" --job-name "$title"; then
         echo "SUCCESS: $title upscaled at $(date)"
 
         # Find the enhanced .mkv file
@@ -720,12 +716,7 @@ for entry in "${VIDEOS[@]}"; do
         # Upload to YouTube and send email notification to juerg@davaz.com
         if [[ -n "$ENHANCED_FILE" && -f "/root/client_secret.json" && -f "/root/youtube_token.json" ]]; then
             echo "Uploading to YouTube..."
-            UPLOAD_CMD="python3 /root/youtube_upload.py"
-            if [ -x /root/docker_enhance.sh ]; then
-                # Run upload inside Docker container (has google-api deps)
-                UPLOAD_CMD="docker run --rm -v /root/jobs:/root/jobs -v /root/youtube_upload.py:/root/youtube_upload.py -v /root/client_secret.json:/root/client_secret.json -v /root/youtube_token.json:/root/youtube_token.json ghcr.io/zdavatz/realesrgan-benchmark:latest python3 /root/youtube_upload.py"
-            fi
-            if $UPLOAD_CMD "$vid" "$ENHANCED_FILE" \
+            if python3 /root/youtube_upload.py "$vid" "$ENHANCED_FILE" \
                 --client-secret /root/client_secret.json \
                 --token /root/youtube_token.json; then
                 echo "YouTube upload + email notification done at $(date)"
