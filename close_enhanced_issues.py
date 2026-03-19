@@ -246,6 +246,11 @@ XnQtQcAeEhg	Itzhak_Frei_working_in_his_own_bakery_in_Mea_Shearim_Jerusalem
 lzVQk98YIZE	kidsKIDSkidsKIDSkids
 _Br8-bsDXac	for_DISCOVERY
 GmBG_-CxT50	DONT_LOOK_HERE
+kUmV1BDCnH4	RUSSIA_OLD_PONDS_(English_Edition)
+N6jAviwcNmo	GAZA_HAMAS_RISE_to_POWER_(English_Edition)
+aefe1fn7Kf0	Base_Camp_Everest_Top_of_the_world
+5AdE5zNRq6w	DPRK_KIM_DYNASTY_-_teaching_method
+wzgdTKkEQCo	to_TOO_to_TOOO_to_TOOOO
 """
 
 
@@ -342,8 +347,12 @@ def normalize(s):
     s = re.sub(r'\(\d+x upscale\)', '', s)
     # Remove emoji (Unicode blocks: emoticons, symbols, etc.)
     s = re.sub(r'[\U0001F000-\U0001FFFF]', '', s)
+    # Remove possessive 's before punctuation cleanup (GIRL'S → GIRL)
+    s = re.sub(r"'s\b", "", s)
     # Normalize punctuation and whitespace
     s = re.sub(r'[_\-–—/\\,.:;!?\'\"&()%]', ' ', s)
+    # Collapse spaces between digits (171 2 → 1712)
+    s = re.sub(r'(\d)\s+(\d)', r'\1\2', s)
     s = re.sub(r'\s+', ' ', s).strip()
     return s
 
