@@ -251,6 +251,18 @@ The RTX 4090 handles all SD videos without tiling. The RTX 5090 handles HD video
 
 **Rule of thumb**: Use RTX 4090 for SD (≤1.6 MP). Use RTX 5090 for HD. The RTX 5090 ($0.69/hr) is the most cost-effective GPU for Real-ESRGAN — no datacenter GPU comes close on price/performance.
 
+### Multi-GPU Scaling
+
+Multi-GPU scales **linearly** — each GPU runs its own process on a different video:
+
+| GPUs | Combined fps | Speedup | $/hr (vast.ai) |
+|------|-------------|---------|----------------|
+| 1x RTX 5090 | 0.36 fps | 1.0x | $0.38 |
+| 2x RTX 5090 | 0.73 fps | 2.0x | $0.80 |
+| 4x RTX 5090 | 1.47 fps | **4.1x** | $1.50 |
+
+No code changes needed in `enhance_gpu.py` — just run multiple instances with `CUDA_VISIBLE_DEVICES`. The dashboard supports multi-GPU (per-GPU fps, temperature, utilization).
+
 ### GPU Power Limit & Variant Comparison
 
 GPU power limit directly impacts Real-ESRGAN performance. "Max-Q" / workstation variants throttle under sustained load:
