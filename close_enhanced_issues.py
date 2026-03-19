@@ -251,6 +251,11 @@ N6jAviwcNmo	GAZA_HAMAS_RISE_to_POWER_(English_Edition)
 aefe1fn7Kf0	Base_Camp_Everest_Top_of_the_world
 5AdE5zNRq6w	DPRK_KIM_DYNASTY_-_teaching_method
 wzgdTKkEQCo	to_TOO_to_TOOO_to_TOOOO
+dqiDqnYOHrU	nur_fur_DOKUMENT
+28sD05dtKzE	052ab_ITZHAK_FREY_Gedanken_zur_Grundung_des_Slowakischen_Staates_-_D
+uGvmLs3uBys	FAMILY_LIFE
+fwSfBzIftJI	COME_WITH_ME
+xiFVzz_x5PU	Where_Where_HERE
 """
 
 
@@ -379,8 +384,12 @@ def normalize(s):
     s = re.sub(r'\(enhanced\s*4k\)', '', s)
     s = re.sub(r'\[processing\]', '', s)
     s = re.sub(r'\(\d+x upscale\)', '', s)
-    # Remove all emoji and symbol Unicode blocks
-    s = re.sub(r'[\U0001F000-\U0001FFFF\U00002600-\U000027BF\U0000FE00-\U0000FE0F\U0000200D\U000020E3\U00002702-\U000027B0\U0001F900-\U0001F9FF\U0001FA00-\U0001FA6F\U0001FA70-\U0001FAFF\U00002702-\U000027B0\U0000231A-\U0000231B\U000023E9-\U000023F3\U000023F8-\U000023FA\U000025AA-\U000025AB\U000025B6\U000025C0\U000025FB-\U000025FE\U00002934-\U00002935\U00002B05-\U00002B07\U00002B1B-\U00002B1C\U00002B50\U00002B55\U00003030\U0000303D\U00003297\U00003299]', '', s)
+    # Normalize umlauts (ü→u, ö→o, ä→a, ß→ss)
+    for src, dst in [('ü', 'u'), ('ö', 'o'), ('ä', 'a'), ('ß', 'ss'),
+                     ('ú', 'u'), ('ó', 'o'), ('á', 'a'), ('é', 'e'), ('í', 'i')]:
+        s = s.replace(src, dst)
+    # Remove all emoji and symbol Unicode blocks (including ‼️ U+203C, misc symbols)
+    s = re.sub(r'[\U0001F000-\U0001FFFF\U00002600-\U000027BF\U0000FE00-\U0000FE0F\U0000200D\U000020E3\U00002702-\U000027B0\U0001F900-\U0001F9FF\U0001FA00-\U0001FA6F\U0001FA70-\U0001FAFF\U0000231A-\U0000231B\U000023E9-\U000023F3\U000023F8-\U000023FA\U000025AA-\U000025AB\U000025B6\U000025C0\U000025FB-\U000025FE\U00002934-\U00002935\U00002B05-\U00002B07\U00002B1B-\U00002B1C\U00002B50\U00002B55\U00003030\U0000303D\U00003297\U00003299\U0000203C\U00002049]', '', s)
     # Normalize possessive 's → s (GIRL'S → GIRLS, not GIRL)
     s = re.sub(r"'s\b", "s", s)
     # Normalize punctuation and whitespace
