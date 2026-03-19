@@ -163,12 +163,13 @@ def main():
     fps_num, fps_den = fps_str.split("/")
     fps = int(fps_num) / int(fps_den)
 
+    # Estimate frames from duration (much faster than -count_frames)
     r2 = subprocess.run(
-        ["ffprobe", "-v", "quiet", "-count_frames", "-select_streams", "v:0",
-         "-show_entries", "stream=nb_read_frames",
+        ["ffprobe", "-v", "quiet", "-show_entries", "format=duration",
          "-of", "csv=p=0", input_file],
-        capture_output=True, text=True, timeout=30)
-    total_frames_est = int(r2.stdout.strip()) if r2.stdout.strip().isdigit() else int(fps * 3876)
+        capture_output=True, text=True, timeout=10)
+    duration = float(r2.stdout.strip()) if r2.stdout.strip() else 3876
+    total_frames_est = int(duration * fps)
 
     print(f"Video: {src_w}x{src_h} @ {fps:.1f}fps, ~{total_frames_est} frames")
 
