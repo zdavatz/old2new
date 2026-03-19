@@ -263,6 +263,8 @@ Multi-GPU scales **linearly** — each GPU runs its own process on a different v
 
 No code changes needed in `enhance_gpu.py` — just run multiple instances with `CUDA_VISIBLE_DEVICES`. The dashboard supports multi-GPU (per-GPU fps, temperature, utilization).
 
+**Important:** Multi-GPU does **NOT** help for splitting one large HD video — 4 GPUs writing 28MB PNGs simultaneously saturates disk I/O (~0.3 fps combined vs ~0.4 fps single GPU). Tested on both slow and fast NVMe. Always use **1 GPU per video**, multiple single-GPU instances for parallel processing.
+
 ### GPU Power Limit & Variant Comparison
 
 GPU power limit directly impacts Real-ESRGAN performance. "Max-Q" / workstation variants throttle under sustained load:
