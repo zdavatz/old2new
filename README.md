@@ -174,7 +174,9 @@ python3 enhance_gpu.py "<youtube-url>" [scale] --job-name "Movie_Title"
 
 ### Output
 
-Enhanced videos are saved as `jobs/<title>/<title>_<scale>x.mkv`. For example:
+Enhanced videos are saved as `jobs/<title>/<title>_<scale>x.mkv` using libx264 with CRF 18 (visually lossless) and `-preset medium`. We tested `-preset slow` vs `medium` — at CRF 18 the visual quality is identical (both are visually lossless). `slow` produces ~15% smaller files by searching harder for compression efficiency, but YouTube re-encodes all uploads anyway, making the smaller file size pointless. `medium` is ~2x faster for encoding, saving ~1h on 4K 50fps videos (e.g. 11566 frames at 3840x2160).
+
+For example:
 
 ```
 jobs/009_ChickenPick/
