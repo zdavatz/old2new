@@ -628,7 +628,7 @@ async function update() {
     }
 
     h += `<table><thead><tr>
-      <th>#</th><th>Title</th><th>Resolution</th><th>Input</th><th>Output</th><th>Duration</th><th>Status</th><th>Progress</th><th>Timing</th><th>Compare</th>
+      <th>#</th><th>Title</th><th>Resolution</th><th>Duration</th><th>Status</th><th>Progress</th><th>Timing</th><th>Compare</th><th>Input</th><th>Output</th>
     </tr></thead><tbody>`;
 
     const order = [...active, ...other, ...done, ...queued];
@@ -648,8 +648,6 @@ async function update() {
         <td>${i+1}</td>
         <td class="title-col"><a href="${ytUrl}" target="_blank">${v.display_title || v.title.replace(/_/g, ' ')}</a></td>
         <td style="font-size:0.75rem;color:#94a3b8">${v.resolution || '—'}</td>
-        <td style="font-size:0.75rem;color:#94a3b8">${inputName}</td>
-        <td style="font-size:0.75rem">${outputCell}</td>
         <td>${dur}</td>
         <td><span class="status status-${v.status}">${v.status}</span></td>
         <td><div class="bar-bg"><div class="bar-fg" style="width:${v.progress}%;background:${barColor}"></div>
@@ -662,6 +660,8 @@ async function update() {
             + (v.timing.youtube_upload ? 'yt:' + Math.round(v.timing.youtube_upload/60) + 'm' : '')
           : '—'}</td>
         <td>${compareLink}</td>
+        <td style="font-size:0.75rem;color:#94a3b8">${inputName}</td>
+        <td style="font-size:0.75rem">${outputCell}</td>
       </tr>`;
     });
     h += '</tbody></table>';
