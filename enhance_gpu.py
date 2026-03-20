@@ -412,12 +412,15 @@ def main():
     if ytdlp_cookies:
         print(f"Using cookies: {COOKIES_FILE}")
 
+    # --- yt-dlp JS challenge solver (required since ~March 2026) ---
+    ytdlp_rc = ["--remote-components", "ejs:github"]
+
     # --- Pre-download disk check ---
     # Fetch video metadata without downloading to estimate disk needs early
     if not os.path.exists(INPUT):
         print("Fetching video info...")
         try:
-            result = subprocess.run(["yt-dlp", "--dump-json", "--no-download"] + ytdlp_cookies + [URL],
+            result = subprocess.run(["yt-dlp"] + ytdlp_rc + ["--dump-json", "--no-download"] + ytdlp_cookies + [URL],
                                     capture_output=True, text=True, timeout=60)
             if result.returncode == 0:
                 import json as _json
@@ -460,7 +463,7 @@ def main():
     else:
         print("Downloading video...")
         dl_start = time.time()
-        subprocess.run(["yt-dlp", "-o", f"{WORKDIR}/{dir_name}.%(ext)s",
+        subprocess.run(["yt-dlp"] + ytdlp_rc + ["-o", f"{WORKDIR}/{dir_name}.%(ext)s",
                         "--merge-output-format", "mkv"] + ytdlp_cookies + [URL], check=True)
         if not os.path.exists(INPUT):
             # yt-dlp may produce different filename, find it
