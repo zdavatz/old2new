@@ -854,11 +854,11 @@ def main():
     if src_info.stdout.strip():
         subprocess.run(["ffmpeg", "-framerate", str(fps), "-i", f"{FRAMES_OUT}/frame_%08d.png",
             "-i", INPUT, "-map", "0:v", "-map", "1:a",
-            "-c:v", "libx264", "-crf", "18", "-preset", "slow", "-pix_fmt", "yuv420p",
+            "-c:v", "libx264", "-crf", "18", "-preset", "medium", "-pix_fmt", "yuv420p",
             "-c:a", "copy", "-y", output_file], check=True, capture_output=True)
     else:
         subprocess.run(["ffmpeg", "-framerate", str(fps), "-i", f"{FRAMES_OUT}/frame_%08d.png",
-            "-c:v", "libx264", "-crf", "18", "-preset", "slow", "-pix_fmt", "yuv420p",
+            "-c:v", "libx264", "-crf", "18", "-preset", "medium", "-pix_fmt", "yuv420p",
             "-y", output_file], check=True, capture_output=True)
 
     reassemble_elapsed = time.time() - reassemble_start
