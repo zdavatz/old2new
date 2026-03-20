@@ -267,6 +267,26 @@ No code changes needed in `enhance_gpu.py` — just run multiple instances with 
 
 **Disk sizing for multi-GPU:** With 4 GPUs parallel, each GPU needs its own disk budget (total / 4). At 1920x1200 2x with 500GB: max ~5min per video. For short HD videos (<5min), 4x RTX 5090 at $1.35/hr on vast.ai Sichuan is ideal — processes 30 short videos in ~20min.
 
+**Queue design for multi-GPU:** Use a **shared work queue** (`video_work_queue.txt`) with `flock`-based locking instead of batch-of-N scheduling. Each GPU worker atomically grabs the next video when done:
+
+```bash
+# Each GPU runs this loop — no waiting for other GPUs
+gpu_worker() {
+    local gpu=$1
+    while true; do
+        line=$(flock /root/queue.lock bash -c 'head -1 /root/video_work_queue.txt && sed -i "1d" /root/video_work_queue.txt')
+        [[ -z "$line" ]] && break
+        # parse and process video...
+    done
+}
+gpu_worker 0 &  # start immediately
+gpu_worker 1 &  # or wait for busy GPU to finish, then join
+gpu_worker 2 &
+gpu_worker 3 &
+```
+
+The batch-of-N anti-pattern (`wait` for all 4 GPUs, then start next 4) wastes GPU time — fast-finishing GPUs sit idle waiting for the slowest one. On a 4x RTX 5090 instance at $1.35/hr, this caused 3 GPUs to idle for 2+ hours (~$2.70 wasted). The flock-based queue keeps all GPUs busy continuously.
+
 ### GPU Power Limit & Variant Comparison
 
 GPU power limit directly impacts Real-ESRGAN performance. "Max-Q" / workstation variants throttle under sustained load:
