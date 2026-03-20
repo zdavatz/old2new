@@ -144,13 +144,20 @@ def send_notification_email(creds, to_email, subject, body_text):
 
 def main():
     parser = argparse.ArgumentParser(description="Upload enhanced video to YouTube")
-    parser.add_argument("video_id", help="Original YouTube video ID (to copy title/description)")
+    parser.add_argument("video_id", nargs="?", default=None, help="Original YouTube video ID (to copy title/description)")
+    parser.add_argument("--video-id", dest="video_id_opt", help="Video ID as named arg (use this for IDs starting with dash, e.g. --video-id=-x_aIkSrXFw)")
     parser.add_argument("enhanced_file", help="Path to enhanced video file")
     parser.add_argument("--client-secret", default="client_secret.json", help="OAuth client secret file")
     parser.add_argument("--token", default="youtube_token.json", help="OAuth token file (saved after first auth)")
     parser.add_argument("--title-suffix", default="(Enhanced 4K)", help="Suffix added to title")
     parser.add_argument("--notify", default="juerg@davaz.com", help="Email to notify after upload")
     args = parser.parse_args()
+
+    # Support --video-id for IDs starting with dash (e.g. -x_aIkSrXFw)
+    if args.video_id_opt:
+        args.video_id = args.video_id_opt
+    if not args.video_id:
+        parser.error("video_id is required (use --video-id for IDs starting with dash)")
 
     if not os.path.exists(args.enhanced_file):
         print(f"ERROR: File not found: {args.enhanced_file}")
