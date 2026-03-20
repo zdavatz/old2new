@@ -214,6 +214,7 @@ After the pre-flight check, a **pre-download disk estimate** fetches video metad
   - `ghcr.io/zdavatz/realesrgan-benchmark:latest` — **slim ~4.5GB (default for all deployments)**
   - `ghcr.io/zdavatz/realesrgan-benchmark-full:latest` — full ~8GB (+ TensorRT, ONNX Runtime, for benchmarks only)
   - Built from `nvidia/cuda:12.8.0-runtime-ubuntu24.04` (important: `runtime` not `base` — base lacks CUDA libs)
+- **yt-dlp JS challenge**: Since ~March 2026, YouTube requires JS challenge solving. yt-dlp needs `--remote-components ejs:github` and `deno` installed, otherwise it falsely reports "This video is not available". The slim Docker image includes deno. `enhance_gpu.py` adds this flag automatically.
 - Frame extraction uses parallel ffmpeg workers (up to 16) on multi-core machines.
 - Upscaling uses a parallel I/O pipeline (threaded pre-read + async write) to overlap CPU and GPU work.
 - VRAM-based auto-tiling prevents OOM errors on different GPU sizes.
