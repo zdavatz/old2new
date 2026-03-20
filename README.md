@@ -265,6 +265,8 @@ No code changes needed in `enhance_gpu.py` — just run multiple instances with 
 
 **Important:** Multi-GPU does **NOT** help for splitting one large HD video — 4 GPUs writing 28MB PNGs simultaneously saturates disk I/O (~0.3 fps combined vs ~0.4 fps single GPU). Tested on both slow and fast NVMe. Always use **1 GPU per video**, multiple single-GPU instances for parallel processing.
 
+**Disk sizing for multi-GPU:** With 4 GPUs parallel, each GPU needs its own disk budget (total / 4). At 1920x1200 2x with 500GB: max ~5min per video. For short HD videos (<5min), 4x RTX 5090 at $1.35/hr on vast.ai Sichuan is ideal — processes 30 short videos in ~20min.
+
 ### GPU Power Limit & Variant Comparison
 
 GPU power limit directly impacts Real-ESRGAN performance. "Max-Q" / workstation variants throttle under sustained load:
