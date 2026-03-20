@@ -257,6 +257,7 @@ uGvmLs3uBys	FAMILY_LIFE
 fwSfBzIftJI	COME_WITH_ME
 xiFVzz_x5PU	Where_Where_HERE
 e1e-_J0PzTY	Museum_Rundgang_Werni_2024
+T5H9nBJ99SU	Museum_Elephant
 """
 
 
@@ -387,7 +388,9 @@ def normalize(s):
     s = re.sub(r'\(\d+x upscale\)', '', s)
     # Normalize umlauts (ü→u, ö→o, ä→a, ß→ss)
     for src, dst in [('ü', 'u'), ('ö', 'o'), ('ä', 'a'), ('ß', 'ss'),
-                     ('ú', 'u'), ('ó', 'o'), ('á', 'a'), ('é', 'e'), ('í', 'i')]:
+                     ('ú', 'u'), ('ó', 'o'), ('á', 'a'), ('é', 'e'), ('í', 'i'),
+                     ('ő', 'o'), ('ű', 'u'), ('ř', 'r'), ('ě', 'e'), ('č', 'c'),
+                     ('ş', 's'), ('ţ', 't'), ('ń', 'n'), ('ł', 'l'), ('ž', 'z')]:
         s = s.replace(src, dst)
     # Remove all emoji and symbol Unicode blocks (including ‼️ U+203C, misc symbols)
     s = re.sub(r'[\U0001F000-\U0001FFFF\U00002600-\U000027BF\U0000FE00-\U0000FE0F\U0000200D\U000020E3\U00002702-\U000027B0\U0001F900-\U0001F9FF\U0001FA00-\U0001FA6F\U0001FA70-\U0001FAFF\U0000231A-\U0000231B\U000023E9-\U000023F3\U000023F8-\U000023FA\U000025AA-\U000025AB\U000025B6\U000025C0\U000025FB-\U000025FE\U00002934-\U00002935\U00002B05-\U00002B07\U00002B1B-\U00002B1C\U00002B50\U00002B55\U00003030\U0000303D\U00003297\U00003299\U0000203C\U00002049]', '', s)
