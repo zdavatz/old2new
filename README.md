@@ -418,6 +418,8 @@ With ~150 units per video (100 for upload + metadata/list calls), the budget is 
 
 When quota is exceeded, `youtube_upload.py` fails with `quotaExceeded` error but **upscaling continues unaffected** — enhanced MKVs stay on disk for retry after quota reset. Monitor usage at [Google Cloud Console → YouTube Data API v3 → Quotas](https://console.cloud.google.com/apis/api/youtube.googleapis.com/quotas).
 
+A `retry_uploads.sh` script is deployed on all instances to automatically retry failed uploads after quota reset. It scans job dirs for enhanced MKVs without `.uploaded` marker, extracts video IDs from logs, and uploads them. Scheduled daily at 07:05 UTC via cron on TensorDock (full Ubuntu) or `sleep`-based timer on vast.ai (Docker containers lack crontab).
+
 ## License
 
 GPL-3.0
