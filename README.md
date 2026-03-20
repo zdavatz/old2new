@@ -403,6 +403,21 @@ Results are saved to:
 
 As of March 2026: 11 of 226 videos enhanced, 215 remaining (72 SD → RTX 4090 4x, 143 HD → RTX 5090 2x). Videos are split by YouTube definition (hd/sd), not by resolution.
 
+### YouTube API Quota
+
+The YouTube Data API v3 has a default quota of **10,000 units/day** (resets at midnight Pacific Time = 07:00 UTC). API call costs:
+
+| Operation | Units |
+|-----------|-------|
+| `videos.insert` (upload) | 100 |
+| `search.list` | 100 |
+| `videos.list`, `channels.list` (read) | 1 |
+| Write operations (update/delete) | 50 |
+
+With ~150 units per video (100 for upload + metadata/list calls), the budget is **~66 uploads/day** across all instances sharing the same OAuth credentials.
+
+When quota is exceeded, `youtube_upload.py` fails with `quotaExceeded` error but **upscaling continues unaffected** — enhanced MKVs stay on disk for retry after quota reset. Monitor usage at [Google Cloud Console → YouTube Data API v3 → Quotas](https://console.cloud.google.com/apis/api/youtube.googleapis.com/quotas).
+
 ## License
 
 GPL-3.0
