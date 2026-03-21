@@ -62,7 +62,9 @@ process_video() {
     local gpu=$1 vid=$2 scale=$3 title=$4
     export CUDA_VISIBLE_DEVICES=$gpu
     echo "[GPU $gpu] Starting: $title ($(date +%H:%M))"
-    if python3 /root/enhance_gpu.py "https://www.youtube.com/watch?v=$vid" "$scale" --job-name "$title" >> /root/gpu${gpu}.log 2>&1; then
+    python3 /root/enhance_gpu.py "https://www.youtube.com/watch?v=$vid" "$scale" --job-name "$title" >> /root/gpu${gpu}.log 2>&1
+    local exit_code=$?
+    if [[ $exit_code -eq 0 ]]; then
         echo "[GPU $gpu] SUCCESS: $title"
         ENHANCED="/root/jobs/$title/${title}_${scale}x.mkv"
         if [[ -f "$ENHANCED" && -f "/root/client_secret.json" ]]; then
@@ -79,7 +81,6 @@ process_video() {
         fi
         return 0
     else
-        local exit_code=$?
         echo "[GPU $gpu] FAILED (exit $exit_code): $title"
         return $exit_code
     fi
