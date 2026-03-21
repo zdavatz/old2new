@@ -275,24 +275,23 @@ class StatusHandler(http.server.BaseHTTPRequestHandler):
                 frames_out = glob.glob(os.path.join(job_dir, "frames_out", "frame_*.png"))
                 total_frames = len(frames_in)
                 done_frames = len(frames_out)
-                # Check if enhance_gpu.py is actively running for this job
                 if self._is_process_running(title):
                     status = "upscaling"
                 elif done_frames > 0 and done_frames < total_frames:
                     status = "paused"
                 else:
-                    status = "upscaling"
+                    status = "queued"
                 if total_frames > 0:
                     progress = round(done_frames / total_frames * 100, 1)
             elif os.path.isdir(os.path.join(job_dir, "frames_in")):
-                status = "extracting"
                 frames_in = glob.glob(os.path.join(job_dir, "frames_in", "frame_*.png"))
                 total_frames = len(frames_in)
-                if total_frames > 0:
-                    if self._is_process_running(title):
-                        status = "upscaling"
-                    else:
-                        status = "paused"
+                if self._is_process_running(title):
+                    status = "extracting"
+                elif total_frames > 0:
+                    status = "paused"
+                else:
+                    status = "queued"
             elif os.path.exists(os.path.join(job_dir, "original.mkv")):
                 status = "downloaded"
 
