@@ -211,6 +211,16 @@ After the pre-flight check, a **pre-download disk estimate** fetches video metad
 - **CPU cores matter for upscaling**: 4 vCPUs = 2.6 fps, 16 vCPUs = 7.0 fps on the same RTX 4090. The I/O pipeline needs 8 read + 8 write threads to keep the GPU fed. Always request 16+ vCPUs.
 - **Disk speed matters**: 624 MB/s = 2.6 fps, 1207 MB/s NVMe = 7.0 fps. Need >=1000 MB/s NVMe for full GPU utilization.
 - **CPU clock speed matters**: A Xeon Phi (272 cores @ 1.4GHz) was 4x slower than an EPYC (32 cores @ 2.25GHz) with the same RTX 5090, because `cv2.imread`/`cv2.imwrite` bottleneck on per-core speed. Prefer machines with >2GHz per-core.
+- **RTX 5090 HD CPU benchmark** (1920x1200, 2x, tile=512):
+
+  | CPU | GHz | fps | GPU Power | Notes |
+  |-----|-----|-----|-----------|-------|
+  | Xeon Gold 6530 | 0.9 | ~0.1 | ~60W | GPU idle, useless |
+  | Xeon Platinum 8481C | 2.0 | 0.3-0.4 | ~400W | Minimum viable |
+  | AMD Ryzen 9 7950X | 5.9 | **0.5** | 340W | Sweet spot |
+  | AMD Threadripper PRO 7975WX | 8.2 | **0.5** | 384W | No gain over 5 GHz |
+
+  Above ~5 GHz, the bottleneck shifts from CPU to disk I/O — no further fps gain. **Minimum 3 GHz for RTX 5090 HD, ideal 5+ GHz.** Below 2 GHz the GPU is essentially idle.
 - **RTX 5090** (Blackwell): Needs PyTorch 2.6+ with CUDA 12.8. PyTorch 2.10 tested — no speedup over 2.7 for Real-ESRGAN.
 - **Pre-built Docker images** — **always use the slim image** for new setups on vast.ai, TensorDock, RunPod, Packet.ai. No pip install, no patching needed = 5-8 min faster per instance:
   - `ghcr.io/zdavatz/realesrgan-benchmark:latest` — **slim ~4.5GB (default for all deployments)**
