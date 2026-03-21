@@ -503,7 +503,16 @@ def main():
     remaining_output = max(0, total_frames - existing_output)
     est_input_gb = (remaining_input * input_frame_size / 2.5) / 1024
     est_output_gb = (remaining_output * output_frame_size / 2.5) / 1024
-    est_remaining_gb = (est_input_gb + est_output_gb) * 1.1 + 5  # 10% margin + 5GB overhead
+    # Net disk: during upscaling, each input frame is deleted after its output is written.
+    # So the net disk growth = output frame size - input frame size per frame.
+    # For resume: existing frames_in on disk will be freed as they are upscaled.
+    if existing_output > 0:
+        # Resume: count existing frames_in as reclaimable space
+        existing_input_gb = (existing_input * input_frame_size / 2.5) / 1024
+        est_remaining_gb = max(est_output_gb - existing_input_gb - est_input_gb, 0) * 1.1 + 2
+    else:
+        # Fresh start: need space for both input and output
+        est_remaining_gb = (est_input_gb + est_output_gb) * 1.1 + 5  # 10% margin + 5GB overhead
 
     statvfs = os.statvfs(WORKDIR)
     avail_gb = (statvfs.f_frsize * statvfs.f_bavail) / (1024**3)

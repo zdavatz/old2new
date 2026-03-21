@@ -290,6 +290,20 @@ gpu_worker 3 &
 
 The batch-of-N anti-pattern (`wait` for all 4 GPUs, then start next 4) wastes GPU time — fast-finishing GPUs sit idle waiting for the slowest one. On a 4x RTX 5090 instance at $1.35/hr, this caused 3 GPUs to idle for 2+ hours (~$2.70 wasted). The flock-based queue keeps all GPUs busy continuously.
 
+**Don't let ffmpeg block GPUs:** `enhance_gpu.py` runs upscaling → reassembly → upload in one process. During ffmpeg reassembly (CPU-only), the GPU is idle. On multi-GPU instances, start the next video on a free GPU immediately — don't wait for reassembly/upload to finish.
+
+**Disk management for parallel HD jobs:** On disk-constrained instances (e.g. 500 GB, 4 GPUs), frames_in that already have a corresponding frame_out can be safely deleted to free space — enhance_gpu.py normally deletes them during upscaling, but with parallel jobs the disk fills before cleanup happens. The resume-aware disk check (`enhance_gpu.py`) now counts existing frames_in as reclaimable space, so resumed jobs don't falsely fail the disk check.
+
+**Sizing guide for Sichuan-type instances (500 GB, 4x RTX 5090):**
+
+| Resolution | Max duration per video at 4 GPUs parallel |
+|-----------|------------------------------------------|
+| 1920x1200 2x | ~5 min |
+| 960x720 2x | ~17 min |
+| 640x480 4x | ~30 min |
+
+For longer HD videos (>5 min), use single-GPU instances with 1.5-2.5 TB disk. Move shorter 960x720 videos from single-GPU queues to multi-GPU instances for faster throughput.
+
 ### GPU Power Limit & Variant Comparison
 
 GPU power limit directly impacts Real-ESRGAN performance. "Max-Q" / workstation variants throttle under sustained load:
