@@ -123,6 +123,19 @@ class StatusHandler(http.server.BaseHTTPRequestHandler):
     def log_message(self, format, *args):
         pass  # suppress access logs
 
+    @staticmethod
+    def _is_process_running(job_name):
+        """Check if enhance_gpu.py is running for this job name."""
+        import subprocess
+        try:
+            result = subprocess.run(
+                ["pgrep", "-f", f"--job-name {job_name}"],
+                capture_output=True, text=True, timeout=5
+            )
+            return result.returncode == 0
+        except Exception:
+            return False
+
     def do_GET(self):
         if self.path == "/api/status":
             self.send_json(self.get_status())
@@ -257,11 +270,17 @@ class StatusHandler(http.server.BaseHTTPRequestHandler):
                 size_mb = os.path.getsize(enhanced_file) / (1024*1024)
                 eta = f"{size_mb:.0f} MB"
             elif os.path.isdir(os.path.join(job_dir, "frames_out")):
-                status = "upscaling"
                 frames_in = glob.glob(os.path.join(job_dir, "frames_in", "frame_*.png"))
                 frames_out = glob.glob(os.path.join(job_dir, "frames_out", "frame_*.png"))
                 total_frames = len(frames_in)
                 done_frames = len(frames_out)
+                # Check if enhance_gpu.py is actively running for this job
+                if self._is_process_running(title):
+                    status = "upscaling"
+                elif done_frames > 0 and done_frames < total_frames:
+                    status = "paused"
+                else:
+                    status = "upscaling"
                 if total_frames > 0:
                     progress = round(done_frames / total_frames * 100, 1)
             elif os.path.isdir(os.path.join(job_dir, "frames_in")):
@@ -269,7 +288,10 @@ class StatusHandler(http.server.BaseHTTPRequestHandler):
                 frames_in = glob.glob(os.path.join(job_dir, "frames_in", "frame_*.png"))
                 total_frames = len(frames_in)
                 if total_frames > 0:
-                    status = "upscaling"
+                    if self._is_process_running(title):
+                        status = "upscaling"
+                    else:
+                        status = "paused"
             elif os.path.exists(os.path.join(job_dir, "original.mkv")):
                 status = "downloaded"
 
@@ -473,6 +495,7 @@ class StatusHandler(http.server.BaseHTTPRequestHandler):
   .status-upscaling { background: #1e3a5f; color: #38bdf8; }
   .status-extracting { background: #713f12; color: #fbbf24; }
   .status-downloaded { background: #3b0764; color: #c084fc; }
+  .status-paused { background: #78350f; color: #fdba74; }
   .status-queued { background: #334155; color: #94a3b8; }
   .log { background: #0f172a; border: 1px solid #334155; border-radius: 8px; padding: 12px;
          font-family: monospace; font-size: 0.75rem; max-height: 300px; overflow-y: auto;
@@ -505,9 +528,10 @@ async function update() {
     const d = await r.json();
     const app = document.getElementById('app');
     const active = d.videos.filter(v => v.status === 'upscaling');
+    const paused = d.videos.filter(v => v.status === 'paused');
     const done = d.videos.filter(v => v.status === 'done');
     const queued = d.videos.filter(v => v.status === 'queued');
-    const other = d.videos.filter(v => !['done','upscaling','queued'].includes(v.status));
+    const other = d.videos.filter(v => !['done','upscaling','paused','queued'].includes(v.status));
 
     const perGpu = d.per_gpu_fps || {};
     const gpuCount = Object.keys(perGpu).length || (d.system.gpu_count || 1);
@@ -631,7 +655,7 @@ async function update() {
       <th>#</th><th>Title</th><th>Resolution</th><th>Duration</th><th>Status</th><th>Progress</th><th>Timing</th><th>Compare</th><th>Input</th><th>Output</th>
     </tr></thead><tbody>`;
 
-    const order = [...active, ...other, ...done, ...queued];
+    const order = [...active, ...paused, ...other, ...done, ...queued];
     order.forEach((v, i) => {
       const dur = v.duration >= 3600
         ? `${Math.floor(v.duration/3600)}:${String(Math.floor((v.duration%3600)/60)).padStart(2,'0')}:${String(v.duration%60).padStart(2,'0')}`
