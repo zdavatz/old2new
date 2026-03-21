@@ -125,14 +125,15 @@ class StatusHandler(http.server.BaseHTTPRequestHandler):
 
     @staticmethod
     def _is_process_running(job_name):
-        """Check if enhance_gpu.py is running for this job name."""
+        """Check if enhance_gpu.py is actively running for this job name."""
         import subprocess
         try:
+            # List all enhance_gpu.py processes and check if any has this job-name
             result = subprocess.run(
-                ["pgrep", "-f", f"--job-name {job_name}"],
+                ["bash", "-c", f"ps aux | grep 'enhance_gpu.py' | grep -- '--job-name {job_name}' | grep -v grep"],
                 capture_output=True, text=True, timeout=5
             )
-            return result.returncode == 0
+            return result.returncode == 0 and result.stdout.strip() != ""
         except Exception:
             return False
 
