@@ -290,7 +290,7 @@ gpu_worker 3 &
 
 The batch-of-N anti-pattern (`wait` for all 4 GPUs, then start next 4) wastes GPU time — fast-finishing GPUs sit idle waiting for the slowest one. On a 4x RTX 5090 instance at $1.35/hr, this caused 3 GPUs to idle for 2+ hours (~$2.70 wasted). The flock-based queue keeps all GPUs busy continuously.
 
-**OOM-Kill recovery:** With 4 parallel HD videos (1920x1200), RAM usage can hit 400GB+ and Linux OOM-killer may kill processes. The worker must detect kills (exit code > 128) and **retry the same video** after waiting 60s — not skip to the next one. A background monitor (`resume_workers.sh`) checks every 30s which GPUs are free and starts new workers, ensuring 1 video per GPU at all times.
+**OOM-Kill recovery:** With 4 parallel HD videos (1920x1200), RAM usage can hit 400GB+ and Linux OOM-killer may kill processes. The worker must detect kills (exit code > 128) and **retry the same video** after waiting 60s — not skip to the next one. A background monitor (`resume_workers.sh`) checks every 30s which GPUs are free and starts new workers, ensuring 1 video per GPU at all times. Uses **PID-files per GPU** (`gpu0.worker.pid`) — not `/proc/environ` which has race conditions.
 
 **Don't let ffmpeg block GPUs:** `enhance_gpu.py` runs upscaling → reassembly → upload in one process. During ffmpeg reassembly (CPU-only), the GPU is idle. On multi-GPU instances, start the next video on a free GPU immediately — don't wait for reassembly/upload to finish.
 
