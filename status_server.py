@@ -124,11 +124,28 @@ class StatusHandler(http.server.BaseHTTPRequestHandler):
         pass  # suppress access logs
 
     @staticmethod
+    def _get_running_jobs():
+        """Get set of all job names with active enhance_gpu.py processes (single subprocess call)."""
+        import subprocess
+        try:
+            result = subprocess.run(
+                ["bash", "-c", "ps aux | grep 'enhance_gpu.py' | grep -- '--job-name' | grep -v grep"],
+                capture_output=True, text=True, timeout=5
+            )
+            jobs = set()
+            for line in result.stdout.strip().split("\n"):
+                if "--job-name" in line:
+                    name = line.split("--job-name")[-1].strip().split()[0]
+                    jobs.add(name)
+            return jobs
+        except Exception:
+            return set()
+
+    @staticmethod
     def _is_process_running(job_name):
         """Check if enhance_gpu.py is actively running for this job name."""
         import subprocess
         try:
-            # List all enhance_gpu.py processes and check if any has this job-name
             result = subprocess.run(
                 ["bash", "-c", f"ps aux | grep 'enhance_gpu.py' | grep -- '--job-name {job_name}' | grep -v grep"],
                 capture_output=True, text=True, timeout=5
@@ -246,6 +263,9 @@ class StatusHandler(http.server.BaseHTTPRequestHandler):
             with open(QUEUE_FILE) as f:
                 queue = json.load(f)
 
+        # Single subprocess call to find all running jobs (instead of one per video)
+        running_jobs = self._get_running_jobs()
+
         videos = []
         for entry in queue:
             vid = entry["id"]
@@ -260,6 +280,7 @@ class StatusHandler(http.server.BaseHTTPRequestHandler):
             total_frames = 0
             done_frames = 0
             eta = ""
+            is_running = title in running_jobs
             # Check both new naming (title_4x.mkv) and old naming (enhanced_4x.mkv)
             enhanced_file = os.path.join(job_dir, f"{title}_{scale}x.mkv")
             if not os.path.exists(enhanced_file):
@@ -273,9 +294,10 @@ class StatusHandler(http.server.BaseHTTPRequestHandler):
             elif os.path.isdir(os.path.join(job_dir, "frames_out")):
                 frames_in = glob.glob(os.path.join(job_dir, "frames_in", "frame_*.png"))
                 frames_out = glob.glob(os.path.join(job_dir, "frames_out", "frame_*.png"))
-                total_frames = len(frames_in)
+                # Use max of frames_in + done as denominator (frames_in shrinks during upscaling)
+                total_frames = max(len(frames_in), len(frames_out))
                 done_frames = len(frames_out)
-                if self._is_process_running(title):
+                if is_running:
                     status = "upscaling"
                 elif total_frames > 0 or done_frames > 0:
                     status = "paused"
@@ -286,7 +308,7 @@ class StatusHandler(http.server.BaseHTTPRequestHandler):
             elif os.path.isdir(os.path.join(job_dir, "frames_in")):
                 frames_in = glob.glob(os.path.join(job_dir, "frames_in", "frame_*.png"))
                 total_frames = len(frames_in)
-                if self._is_process_running(title):
+                if is_running:
                     status = "extracting"
                 elif total_frames > 0:
                     status = "paused"
