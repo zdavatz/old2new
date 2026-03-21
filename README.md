@@ -304,7 +304,9 @@ The batch-of-N anti-pattern (`wait` for all 4 GPUs, then start next 4) wastes GP
 | 960x720 2x | ~17 min |
 | 640x480 4x | ~30 min |
 
-For longer HD videos (>5 min), use single-GPU instances with 1.5-2.5 TB disk. Move shorter 960x720 videos from single-GPU queues to multi-GPU instances for faster throughput.
+For longer HD videos (>5 min), use single-GPU instances with 1.5-2.5 TB disk. Move shorter 960x720 and 720x1280 videos (≤1.6 MP) from single-GPU RTX 5090 queues to multi-GPU RTX 4090 instances — RTX 4090 handles these without tiling and is cheaper.
+
+**Pre-download and pre-extract frames** on instances with idle CPUs to eliminate GPU wait time. But extract **one video at a time** — 37 parallel ffmpeg extractions saturated the CPU and dropped GPU upscaling from 0.5 fps to 0.2 fps on Oregon.
 
 ### GPU Power Limit & Variant Comparison
 
