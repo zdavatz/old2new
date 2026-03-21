@@ -270,27 +270,15 @@ No code changes needed in `enhance_gpu.py` — just run multiple instances with 
 
 **Disk sizing for multi-GPU:** With 4 GPUs parallel, each GPU needs its own disk budget (total / 4). At 1920x1200 2x with 500GB: max ~5min per video. For short HD videos (<5min), 4x RTX 5090 at $1.35/hr on vast.ai Sichuan is ideal — processes 30 short videos in ~20min.
 
-**Queue design for multi-GPU:** Use a **shared work queue** (`video_work_queue.txt`) with `flock`-based locking instead of batch-of-N scheduling. Each GPU worker atomically grabs the next video when done:
-
-```bash
-# Each GPU runs this loop — no waiting for other GPUs
-gpu_worker() {
-    local gpu=$1
-    while true; do
-        line=$(flock /root/queue.lock bash -c 'head -1 /root/video_work_queue.txt && sed -i "1d" /root/video_work_queue.txt')
-        [[ -z "$line" ]] && break
-        # parse and process video...
-    done
-}
-gpu_worker 0 &  # start immediately
-gpu_worker 1 &  # or wait for busy GPU to finish, then join
-gpu_worker 2 &
-gpu_worker 3 &
-```
+**Queue design for multi-GPU:** See `multi_gpu_queue.sh` for the reference implementation. Key features:
+- **Shared work queue** (`video_work_queue.txt`) with `flock`-based atomic pop
+- **PID-file per GPU** (`gpu0.worker.pid`) — ensures exactly 1 video per GPU
+- **OOM-kill recovery** — detects killed processes (exit > 128) and retries the same video after 60s
+- **Auto YouTube upload + email** after each video
 
 The batch-of-N anti-pattern (`wait` for all 4 GPUs, then start next 4) wastes GPU time — fast-finishing GPUs sit idle waiting for the slowest one. On a 4x RTX 5090 instance at $1.35/hr, this caused 3 GPUs to idle for 2+ hours (~$2.70 wasted). The flock-based queue keeps all GPUs busy continuously.
 
-**OOM-Kill recovery:** With 4 parallel HD videos (1920x1200), RAM usage can hit 400GB+ and Linux OOM-killer may kill processes. The worker must detect kills (exit code > 128) and **retry the same video** after waiting 60s — not skip to the next one. A background monitor (`resume_workers.sh`) checks every 30s which GPUs are free and starts new workers, ensuring 1 video per GPU at all times. Uses **PID-files per GPU** (`gpu0.worker.pid`) — not `/proc/environ` which has race conditions.
+**OOM-Kill recovery:** With 4 parallel HD videos (1920x1200), RAM usage can hit 400GB+ and Linux OOM-killer may kill processes. Do NOT use `/proc/environ` to detect GPU assignments — it has race conditions (new process hasn't set `CUDA_VISIBLE_DEVICES` yet when monitor checks, causing 2 processes on same GPU). Use **PID-files per GPU** instead.
 
 **Don't let ffmpeg block GPUs:** `enhance_gpu.py` runs upscaling → reassembly → upload in one process. During ffmpeg reassembly (CPU-only), the GPU is idle. On multi-GPU instances, start the next video on a free GPU immediately — don't wait for reassembly/upload to finish.
 
