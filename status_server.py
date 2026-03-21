@@ -277,7 +277,7 @@ class StatusHandler(http.server.BaseHTTPRequestHandler):
                 done_frames = len(frames_out)
                 if self._is_process_running(title):
                     status = "upscaling"
-                elif done_frames > 0 and done_frames < total_frames:
+                elif total_frames > 0 or done_frames > 0:
                     status = "paused"
                 else:
                     status = "queued"
