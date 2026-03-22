@@ -504,6 +504,11 @@ for i in $(seq 1 30); do
             break
         fi
     fi
+    # Get network speed on first check
+    if [[ $i -eq 1 ]]; then
+        DL_SPEED=$(vastai show instance "$INSTANCE_ID" --raw 2>/dev/null | python3 -c "import json,sys; d=json.load(sys.stdin); print(f'{d.get(\"inet_down\",0):.0f}')" 2>/dev/null)
+        echo "  Network: ${DL_SPEED:-?} Mbps download (image ~4.5 GB)"
+    fi
     echo "  [$i/30] ${STATUS:-loading}: ${STATUS_MSG:-waiting...}"
 done
 
