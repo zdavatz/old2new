@@ -521,6 +521,14 @@ for i in $(seq 1 30); do
         DL_SPEED=$(vastai show instance "$INSTANCE_ID" --raw 2>/dev/null | python3 -c "import json,sys; d=json.load(sys.stdin); print(f'{d.get(\"inet_down\",0):.0f}')" 2>/dev/null)
         echo "  Network: ${DL_SPEED:-?} Mbps download (image ~4.5 GB)"
     fi
+    # Detect if image is cached or being pulled
+    if [[ $i -eq 2 ]]; then
+        if echo "$STATUS_MSG" | grep -qi "pulling\|pull"; then
+            echo "  Docker image: pulling (not cached on this host)"
+        elif [[ "$STATUS" == "running" || "$STATUS_MSG" == *"starting"* || "$STATUS_MSG" == *"success"* ]]; then
+            echo "  Docker image: cached (fast start)"
+        fi
+    fi
     echo "  [$i/30] ${STATUS:-loading}: ${STATUS_MSG:-waiting...}"
 done
 
