@@ -412,12 +412,19 @@ async fn get_running_processes() -> (HashSet<String>, HashSet<String>, HashSet<S
     if let Ok(output) = output {
         let stdout = String::from_utf8_lossy(&output.stdout);
         for line in stdout.lines() {
-            // enhance_gpu.py or upscale.py with --job-name
-            if (line.contains("enhance_gpu.py") || line.contains("upscale.py"))
-                && line.contains("--job-name")
-            {
-                if let Some(rest) = line.split("--job-name").nth(1) {
-                    if let Some(name) = rest.trim().split_whitespace().next() {
+            // enhance_gpu.py, upscale.py, or enhance.sh
+            if line.contains("enhance_gpu.py") || line.contains("upscale.py") || line.contains("enhance.sh") {
+                // Try --job-name first (legacy enhance_gpu.py)
+                if line.contains("--job-name") {
+                    if let Some(rest) = line.split("--job-name").nth(1) {
+                        if let Some(name) = rest.trim().split_whitespace().next() {
+                            enhance_jobs.insert(name.to_string());
+                        }
+                    }
+                }
+                // Also extract from /jobs/<name>/ path (upscale.py called by enhance.sh)
+                if let Some(rest) = line.split("/jobs/").nth(1) {
+                    if let Some(name) = rest.split('/').next() {
                         enhance_jobs.insert(name.to_string());
                     }
                 }
