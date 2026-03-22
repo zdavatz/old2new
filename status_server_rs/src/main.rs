@@ -676,6 +676,10 @@ async fn build_status() -> StatusResponse {
                     }
                 })
                 .unwrap_or_else(|| infer_scale_from_mkv(&job_dir));
+            // Try display_title from: 1) job_meta.json 2) ~/json/{id}.json 3) dir name
+            let vid_for_lookup = if video_id.is_empty() { &title } else { &video_id };
+            let json_meta: Option<JobMeta> =
+                read_json(&home_dir().join("json").join(format!("{}.json", vid_for_lookup)));
             let display_title = meta
                 .as_ref()
                 .and_then(|m| {
@@ -685,12 +689,37 @@ async fn build_status() -> StatusResponse {
                         Some(m.display_title.clone())
                     }
                 })
+                .or_else(|| {
+                    json_meta
+                        .as_ref()
+                        .and_then(|m| {
+                            if m.display_title.is_empty() && !m.title.is_empty() {
+                                Some(m.title.clone())
+                            } else if !m.display_title.is_empty() {
+                                Some(m.display_title.clone())
+                            } else {
+                                None
+                            }
+                        })
+                })
                 .unwrap_or_else(|| title.replace('_', " "));
-            let duration = meta.as_ref().map(|m| m.duration_seconds).unwrap_or(0.0);
+            // Also get duration/resolution from json/ if not in job_meta
+            let duration = meta
+                .as_ref()
+                .map(|m| m.duration_seconds)
+                .filter(|d| *d > 0.0)
+                .or_else(|| json_meta.as_ref().map(|m| m.duration_seconds))
+                .unwrap_or(0.0);
             let resolution = meta
                 .as_ref()
                 .filter(|m| m.width > 0 && m.height > 0)
                 .map(|m| format!("{}x{}", m.width, m.height))
+                .or_else(|| {
+                    json_meta
+                        .as_ref()
+                        .filter(|m| m.width > 0 && m.height > 0)
+                        .map(|m| format!("{}x{}", m.width, m.height))
+                })
                 .unwrap_or_default();
 
             // Read timing.json
