@@ -78,8 +78,8 @@ while [[ $# -gt 0 ]]; do
                 fi
             done
 
-            # Kill old processes, mv .new to final, all in one SSH session
-            $UPD_SSH 'pkill -f status_server 2>/dev/null; pkill -f multi_gpu_queue 2>/dev/null; sleep 2; mv -f /root/status_server.new /root/status_server 2>/dev/null; mv -f /root/youtube_upload.new /root/youtube_upload 2>/dev/null; chmod +x /root/status_server /root/youtube_upload 2>/dev/null; echo "Binaries replaced"'
+            # Kill ALL old processes hard, mv .new to final, all in one SSH session
+            $UPD_SSH 'kill -9 $(pgrep -f status_server) $(pgrep -f multi_gpu_queue) 2>/dev/null; sleep 3; mv -f /root/status_server.new /root/status_server 2>/dev/null; mv -f /root/youtube_upload.new /root/youtube_upload 2>/dev/null; chmod +x /root/status_server /root/youtube_upload 2>/dev/null; echo "Old processes killed, binaries replaced"'
 
             # Make executable
             $UPD_SSH 'chmod +x /root/enhance.sh /root/multi_gpu_queue.sh /root/status_server /root/youtube_upload 2>/dev/null'
