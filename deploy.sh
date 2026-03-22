@@ -76,7 +76,7 @@ while [[ $# -gt 0 ]]; do
             # Deploy Rust binaries (upload as .new, then mv to avoid file locking)
             for bin in status_server_rs/target/release/status_server youtube_upload_rs/target/release/youtube_upload; do
                 if [[ -f "$SCRIPT_DIR/$bin" ]]; then
-                    local bname=$(basename "$bin")
+                    bname=$(basename "$bin")
                     $UPD_SCP "$SCRIPT_DIR/$bin" root@"$UPD_HOST":/root/${bname}.new 2>/dev/null
                     $UPD_SSH "mv -f /root/${bname}.new /root/${bname}" 2>/dev/null
                     echo "  $bname updated"
