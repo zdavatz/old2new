@@ -97,21 +97,21 @@ gpu_worker() {
         local vid scale title
         vid=$(python3 -c "import json; d=json.load(open('$processing_path')); print(d.get('video_id',''))" 2>/dev/null)
         scale=$(python3 -c "import json; d=json.load(open('$processing_path')); print(d.get('scale',4))" 2>/dev/null)
-        title=$(python3 -c "import json; d=json.load(open('$processing_path')); print(d.get('title','').replace(' ','_'))" 2>/dev/null)
+        title=$(python3 -c "import json; d=json.load(open('$processing_path')); print(d.get('title',''))" 2>/dev/null)
 
-        # Fallback title
-        if [[ -z "$title" ]]; then
-            title="$video_id"
+        # Use video_id as job name (safe for directories — no slashes, emojis, etc.)
+        if [[ -z "$vid" ]]; then
+            vid="$video_id"
         fi
 
-        echo "[GPU $gpu] Starting: $title ($(date +%H:%M))"
+        echo "[GPU $gpu] Starting: $title ($vid) ($(date +%H:%M))"
 
         # Retry on OOM-kill (exit > 128)
         local max_retries=3 retry=0
         local success=0
         while true; do
             "$SCRIPT_DIR/enhance.sh" "https://www.youtube.com/watch?v=$vid" "$scale" \
-                --job-name "$title" --gpu "$gpu" >> "$logfile" 2>&1
+                --job-name "$vid" --gpu "$gpu" >> "$logfile" 2>&1
             local exit_code=$?
 
             if [[ $exit_code -eq 0 ]]; then
