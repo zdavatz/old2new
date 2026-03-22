@@ -419,7 +419,7 @@ if [[ -z "$SEARCH_RESULTS" || $(echo "$SEARCH_RESULTS" | wc -l) -le 1 ]]; then
 fi
 
 OFFER_ID=$(echo "$SEARCH_RESULTS" | awk 'NR==2 {print $1}')
-OFFER_PRICE=$(echo "$SEARCH_RESULTS" | awk 'NR==2 {for(i=1;i<=NF;i++) if($i ~ /^[0-9]+\.[0-9]+$/ && $i < 10) {print $i; exit}}')
+OFFER_PRICE=$(echo "$SEARCH_RESULTS" | awk 'NR==2 {print $10}')
 OFFER_LOCATION=$(echo "$SEARCH_RESULTS" | awk 'NR==2 {print $NF}')
 
 echo "Best offer: ID=$OFFER_ID, \$${OFFER_PRICE}/hr, $OFFER_LOCATION"
