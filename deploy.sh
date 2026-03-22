@@ -69,7 +69,11 @@ while [[ $# -gt 0 ]]; do
             $UPD_SCP "$SCRIPT_DIR/enhance.sh" "$SCRIPT_DIR/upscale.py" "$SCRIPT_DIR/multi_gpu_queue.sh" root@"$UPD_HOST":/root/ 2>/dev/null
             echo "  Scripts updated"
 
-            # Deploy Rust binaries
+            # Kill first so files are not in use during SCP
+            $UPD_SSH 'pkill -f multi_gpu_queue 2>/dev/null; pkill -f status_server 2>/dev/null; sleep 2' 2>/dev/null
+            echo "  Old processes stopped"
+
+            # Deploy Rust binaries (after kill, so files are not locked)
             for bin in status_server_rs/target/release/status_server youtube_upload_rs/target/release/youtube_upload; do
                 if [[ -f "$SCRIPT_DIR/$bin" ]]; then
                     $UPD_SCP "$SCRIPT_DIR/$bin" root@"$UPD_HOST":/root/ 2>/dev/null
@@ -79,9 +83,6 @@ while [[ $# -gt 0 ]]; do
 
             # Make executable
             $UPD_SSH 'chmod +x /root/enhance.sh /root/multi_gpu_queue.sh /root/status_server /root/youtube_upload 2>/dev/null'
-
-            # NOW kill + restore queue + restart (after all files are deployed)
-            $UPD_SSH 'pkill -f multi_gpu_queue 2>/dev/null; pkill -f status_server 2>/dev/null; sleep 2' 2>/dev/null
             echo "  Old processes stopped"
 
             # Rename .processing files back to .json
