@@ -421,8 +421,8 @@ fi
 # Show numbered list of offers
 echo "=== Available instances (need ${DISK_GB} GB disk) ==="
 echo "$SEARCH_RESULTS" | awk -v need="$DISK_GB" 'NR==1 {next} {
-    id=$1; gpu=$4; pcie=$5; cpu=$6; vcpu=$7; ram=$8; disk=$9; price=$10; loc=$NF
-    printf "[%d] %-20s %sx %s  CPU: %s GHz  RAM: %s GB  Disk: %s GB (need %s GB)  $%s/hr  (%s)\n", NR-1, loc, $3, gpu, cpu, ram, disk, need, price, id
+    id=$1; gpu=$4; pcie=$5; cpu=$6; vcpu=$7; ram=$8; disk=$9; price=$10; net_up=$16; net_down=$17; loc=$NF
+    printf "[%d] %-20s %sx %s  CPU: %s GHz  RAM: %s GB  Disk: %s GB (need %s GB)  Net: %s/%s Mbps  $%s/hr  (%s)\n", NR-1, loc, $3, gpu, cpu, ram, disk, need, net_up, net_down, price, id
 }'
 echo ""
 
