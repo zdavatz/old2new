@@ -214,7 +214,7 @@ jobs/JXir0H9XPzY/
   frames_out/                 # upscaled frames
 ```
 
-Job directories use YouTube video IDs (not titles — titles contain slashes, emojis, special chars that break paths). The display title is read from `json/<video_id>.json` for the dashboard.
+Job directories use YouTube video IDs (not titles — titles contain slashes, emojis, special chars that break paths). The dashboard reads the display title from `json/<video_id>.json` (lookup chain: `job_meta.json` → `json/{id}.json` → directory name).
 
 The process is resumable — if interrupted, re-run the same command and it will skip already-completed steps (download, frame extraction, upscaled frames).
 
