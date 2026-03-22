@@ -1,0 +1,11 @@
+/home/zeno/.software/old2new/youtube_upload_rs/target/release/deps/tokio_rustls-5e702f1133f09efc.d: /home/zeno/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-rustls-0.25.0/src/lib.rs /home/zeno/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-rustls-0.25.0/src/client.rs /home/zeno/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-rustls-0.25.0/src/common/mod.rs /home/zeno/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-rustls-0.25.0/src/common/handshake.rs /home/zeno/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-rustls-0.25.0/src/server.rs
+
+/home/zeno/.software/old2new/youtube_upload_rs/target/release/deps/libtokio_rustls-5e702f1133f09efc.rlib: /home/zeno/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-rustls-0.25.0/src/lib.rs /home/zeno/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-rustls-0.25.0/src/client.rs /home/zeno/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-rustls-0.25.0/src/common/mod.rs /home/zeno/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-rustls-0.25.0/src/common/handshake.rs /home/zeno/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-rustls-0.25.0/src/server.rs
+
+/home/zeno/.software/old2new/youtube_upload_rs/target/release/deps/libtokio_rustls-5e702f1133f09efc.rmeta: /home/zeno/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-rustls-0.25.0/src/lib.rs /home/zeno/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-rustls-0.25.0/src/client.rs /home/zeno/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-rustls-0.25.0/src/common/mod.rs /home/zeno/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-rustls-0.25.0/src/common/handshake.rs /home/zeno/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-rustls-0.25.0/src/server.rs
+
+/home/zeno/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-rustls-0.25.0/src/lib.rs:
+/home/zeno/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-rustls-0.25.0/src/client.rs:
+/home/zeno/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-rustls-0.25.0/src/common/mod.rs:
+/home/zeno/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-rustls-0.25.0/src/common/handshake.rs:
+/home/zeno/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-rustls-0.25.0/src/server.rs:

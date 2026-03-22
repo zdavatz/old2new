@@ -43,16 +43,24 @@ struct Cli {
 }
 
 /// Token format compatible with Python google-auth
-#[derive(Deserialize, Serialize)]
+#[derive(Deserialize, Serialize, Clone)]
 struct PythonToken {
     token: String,
     refresh_token: String,
+    #[serde(default)]
     token_uri: String,
+    #[serde(default)]
     client_id: String,
+    #[serde(default)]
     client_secret: String,
+    #[serde(default)]
     scopes: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     expiry: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    universe_domain: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    account: Option<String>,
 }
 
 /// Standard Google OAuth installed app format
@@ -139,6 +147,28 @@ fn build_https_client() -> Client<HttpsConnector<HttpConnector>> {
     Client::builder().build(connector)
 }
 
+/// Refresh the access token directly via Google's token endpoint.
+/// This bypasses yup-oauth2's cache format issues entirely.
+async fn refresh_access_token(py_token: &PythonToken) -> Result<String, Box<dyn std::error::Error>> {
+    let client = reqwest::Client::new();
+    let resp = client.post("https://oauth2.googleapis.com/token")
+        .form(&[
+            ("client_id", py_token.client_id.as_str()),
+            ("client_secret", py_token.client_secret.as_str()),
+            ("refresh_token", py_token.refresh_token.as_str()),
+            ("grant_type", "refresh_token"),
+        ])
+        .send()
+        .await?;
+
+    let body: serde_json::Value = resp.json().await?;
+    if let Some(token) = body.get("access_token").and_then(|v| v.as_str()) {
+        Ok(token.to_string())
+    } else {
+        Err(format!("Token refresh failed: {}", body).into())
+    }
+}
+
 async fn build_authenticator(
     client_secret_path: &str,
     token_path: &str,
@@ -163,34 +193,44 @@ async fn build_authenticator(
         ..Default::default()
     };
 
-    // Prepare token cache directory
+    // Read the Python-format token and refresh it ourselves
+    let td = fs::read_to_string(token_path).map_err(|e| {
+        format!("ERROR: Token file not found: {} — {}", token_path, e)
+    })?;
+    let py_token: PythonToken = serde_json::from_str(&td)?;
+
+    eprintln!("Refreshing access token...");
+    let fresh_token = refresh_access_token(&py_token).await?;
+    eprintln!("Token refreshed successfully");
+
+    // Save refreshed token back to Python-format file
+    {
+        let mut updated = py_token.clone();
+        updated.token = fresh_token.clone();
+        if let Ok(json) = serde_json::to_string_pretty(&updated) {
+            let _ = fs::write(token_path, json);
+        }
+    }
+
+    // Now seed yup-oauth2 cache with the fresh token (valid for 1 hour)
     let cache_dir = std::env::temp_dir().join("youtube_upload_rs_cache");
     fs::create_dir_all(&cache_dir)?;
     let cache_path = cache_dir.join("token_cache.json");
 
-    // If a Python-format token file exists, seed the yup-oauth2 cache
-    if let Ok(td) = fs::read_to_string(token_path) {
-        if let Ok(py_token) = serde_json::from_str::<PythonToken>(&td) {
-            // yup-oauth2 DiskTokenStorage format: JSON object with
-            // key = space-joined sorted scopes, value = token info
-            let mut scope_list: Vec<&str> = SCOPES.to_vec();
-            scope_list.sort();
-            let scope_key = scope_list.join(" ");
+    let mut scope_list: Vec<&str> = SCOPES.to_vec();
+    scope_list.sort();
 
-            // Set expires_at to the past so yup-oauth2 refreshes immediately
-            // using the refresh_token. This ensures we always get a fresh access_token.
-            // yup-oauth2 DiskTokenStorage expects an array of JSONToken
-            let token_info = serde_json::json!([{
-                "scopes": scope_list,
-                "token": {
-                    "access_token": py_token.token,
-                    "refresh_token": py_token.refresh_token,
-                    "expires_at_timestamp": 0i64,
-                }
-            }]);
-            fs::write(&cache_path, serde_json::to_string(&token_info)?)?;
+    // Write fresh token with future expiry so yup-oauth2 uses it directly
+    let expires_at = Utc::now().timestamp() + 3500;
+    let token_info = serde_json::json!([{
+        "scopes": scope_list,
+        "token": {
+            "access_token": fresh_token,
+            "refresh_token": py_token.refresh_token,
+            "expires_at_timestamp": expires_at,
         }
-    }
+    }]);
+    fs::write(&cache_path, serde_json::to_string(&token_info)?)?;
 
     let auth = yup_oauth2::InstalledFlowAuthenticator::builder(
         secret,

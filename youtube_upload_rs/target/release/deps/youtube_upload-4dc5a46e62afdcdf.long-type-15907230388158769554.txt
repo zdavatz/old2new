@@ -1,0 +1,1 @@
+UserMessageSendCall<'_, hyper_rustls::HttpsConnector<hyper_util::client::legacy::connect::HttpConnector>>

@@ -1,0 +1,2 @@
+yup_oauth2::authenticator::Authenticator<hyper_rustls::HttpsConnector<hyper_util::client::legacy::connect::HttpConnector>>
+yup_oauth2::authenticator::Authenticator<hyper_rustls::HttpsConnector<hyper_util::client::legacy::connect::HttpConnector>>: GetToken
