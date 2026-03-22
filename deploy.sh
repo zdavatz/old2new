@@ -69,19 +69,17 @@ while [[ $# -gt 0 ]]; do
             $UPD_SCP "$SCRIPT_DIR/enhance.sh" "$SCRIPT_DIR/upscale.py" "$SCRIPT_DIR/multi_gpu_queue.sh" root@"$UPD_HOST":/root/ 2>/dev/null
             echo "  Scripts updated"
 
-            # Kill first so files are not in use during SCP
-            $UPD_SSH 'pkill -f multi_gpu_queue 2>/dev/null; pkill -f status_server 2>/dev/null; sleep 2' 2>/dev/null
-            echo "  Old processes stopped"
-
-            # Deploy Rust binaries (upload as .new, then mv to avoid file locking)
+            # Upload Rust binaries as .new FIRST (while old ones still run)
             for bin in status_server_rs/target/release/status_server youtube_upload_rs/target/release/youtube_upload; do
                 if [[ -f "$SCRIPT_DIR/$bin" ]]; then
                     bname=$(basename "$bin")
-                    $UPD_SCP "$SCRIPT_DIR/$bin" root@"$UPD_HOST":/root/${bname}.new 2>/dev/null
-                    $UPD_SSH "mv -f /root/${bname}.new /root/${bname}" 2>/dev/null
-                    echo "  $bname updated"
+                    $UPD_SCP "$SCRIPT_DIR/$bin" root@"$UPD_HOST":/root/${bname}.new
+                    echo "  $bname uploaded"
                 fi
             done
+
+            # Kill old processes, mv .new to final, all in one SSH session
+            $UPD_SSH 'pkill -f status_server 2>/dev/null; pkill -f multi_gpu_queue 2>/dev/null; sleep 2; mv -f /root/status_server.new /root/status_server 2>/dev/null; mv -f /root/youtube_upload.new /root/youtube_upload 2>/dev/null; chmod +x /root/status_server /root/youtube_upload 2>/dev/null; echo "Binaries replaced"'
 
             # Make executable
             $UPD_SSH 'chmod +x /root/enhance.sh /root/multi_gpu_queue.sh /root/status_server /root/youtube_upload 2>/dev/null'
