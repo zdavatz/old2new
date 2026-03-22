@@ -573,19 +573,6 @@ $SSH 'chmod +x /root/enhance.sh /root/multi_gpu_queue.sh /root/status_server /ro
 # Phase 8: Start processing
 # ============================================================
 echo ""
-echo "=== Starting processing ==="
-
-if [[ $NUM_GPUS -gt 1 ]]; then
-    $SSH 'sudo bash -c "cd /root && nohup ./multi_gpu_queue.sh >> /root/enhance.log 2>&1 &"' 2>/dev/null
-    echo "Started multi_gpu_queue.sh on $NUM_GPUS GPUs"
-else
-    vid="${VIDEOS[0]}"
-    IFS='|' read -r v_id v_w v_h v_dur v_mp v_scale v_gpu v_disk v_title <<< "$vid"
-    $SSH "sudo bash -c 'cd /root && nohup ./enhance.sh \"https://www.youtube.com/watch?v=$v_id\" $v_scale --job-name \"$v_title\" >> /root/enhance.log 2>&1 &'" 2>/dev/null
-    echo "Started enhance.sh for $v_title"
-fi
-
-echo ""
 echo "============================================="
 echo "DEPLOYED!"
 echo "============================================="
@@ -596,3 +583,19 @@ echo "Videos:    $VIDEO_COUNT"
 echo "GPUs:      ${NUM_GPUS}x $GPU_LABEL"
 echo "Cost:      \$${OFFER_PRICE}/hr"
 echo "============================================="
+echo ""
+
+echo "=== Starting processing ==="
+if [[ $NUM_GPUS -gt 1 ]]; then
+    # Use ssh -f to fork into background and not block
+    ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=10 -f root@"$SSH_HOST" -p "$SSH_PORT" \
+        'sudo bash -c "cd /root && nohup ./multi_gpu_queue.sh >> /root/enhance.log 2>&1 &"' 2>/dev/null
+    echo "Started multi_gpu_queue.sh on $NUM_GPUS GPUs"
+else
+    vid="${VIDEOS[0]}"
+    IFS='|' read -r v_id v_w v_h v_dur v_mp v_scale v_gpu v_disk v_title <<< "$vid"
+    ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=10 -f root@"$SSH_HOST" -p "$SSH_PORT" \
+        "sudo bash -c 'cd /root && nohup ./enhance.sh \"https://www.youtube.com/watch?v=$v_id\" $v_scale --job-name \"$v_title\" >> /root/enhance.log 2>&1 &'" 2>/dev/null
+    echo "Started enhance.sh for $v_title"
+fi
+echo "Done."
