@@ -1,46 +1,80 @@
 #!/bin/bash
-# Deploy videos to the right cloud GPU instance
+# Deploy videos to cloud GPU instances for Real-ESRGAN upscaling
 #
-# Usage: ./deploy.sh <video_id> [video_id2] ...
-# Example: ./deploy.sh BR5U-miBmt4 wjAkVoSN8jE yt1tQsqYI1s
+# Usage:
+#   ./deploy.sh <video_id> [video_id2] ...          # auto: find running instance or propose new
+#   ./deploy.sh new <video_id> [video_id2] ...       # search for a new instance
+#   ./deploy.sh --instance <ID> <video_id> ...       # add to existing instance
+#   ./deploy.sh --plan <video_id> [video_id2] ...    # analyze only, no deploy
+#   ./deploy.sh --plan --vastai <video_id> ...       # search vast.ai only
+#   ./deploy.sh --plan --tensordock <video_id> ...   # search TensorDock only
 #
-# The script:
-# 1. Reads json/<video_id>.json for each video (resolution, duration, GPU requirement)
-# 2. Determines: single-GPU or multi-GPU, RTX 4090 or RTX 5090
-# 3. Calculates total disk needed
-# 4. Searches vast.ai for matching instances
-# 5. Creates instance, deploys scripts + queue, starts processing
+# Options:
+#   --single    prefer single GPU instance
+#   --multi     prefer multi GPU instance
+#   --plan      analyze and show recommendations without deploying
+#   --vastai    search only vast.ai
+#   --tensordock search only TensorDock
+#   --instance <ID>  deploy to existing vast.ai instance
 
 set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 JSON_DIR="$SCRIPT_DIR/json"
 
-if [ $# -eq 0 ]; then
-    echo "Usage: $0 <video_id> [video_id2] ..."
-    echo ""
-    echo "Reads json/<video_id>.json for each video and deploys to the right instance."
-    echo ""
-    echo "Examples:"
-    echo "  $0 BR5U-miBmt4                    # single HD video → 1x RTX 5090"
-    echo "  $0 wjAkVoSN8jE yt1tQsqYI1s        # short HD videos → 4x RTX 4090"
-    echo "  $0 c62HSWqoxKo 8wqZivWVLZs         # SD videos → 4x RTX 4090"
+# ============================================================
+# Parse global options
+# ============================================================
+MODE="auto"           # auto | new | plan | instance
+PROVIDER="both"       # both | vastai | tensordock
+GPU_PREF=""           # "" | single | multi
+INSTANCE_ID=""
+VIDEO_IDS=()
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        new)
+            MODE="new"; shift ;;
+        --plan)
+            MODE="plan"; shift ;;
+        --vastai)
+            PROVIDER="vastai"; shift ;;
+        --tensordock)
+            PROVIDER="tensordock"; shift ;;
+        --single)
+            GPU_PREF="single"; shift ;;
+        --multi)
+            GPU_PREF="multi"; shift ;;
+        --instance)
+            MODE="instance"; INSTANCE_ID="$2"; shift 2 ;;
+        -h|--help)
+            sed -n '2,/^$/p' "$0" | grep '^#' | sed 's/^# \?//'; exit 0 ;;
+        *)
+            VIDEO_IDS+=("$1"); shift ;;
+    esac
+done
+
+if [[ ${#VIDEO_IDS[@]} -eq 0 ]]; then
+    echo "Usage: $0 [new|--plan|--instance ID] [--single|--multi] [--vastai|--tensordock] <video_id> ..."
+    echo "Run '$0 --help' for details."
     exit 1
 fi
 
 # ============================================================
 # Phase 1: Analyze videos from JSON files
 # ============================================================
-echo "=== Analyzing ${#} videos ==="
+echo "=== Analyzing ${#VIDEO_IDS[@]} videos ==="
+echo ""
 
 TOTAL_DISK_GB=0
 TOTAL_DURATION=0
-MAX_MP=0
 NEEDS_5090=0
-VIDEO_COUNT=$#
+VIDEO_COUNT=${#VIDEO_IDS[@]}
 VIDEOS=()
+RTX4090_VIDS=()
+RTX5090_VIDS=()
 
-for vid in "$@"; do
+for vid in "${VIDEO_IDS[@]}"; do
     json_file="$JSON_DIR/${vid}.json"
     if [[ ! -f "$json_file" ]]; then
         echo "ERROR: No JSON file for $vid — run: ./fetch_video_json.sh $vid"
@@ -58,13 +92,10 @@ mp = d.get('megapixels', 0)
 scale = d.get('scale', 4)
 gpu = d.get('gpu', 'RTX 4090')
 title = d.get('title', '$vid')
-
-# Disk estimate: input frames + output frames with PNG compression
 frames = int(dur * fps)
-input_sz = w * h * 3 / 2.5 / 1024 / 1024  # MB per frame
+input_sz = w * h * 3 / 2.5 / 1024 / 1024
 output_sz = w * scale * h * scale * 3 / 2.5 / 1024 / 1024
 disk_gb = (frames * input_sz + frames * output_sz) / 1024 * 1.2 + 5
-
 print(f'{vid}|{w}|{h}|{dur}|{mp}|{scale}|{gpu}|{disk_gb:.0f}|{title}')
 ")
 
@@ -73,25 +104,44 @@ print(f'{vid}|{w}|{h}|{dur}|{mp}|{scale}|{gpu}|{disk_gb:.0f}|{title}')
     TOTAL_DISK_GB=$((TOTAL_DISK_GB + v_disk))
     TOTAL_DURATION=$((TOTAL_DURATION + v_dur))
 
-    # Track if any video needs RTX 5090
     if [[ "$v_gpu" == "RTX 5090" ]]; then
         NEEDS_5090=1
+        RTX5090_VIDS+=("$vid")
+    else
+        RTX4090_VIDS+=("$vid")
     fi
 
-    # Track max megapixels
-    if python3 -c "exit(0 if $v_mp > $MAX_MP else 1)" 2>/dev/null; then
-        MAX_MP="$v_mp"
-    fi
-
-    printf "  %-50s %sx%s  %ss  %sx  %s  ~%sGB\n" "$v_title" "$v_w" "$v_h" "$v_dur" "$v_scale" "$v_gpu" "$v_disk"
+    printf "  %-50s %sx%s  %4ss  %sx  %-9s ~%sGB\n" "$v_title" "$v_w" "$v_h" "$v_dur" "$v_scale" "$v_gpu" "$v_disk"
 done
 
 echo ""
-echo "Total: $VIDEO_COUNT videos, ${TOTAL_DURATION}s duration, ~${TOTAL_DISK_GB}GB disk needed"
+TOTAL_HOURS=$(python3 -c "print(f'{$TOTAL_DURATION/3600:.1f}')")
+echo "Total: $VIDEO_COUNT videos, ${TOTAL_HOURS}h duration, ~${TOTAL_DISK_GB}GB disk"
 
 # ============================================================
-# Phase 2: Determine instance type
+# Phase 2: Determine instance requirements
 # ============================================================
+
+# Split into GPU groups if mixed
+if [[ ${#RTX4090_VIDS[@]} -gt 0 && ${#RTX5090_VIDS[@]} -gt 0 ]]; then
+    echo ""
+    echo "=== Mixed GPU requirements ==="
+    echo "  RTX 4090: ${#RTX4090_VIDS[@]} videos (${RTX4090_VIDS[*]})"
+    echo "  RTX 5090: ${#RTX5090_VIDS[@]} videos (${RTX5090_VIDS[*]})"
+    echo ""
+    echo "Recommendation: deploy separately"
+    echo "  ./deploy.sh ${RTX4090_VIDS[*]}"
+    echo "  ./deploy.sh ${RTX5090_VIDS[*]}"
+    if [[ "$MODE" == "plan" ]]; then
+        exit 0
+    fi
+    echo ""
+    read -p "Deploy all to RTX 5090 (works but slower for SD)? [y/N] " confirm
+    if [[ "$confirm" != "y" && "$confirm" != "Y" ]]; then
+        exit 0
+    fi
+    NEEDS_5090=1
+fi
 
 # GPU type
 if [[ "$NEEDS_5090" -eq 1 ]]; then
@@ -107,62 +157,272 @@ else
 fi
 
 # Single vs Multi GPU
-if [[ $VIDEO_COUNT -le 2 ]]; then
+if [[ "$GPU_PREF" == "single" ]]; then
     NUM_GPUS=1
-    # Single GPU needs full disk for one video at a time
-    DISK_GB=$((TOTAL_DISK_GB / VIDEO_COUNT * 2))  # 2x for safety
-elif [[ $VIDEO_COUNT -le 8 ]]; then
+elif [[ "$GPU_PREF" == "multi" ]]; then
     NUM_GPUS=4
-    # Multi GPU: 4 videos parallel, but sequential overall
-    # Need disk for 4 concurrent videos
-    # Sort videos by disk, take top 4
-    TOP4_DISK=$(printf '%s\n' "${VIDEOS[@]}" | sort -t'|' -k8 -rn | head -4 | awk -F'|' '{sum+=$8} END {print sum}')
-    DISK_GB=$((TOP4_DISK + 50))  # 50GB overhead
+elif [[ $VIDEO_COUNT -le 2 ]]; then
+    NUM_GPUS=1
 else
     NUM_GPUS=4
-    # Many videos: need disk for 4 concurrent + some buffer
-    TOP4_DISK=$(printf '%s\n' "${VIDEOS[@]}" | sort -t'|' -k8 -rn | head -4 | awk -F'|' '{sum+=$8} END {print sum}')
-    DISK_GB=$((TOP4_DISK + 100))
 fi
 
-# Minimum disk
+# Warn if preference doesn't match
+if [[ "$GPU_PREF" == "single" && $VIDEO_COUNT -gt 3 ]]; then
+    echo ""
+    echo "NOTE: $VIDEO_COUNT videos on single GPU will be slower than multi GPU."
+fi
+if [[ "$GPU_PREF" == "multi" && $VIDEO_COUNT -le 1 ]]; then
+    echo ""
+    echo "NOTE: 1 video on multi GPU — extra GPUs will be idle."
+fi
+
+# Disk calculation
+if [[ $NUM_GPUS -eq 1 ]]; then
+    # Largest single video × 2 for safety
+    MAX_SINGLE=$(printf '%s\n' "${VIDEOS[@]}" | sort -t'|' -k8 -rn | head -1 | cut -d'|' -f8)
+    DISK_GB=$((MAX_SINGLE * 2))
+else
+    # 4 largest concurrent
+    TOP4_DISK=$(printf '%s\n' "${VIDEOS[@]}" | sort -t'|' -k8 -rn | head -4 | awk -F'|' '{sum+=$8} END {print int(sum)}')
+    DISK_GB=$((TOP4_DISK + 100))
+fi
 [[ $DISK_GB -lt 500 ]] && DISK_GB=500
 
 echo ""
 echo "=== Recommended Setup ==="
 echo "  GPU:  ${NUM_GPUS}x $GPU_LABEL"
-echo "  CPU:  >= ${MIN_CPU_GHZ} GHz"
+echo "  CPU:  >= ${MIN_CPU_GHZ} GHz (ideal 5+ for RTX 5090 HD)"
 echo "  RAM:  >= ${MIN_RAM_GB} GB"
 echo "  Disk: >= ${DISK_GB} GB"
 echo ""
 
 # ============================================================
-# Phase 3: Search vast.ai for matching instance
+# Phase 3: Search providers
 # ============================================================
-echo "=== Searching vast.ai ==="
 
+search_vastai() {
+    echo "=== vast.ai ==="
+    local results
+    results=$(vastai search offers "num_gpus>=${NUM_GPUS} gpu_name=${GPU_NAME} disk_space>=${DISK_GB} cpu_ghz>=${MIN_CPU_GHZ} verified=true" -o 'dph' 2>/dev/null | head -6)
+    if [[ -z "$results" || $(echo "$results" | wc -l) -le 1 ]]; then
+        echo "  No matching instances found"
+    else
+        echo "$results"
+    fi
+    echo ""
+}
+
+search_tensordock() {
+    echo "=== TensorDock ==="
+    # TensorDock API — may return 404 if API is down
+    local gpu_model
+    if [[ "$GPU_NAME" == "RTX_5090" ]]; then
+        gpu_model="geforcertx5090-pcie-32gb"
+    else
+        gpu_model="geforcertx4090-pcie-24gb"
+    fi
+    local result
+    result=$(curl -s "https://dashboard.tensordock.com/api/v2/gpu-cloud/deploy-options?gpu_model=$gpu_model&gpu_count=$NUM_GPUS&min_storage=$DISK_GB" \
+        -H "Authorization: Bearer ${TENSORDOCK_API_KEY:-}" 2>/dev/null)
+    if echo "$result" | python3 -c "import json,sys; d=json.load(sys.stdin); locs=d.get('locations',[]); print(f'  {len(locs)} locations available') if locs else print('  No locations available')" 2>/dev/null; then
+        echo "$result" | python3 -c "
+import json, sys
+d = json.load(sys.stdin)
+for loc in d.get('locations', [])[:5]:
+    name = loc.get('location', '?')
+    price = loc.get('price_per_hour', 0)
+    print(f'  {name}: \${price:.2f}/hr')
+" 2>/dev/null
+    else
+        echo "  API unavailable (returned 404)"
+    fi
+    echo ""
+}
+
+search_running_instances() {
+    echo "=== Running vast.ai instances ==="
+    local instances
+    instances=$(vastai show instances --raw 2>/dev/null | python3 -c "
+import json, sys
+data = json.load(sys.stdin)
+for inst in data:
+    label = inst.get('label', '?')
+    gpu = inst.get('gpu_name', '?')
+    num_gpus = inst.get('num_gpus', 1)
+    dph = inst.get('dph_total', 0) or 0
+    disk_total = inst.get('disk_space', 0) or 0
+    disk_used = inst.get('disk_usage', 0) or 0
+    disk_free = disk_total - disk_used
+    cpu_ghz = inst.get('cpu_ghz', 0) or 0
+    ram = inst.get('total_ram', 0) or 0
+    iid = inst.get('id', '')
+    status = inst.get('actual_status', '?')
+    if status != 'running':
+        continue
+    # Check if this instance can handle the videos
+    gpu_ok = '${GPU_NAME}'.replace('_',' ') in gpu or '${GPU_NAME}'.replace('_','') in gpu.replace(' ','')
+    cpu_ok = cpu_ghz >= float('${MIN_CPU_GHZ}')
+    ram_ok = ram >= ${MIN_RAM_GB}
+    disk_ok = disk_free >= ${DISK_GB} * 0.5  # need at least half the required disk free
+    fit = 'MATCH' if gpu_ok and cpu_ok and ram_ok and disk_ok else 'no fit'
+    reason = []
+    if not gpu_ok: reason.append(f'GPU:{gpu}')
+    if not cpu_ok: reason.append(f'CPU:{cpu_ghz:.1f}GHz')
+    if not ram_ok: reason.append(f'RAM:{ram:.0f}GB')
+    if not disk_ok: reason.append(f'Disk:{disk_free:.0f}GB free')
+    reason_str = ' (' + ', '.join(reason) + ')' if reason else ''
+    print(f'  {iid:>10} {label:<30} {num_gpus}x {gpu:<12} {cpu_ghz:.1f}GHz {ram:.0f}GB RAM {disk_free:.0f}GB free \${dph:.2f}/hr [{fit}{reason_str}]')
+" 2>/dev/null)
+    if [[ -z "$instances" ]]; then
+        echo "  No running instances"
+    else
+        echo "$instances"
+    fi
+    echo ""
+}
+
+if [[ "$MODE" == "plan" || "$MODE" == "auto" ]]; then
+    # Show running instances first
+    search_running_instances
+fi
+
+if [[ "$PROVIDER" == "both" || "$PROVIDER" == "vastai" ]]; then
+    search_vastai
+fi
+if [[ "$PROVIDER" == "both" || "$PROVIDER" == "tensordock" ]]; then
+    search_tensordock
+fi
+
+# Plan mode: stop here
+if [[ "$MODE" == "plan" ]]; then
+    echo "=== Plan mode — no deployment ==="
+    echo "To deploy: ./deploy.sh new ${VIDEO_IDS[*]}"
+    echo "Or add to existing: ./deploy.sh --instance <ID> ${VIDEO_IDS[*]}"
+    exit 0
+fi
+
+# ============================================================
+# Phase 4: Auto mode — try to find running instance
+# ============================================================
+if [[ "$MODE" == "auto" ]]; then
+    echo "=== Looking for matching running instance ==="
+    MATCH_ID=$(vastai show instances --raw 2>/dev/null | python3 -c "
+import json, sys
+data = json.load(sys.stdin)
+for inst in data:
+    if inst.get('actual_status') != 'running': continue
+    gpu = inst.get('gpu_name', '')
+    cpu_ghz = inst.get('cpu_ghz', 0) or 0
+    ram = inst.get('total_ram', 0) or 0
+    disk_free = (inst.get('disk_space', 0) or 0) - (inst.get('disk_usage', 0) or 0)
+    gpu_ok = '${GPU_NAME}'.replace('_',' ') in gpu or '${GPU_NAME}'.replace('_','') in gpu.replace(' ','')
+    if gpu_ok and cpu_ghz >= float('${MIN_CPU_GHZ}') and ram >= ${MIN_RAM_GB} and disk_free >= ${DISK_GB} * 0.3:
+        print(inst.get('id', ''))
+        break
+" 2>/dev/null)
+
+    if [[ -n "$MATCH_ID" ]]; then
+        echo "Found matching instance: $MATCH_ID"
+        MODE="instance"
+        INSTANCE_ID="$MATCH_ID"
+    else
+        echo "No matching running instance found."
+        echo ""
+        read -p "Search for a new instance? [Y/n] " confirm
+        if [[ "$confirm" == "n" || "$confirm" == "N" ]]; then
+            exit 0
+        fi
+        MODE="new"
+    fi
+fi
+
+# ============================================================
+# Phase 5: Deploy to existing instance
+# ============================================================
+if [[ "$MODE" == "instance" ]]; then
+    echo ""
+    echo "=== Deploying to instance $INSTANCE_ID ==="
+
+    SSH_URL=$(vastai ssh-url "$INSTANCE_ID" 2>/dev/null)
+    SSH_HOST=$(echo "$SSH_URL" | sed 's|ssh://root@||' | cut -d: -f1)
+    SSH_PORT=$(echo "$SSH_URL" | sed 's|ssh://root@||' | cut -d: -f2)
+
+    if [[ -z "$SSH_HOST" ]]; then
+        echo "ERROR: Could not get SSH URL for instance $INSTANCE_ID"
+        exit 1
+    fi
+
+    # Validate instance fits the videos
+    echo "Validating instance..."
+    INSTANCE_CHECK=$(ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=10 root@"$SSH_HOST" -p "$SSH_PORT" '
+        gpu=$(nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null | head -1)
+        cpu_mhz=$(grep "cpu MHz" /proc/cpuinfo | head -1 | awk -F: "{print \$2}" | xargs)
+        ram_gb=$(free -g | grep Mem | awk "{print \$2}")
+        disk_free_gb=$(df -BG / | tail -1 | awk "{print \$4}" | tr -d "G")
+        echo "$gpu|$cpu_mhz|$ram_gb|$disk_free_gb"
+    ' 2>/dev/null)
+
+    IFS='|' read -r inst_gpu inst_cpu inst_ram inst_disk <<< "$INSTANCE_CHECK"
+    inst_cpu_ghz=$(python3 -c "print(f'{float(\"${inst_cpu:-0}\") / 1000:.1f}')" 2>/dev/null)
+
+    echo "  GPU: $inst_gpu"
+    echo "  CPU: ${inst_cpu_ghz} GHz"
+    echo "  RAM: ${inst_ram} GB"
+    echo "  Disk free: ${inst_disk} GB"
+
+    # Check fit
+    FITS=1
+    if [[ "$NEEDS_5090" -eq 1 ]] && ! echo "$inst_gpu" | grep -qi "5090"; then
+        echo "  ERROR: Video needs RTX 5090 but instance has $inst_gpu"
+        FITS=0
+    fi
+    if python3 -c "exit(0 if float('${inst_cpu_ghz:-0}') < float('$MIN_CPU_GHZ') else 1)" 2>/dev/null; then
+        echo "  WARNING: CPU ${inst_cpu_ghz} GHz < recommended ${MIN_CPU_GHZ} GHz"
+    fi
+    if [[ "${inst_disk:-0}" -lt "$((DISK_GB / 3))" ]]; then
+        echo "  ERROR: Only ${inst_disk}GB free, need at least $((DISK_GB / 3))GB"
+        FITS=0
+    fi
+    if [[ "$FITS" -eq 0 ]]; then
+        echo "  Instance does not fit. Aborting."
+        exit 1
+    fi
+
+    SSH="ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=10 root@$SSH_HOST -p $SSH_PORT"
+    SCP="scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -P $SSH_PORT"
+
+    # Copy JSON files to instance queue
+    $SSH 'mkdir -p /root/json /root/json_done' 2>/dev/null
+    for vid in "${VIDEO_IDS[@]}"; do
+        $SCP "$JSON_DIR/${vid}.json" root@"$SSH_HOST":/root/json/ 2>/dev/null
+    done
+    echo "  Deployed ${#VIDEO_IDS[@]} JSON files to /root/json/"
+    echo ""
+    echo "Videos added to queue. They will be picked up by the running worker."
+    echo "Dashboard: http://${SSH_HOST}:$((SSH_PORT + 1))/"
+    exit 0
+fi
+
+# ============================================================
+# Phase 6: Create new instance (MODE=new)
+# ============================================================
+echo ""
+
+# Get best vast.ai offer
 SEARCH_RESULTS=$(vastai search offers "num_gpus>=${NUM_GPUS} gpu_name=${GPU_NAME} disk_space>=${DISK_GB} cpu_ghz>=${MIN_CPU_GHZ} verified=true" -o 'dph' 2>/dev/null | head -6)
 
 if [[ -z "$SEARCH_RESULTS" || $(echo "$SEARCH_RESULTS" | wc -l) -le 1 ]]; then
     echo "No matching instances found on vast.ai!"
-    echo "Try relaxing requirements or check vast.ai availability."
     exit 1
 fi
 
-echo "$SEARCH_RESULTS"
-echo ""
-
-# Extract best offer ID (first result after header)
 OFFER_ID=$(echo "$SEARCH_RESULTS" | awk 'NR==2 {print $1}')
 OFFER_PRICE=$(echo "$SEARCH_RESULTS" | awk 'NR==2 {for(i=1;i<=NF;i++) if($i ~ /^[0-9]+\.[0-9]+$/ && $i < 10) {print $i; exit}}')
 OFFER_LOCATION=$(echo "$SEARCH_RESULTS" | awk 'NR==2 {print $NF}')
 
 echo "Best offer: ID=$OFFER_ID, \$${OFFER_PRICE}/hr, $OFFER_LOCATION"
 echo ""
-
-# ============================================================
-# Phase 4: Confirm and create instance
-# ============================================================
 read -p "Create instance and deploy $VIDEO_COUNT videos? [y/N] " confirm
 if [[ "$confirm" != "y" && "$confirm" != "Y" ]]; then
     echo "Aborted."
@@ -187,11 +447,9 @@ fi
 
 echo "Instance ID: $INSTANCE_ID"
 echo ""
-
-# ============================================================
-# Phase 5: Wait for SSH
-# ============================================================
 echo "=== Waiting for instance to start ==="
+SSH_HOST=""
+SSH_PORT=""
 for i in $(seq 1 30); do
     sleep 10
     STATUS=$(vastai show instance "$INSTANCE_ID" 2>/dev/null | tail -1 | awk '{print $3}')
@@ -199,7 +457,6 @@ for i in $(seq 1 30); do
     if [[ "$STATUS" == "running" && -n "$SSH_URL" ]]; then
         SSH_HOST=$(echo "$SSH_URL" | sed 's|ssh://root@||' | cut -d: -f1)
         SSH_PORT=$(echo "$SSH_URL" | sed 's|ssh://root@||' | cut -d: -f2)
-        # Try SSH
         if ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=5 root@"$SSH_HOST" -p "$SSH_PORT" 'echo OK' >/dev/null 2>&1; then
             echo "Instance ready! SSH: $SSH_URL"
             break
@@ -208,14 +465,14 @@ for i in $(seq 1 30); do
     echo "  Waiting... ($i/30, status: ${STATUS:-loading})"
 done
 
-if [[ -z "${SSH_HOST:-}" ]]; then
+if [[ -z "$SSH_HOST" ]]; then
     echo "ERROR: Instance did not start within 5 minutes"
     echo "Check: vastai show instance $INSTANCE_ID"
     exit 1
 fi
 
 # ============================================================
-# Phase 6: Deploy scripts, binaries, credentials, queue
+# Phase 7: Deploy everything
 # ============================================================
 echo ""
 echo "=== Deploying ==="
@@ -227,48 +484,38 @@ $SCP "$SCRIPT_DIR/enhance.sh" "$SCRIPT_DIR/upscale.py" "$SCRIPT_DIR/multi_gpu_qu
 echo "  Scripts deployed"
 
 # Rust binaries
-if [[ -f "$SCRIPT_DIR/status_server_rs/target/release/status_server" ]]; then
-    $SCP "$SCRIPT_DIR/status_server_rs/target/release/status_server" root@"$SSH_HOST":/root/ 2>/dev/null
-    echo "  status_server binary deployed"
-fi
-if [[ -f "$SCRIPT_DIR/youtube_upload_rs/target/release/youtube_upload" ]]; then
-    $SCP "$SCRIPT_DIR/youtube_upload_rs/target/release/youtube_upload" root@"$SSH_HOST":/root/ 2>/dev/null
-    echo "  youtube_upload binary deployed"
-fi
+for bin in status_server_rs/target/release/status_server youtube_upload_rs/target/release/youtube_upload; do
+    if [[ -f "$SCRIPT_DIR/$bin" ]]; then
+        $SCP "$SCRIPT_DIR/$bin" root@"$SSH_HOST":/root/ 2>/dev/null
+        echo "  $(basename $bin) deployed"
+    fi
+done
 
-# OAuth credentials (copy from existing instance or local)
-CRED_SOURCE=""
+# OAuth credentials
 for src in "/tmp/client_secret.json" "$HOME/client_secret.json"; do
-    if [[ -f "$src" ]]; then
-        CRED_SOURCE="$src"
+    if [[ -f "$src" && -f "$(dirname "$src")/youtube_token.json" ]]; then
+        $SCP "$src" "$(dirname "$src")/youtube_token.json" root@"$SSH_HOST":/root/ 2>/dev/null
+        echo "  Credentials deployed"
         break
     fi
 done
-if [[ -n "$CRED_SOURCE" ]]; then
-    $SCP "$CRED_SOURCE" "$(dirname "$CRED_SOURCE")/youtube_token.json" root@"$SSH_HOST":/root/ 2>/dev/null
-    echo "  Credentials deployed from $CRED_SOURCE"
-else
-    echo "  WARNING: No OAuth credentials found — upload will not work"
-fi
 
-# JSON queue — copy only the specified videos
+# JSON queue
 $SSH 'mkdir -p /root/json /root/json_done' 2>/dev/null
-for vid in "$@"; do
+for vid in "${VIDEO_IDS[@]}"; do
     $SCP "$JSON_DIR/${vid}.json" root@"$SSH_HOST":/root/json/ 2>/dev/null
 done
-echo "  Queue deployed: $VIDEO_COUNT JSON files"
+echo "  Queue: $VIDEO_COUNT JSON files"
 
 # Instance metadata
 $SSH "cat > /root/instance_meta.json << EOF
 {\"label\": \"davaz-${GPU_NAME,,}-${VIDEO_COUNT}vid\", \"location\": \"$OFFER_LOCATION\", \"cost_per_hr\": $OFFER_PRICE, \"provider\": \"vast.ai\", \"instance_id\": \"$INSTANCE_ID\"}
 EOF" 2>/dev/null
-echo "  Instance metadata written"
 
-# Make scripts executable
 $SSH 'chmod +x /root/enhance.sh /root/multi_gpu_queue.sh /root/status_server /root/youtube_upload 2>/dev/null' 2>/dev/null
 
 # ============================================================
-# Phase 7: Start processing
+# Phase 8: Start processing
 # ============================================================
 echo ""
 echo "=== Starting processing ==="
@@ -277,16 +524,12 @@ if [[ $NUM_GPUS -gt 1 ]]; then
     $SSH 'sudo bash -c "cd /root && nohup ./multi_gpu_queue.sh >> /root/enhance.log 2>&1 &"' 2>/dev/null
     echo "Started multi_gpu_queue.sh on $NUM_GPUS GPUs"
 else
-    # Single GPU: process videos sequentially
     vid="${VIDEOS[0]}"
     IFS='|' read -r v_id v_w v_h v_dur v_mp v_scale v_gpu v_disk v_title <<< "$vid"
     $SSH "sudo bash -c 'cd /root && nohup ./enhance.sh \"https://www.youtube.com/watch?v=$v_id\" $v_scale --job-name \"$v_title\" >> /root/enhance.log 2>&1 &'" 2>/dev/null
     echo "Started enhance.sh for $v_title"
 fi
 
-# ============================================================
-# Summary
-# ============================================================
 echo ""
 echo "============================================="
 echo "DEPLOYED!"
