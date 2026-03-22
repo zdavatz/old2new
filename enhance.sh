@@ -15,6 +15,7 @@
 
 set -euo pipefail
 
+export PATH="/opt/venv/bin:/usr/local/bin:/usr/bin:/bin:$PATH"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
 # Timing accumulators (seconds)
@@ -164,7 +165,7 @@ preflight_checks() {
             GPU_DRIVER=$(echo "$GPU_DRIVER" | xargs)
             GPU_COMPUTE=$(echo "$GPU_COMPUTE" | xargs)
             local GPU_VRAM_GB
-            GPU_VRAM_GB=$(echo "scale=0; $GPU_VRAM_MB / 1024" | bc)
+            GPU_VRAM_GB=$(python3 -c "print(int($GPU_VRAM_MB // 1024))")
             echo "  GPU:      $GPU_NAME"
             echo "  VRAM:     ${GPU_VRAM_GB} GB"
             echo "  Driver:   $GPU_DRIVER"
@@ -472,8 +473,8 @@ update_job_meta() {
     FPS_NUM=$(echo "$FPS_FRAC" | cut -d/ -f1)
     FPS_DEN=$(echo "$FPS_FRAC" | cut -d/ -f2)
     if [[ -n "$FPS_DEN" && "$FPS_DEN" != "0" && "$FPS_DEN" != "$FPS_NUM" ]]; then
-        FPS=$(echo "scale=2; $FPS_NUM / $FPS_DEN" | bc)
-        FPS_INT=$(echo "$FPS_NUM / $FPS_DEN" | bc)
+        FPS=$(python3 -c "print(round($FPS_NUM / $FPS_DEN, 2))")
+        FPS_INT=$(python3 -c "print(int($FPS_NUM // $FPS_DEN))")
     else
         FPS="$FPS_NUM"
         FPS_INT="$FPS_NUM"
@@ -544,7 +545,7 @@ upscale_frames() {
     local UP_END
     UP_END=$(date +%s)
     TIMING_UPSCALING=$((UP_END - UP_START))
-    echo "Upscaling complete in $(echo "scale=1; $TIMING_UPSCALING / 3600" | bc)h (${TIMING_UPSCALING}s)"
+    echo "Upscaling complete in $(python3 -c "print(round($TIMING_UPSCALING / 3600, 1))")h (${TIMING_UPSCALING}s)"
     echo
 }
 
@@ -622,15 +623,15 @@ print_summary() {
     echo "============================================================"
     echo "TIMING BREAKDOWN"
     echo "============================================================"
-    echo "  Download:    ${DL}s ($(echo "scale=1; $DL / 60" | bc)m)"
-    echo "  Extraction:  ${EX}s ($(echo "scale=1; $EX / 60" | bc)m)"
-    echo "  Upscaling:   ${UP}s ($(echo "scale=1; $UP / 3600" | bc)h)"
-    echo "  Reassembly:  ${RE}s ($(echo "scale=1; $RE / 60" | bc)m)"
-    echo "  Total:       ${TOTAL_TIME}s ($(echo "scale=1; $TOTAL_TIME / 3600" | bc)h)"
+    echo "  Download:    ${DL}s ($(python3 -c "print(round($DL / 60, 1))")m)"
+    echo "  Extraction:  ${EX}s ($(python3 -c "print(round($EX / 60, 1))")m)"
+    echo "  Upscaling:   ${UP}s ($(python3 -c "print(round($UP / 3600, 1))")h)"
+    echo "  Reassembly:  ${RE}s ($(python3 -c "print(round($RE / 60, 1))")m)"
+    echo "  Total:       ${TOTAL_TIME}s ($(python3 -c "print(round($TOTAL_TIME / 3600, 1))")h)"
     if [[ "$TOTAL_TIME" -gt 0 ]]; then
         local OVERHEAD_PCT
-        OVERHEAD_PCT=$(echo "scale=0; $OVERHEAD * 100 / $TOTAL_TIME" | bc)
-        echo "  Overhead:    ${OVERHEAD}s ($(echo "scale=0; $OVERHEAD / 60" | bc)m, ${OVERHEAD_PCT}% of total)"
+        OVERHEAD_PCT=$(python3 -c "print(int($OVERHEAD * 100 // $TOTAL_TIME))")
+        echo "  Overhead:    ${OVERHEAD}s ($(python3 -c "print(int($OVERHEAD // 60))")m, ${OVERHEAD_PCT}% of total)"
     fi
 
     OUTPUT="$WORKDIR/${JOB_NAME}_${SCALE}x.mkv"
