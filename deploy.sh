@@ -494,16 +494,17 @@ SSH_PORT=""
 for i in $(seq 1 30); do
     sleep 10
     STATUS=$(vastai show instance "$INSTANCE_ID" 2>/dev/null | tail -1 | awk '{print $3}')
+    STATUS_MSG=$(vastai show instance "$INSTANCE_ID" --raw 2>/dev/null | python3 -c "import json,sys; print(json.load(sys.stdin).get('status_msg',''))" 2>/dev/null)
     SSH_URL=$(vastai ssh-url "$INSTANCE_ID" 2>/dev/null)
     if [[ "$STATUS" == "running" && -n "$SSH_URL" ]]; then
         SSH_HOST=$(echo "$SSH_URL" | sed 's|ssh://root@||' | cut -d: -f1)
         SSH_PORT=$(echo "$SSH_URL" | sed 's|ssh://root@||' | cut -d: -f2)
         if ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=5 root@"$SSH_HOST" -p "$SSH_PORT" 'echo OK' >/dev/null 2>&1; then
-            echo "Instance ready! SSH: $SSH_URL"
+            echo "  Instance ready! SSH: $SSH_URL"
             break
         fi
     fi
-    echo "  Waiting... ($i/30, status: ${STATUS:-loading})"
+    echo "  [$i/30] ${STATUS:-loading}: ${STATUS_MSG:-waiting...}"
 done
 
 if [[ -z "$SSH_HOST" ]]; then
