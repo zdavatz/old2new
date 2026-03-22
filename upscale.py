@@ -73,6 +73,8 @@ def main():
             img = cv2.imread(in_path, cv2.IMREAD_UNCHANGED)
             read_q.put((seq, in_path, img, out_path))
 
+    recent_in = []  # sliding window of last 10 input frames for compare view
+
     def writer():
         while True:
             item = write_q.get()
@@ -81,8 +83,12 @@ def main():
             tmp_path = out_path + ".tmp"
             cv2.imwrite(tmp_path, output)
             os.rename(tmp_path, out_path)  # atomic on same filesystem
-            try: os.remove(in_path)
-            except OSError: pass
+            # Keep last 10 frames_in for compare view, delete older ones
+            recent_in.append(in_path)
+            if len(recent_in) > 10:
+                old = recent_in.pop(0)
+                try: os.remove(old)
+                except OSError: pass
             write_q.task_done()
 
     indexed = list(enumerate(todo))
