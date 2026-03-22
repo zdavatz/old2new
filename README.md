@@ -417,6 +417,20 @@ Results are saved to:
 - `not_enhanced_rtx4090.json` — SD videos for RTX 4090 (72 videos, 24.8h, 4x upscale)
 - `not_enhanced_rtx5090.json` — HD videos for RTX 5090 (143 videos, 33.5h, 2x upscale)
 
+### Video Metadata (JSON)
+
+Fetch metadata for individual videos and save as `json/<video_id>.json`:
+
+```bash
+# Fetch one or more videos
+./fetch_video_json.sh BR5U-miBmt4 wjAkVoSN8jE
+
+# Re-fetch (delete existing first)
+rm json/BR5U-miBmt4.json && ./fetch_video_json.sh BR5U-miBmt4
+```
+
+Each JSON file contains: title, description, channel, upload_date, resolution, duration, fps, megapixels, definition (hd/sd), recommended scale (2x/4x), recommended GPU (RTX 4090/RTX 5090), view_count, categories, tags, and thumbnail URL. The Rust dashboard reads these files instead of a static `video_queue.json`.
+
 As of March 2026: 11 of 226 videos enhanced, 215 remaining (72 SD → RTX 4090 4x, 143 HD → RTX 5090 2x). Videos are split by YouTube definition (hd/sd), not by resolution.
 
 ### YouTube API Quota
