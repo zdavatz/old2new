@@ -112,8 +112,10 @@ The script automatically:
 - Requires ≥3 GHz CPU for RTX 5090 HD (ideal 5+)
 - Validates existing instances before adding videos
 - Warns if mixed GPU types (recommends separate deploys)
+- Shows numbered list of matching instances — user chooses (not auto-cheapest)
 - Deploys scripts, Rust binaries, credentials, and JSON queue
 - Starts `multi_gpu_queue.sh` (multi-GPU) or `enhance.sh` (single-GPU)
+- **Safety**: Ctrl+C auto-destroys created instance (no cost leak). Instance stuck loading > 5 min → asks to destroy.
 
 ### Legacy: Single Video (vast.ai)
 
