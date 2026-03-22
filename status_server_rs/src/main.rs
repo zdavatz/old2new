@@ -1521,9 +1521,9 @@ async fn main() {
     let app = Router::new()
         .route("/", get(dashboard_page))
         .route("/api/status", get(api_status))
-        .route("/compare/{title}", get(compare_page))
-        .route("/frames/{title}/{dir}/{filename}", get(serve_frame))
-        .route("/download/{title}", get(download_video));
+        .route("/compare/:title", get(compare_page))
+        .route("/frames/:title/:dir/:filename", get(serve_frame))
+        .route("/download/:title", get(download_video));
 
     let addr = "0.0.0.0:8080";
     let listener = match tokio::net::TcpListener::bind(addr).await {

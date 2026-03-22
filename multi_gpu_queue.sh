@@ -46,15 +46,32 @@ if ! pgrep -f status_server > /dev/null 2>&1; then
 fi
 
 # Pick next video from json/ queue (atomic via flock)
+# Prioritizes videos with most existing frames_out (resume after restart)
 pick_next_video() {
     flock "$LOCK_FILE" bash -c '
         QUEUE_DIR="'"$QUEUE_DIR"'"
-        DONE_DIR="'"$DONE_DIR"'"
+        JOBS_DIR="$HOME/jobs"
+        best=""
+        best_count=0
         for f in "$QUEUE_DIR"/*.json; do
             [ -f "$f" ] || continue
-            basename "$f"
-            break
+            vid=$(basename "$f" .json)
+            count=$(ls "$JOBS_DIR/$vid/frames_out/" 2>/dev/null | wc -l)
+            if [ "$count" -gt "$best_count" ]; then
+                best_count=$count
+                best=$(basename "$f")
+            fi
         done
+        if [ -n "$best" ] && [ "$best_count" -gt 0 ]; then
+            echo "$best"
+        else
+            # No in-progress videos, pick first available
+            for f in "$QUEUE_DIR"/*.json; do
+                [ -f "$f" ] || continue
+                basename "$f"
+                break
+            done
+        fi
     '
 }
 
