@@ -507,8 +507,16 @@ for i in $(seq 1 30); do
 done
 
 if [[ -z "$SSH_HOST" ]]; then
-    echo "ERROR: Instance did not start within 5 minutes"
-    echo "Check: vastai show instance $INSTANCE_ID"
+    echo ""
+    echo "ERROR: Instance $INSTANCE_ID did not start within 5 minutes"
+    read -p "Destroy instance? [Y/n] " destroy_confirm
+    if [[ "$destroy_confirm" != "n" && "$destroy_confirm" != "N" ]]; then
+        vastai destroy instance "$INSTANCE_ID" 2>/dev/null
+        echo "Instance $INSTANCE_ID destroyed."
+        INSTANCE_ID=""  # prevent trap from destroying again
+    else
+        echo "Instance kept running: vastai show instance $INSTANCE_ID"
+    fi
     exit 1
 fi
 
