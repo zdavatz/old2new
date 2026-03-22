@@ -14,3 +14,5 @@ youtube_token.json
 
 # Temp/test files
 *.zip
+status_server_rs/target/
+youtube_upload_rs/target/
