@@ -84,6 +84,7 @@ for vid in "${VIDEO_IDS[@]}"; do
     info=$(python3 -c "
 import json
 d = json.load(open('$json_file'))
+video_id = d.get('video_id', '$vid')
 w = d.get('width', 0)
 h = d.get('height', 0)
 dur = d.get('duration_seconds', 0)
@@ -96,7 +97,7 @@ frames = int(dur * fps)
 input_sz = w * h * 3 / 2.5 / 1024 / 1024
 output_sz = w * scale * h * scale * 3 / 2.5 / 1024 / 1024
 disk_gb = (frames * input_sz + frames * output_sz) / 1024 * 1.2 + 5
-print(f'{vid}|{w}|{h}|{dur}|{mp}|{scale}|{gpu}|{disk_gb:.0f}|{title}')
+print(f'{video_id}|{w}|{h}|{dur}|{mp}|{scale}|{gpu}|{disk_gb:.0f}|{title}')
 ")
 
     IFS='|' read -r v_id v_w v_h v_dur v_mp v_scale v_gpu v_disk v_title <<< "$info"
