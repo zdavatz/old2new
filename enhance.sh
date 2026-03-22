@@ -119,9 +119,22 @@ write_job_meta() {
         return
     fi
 
-    # Build display_title from JOB_NAME: replace underscores/hyphens with spaces, title-case
-    local DISPLAY_TITLE
-    DISPLAY_TITLE=$(echo "$JOB_NAME" | sed 's/[_-]/ /g' | awk '{for(i=1;i<=NF;i++) $i=toupper(substr($i,1,1)) tolower(substr($i,2))}1')
+    # Read display_title from ~/json/{VIDEO_ID}.json (or .processing.* variant)
+    local DISPLAY_TITLE=""
+    local JSON_FILE=""
+    for jf in "$HOME/json/${VIDEO_ID}.json" "$HOME/json/${VIDEO_ID}.json.processing."*; do
+        if [[ -f "$jf" ]]; then
+            JSON_FILE="$jf"
+            break
+        fi
+    done
+    if [[ -n "$JSON_FILE" ]]; then
+        DISPLAY_TITLE=$(python3 -c "import json; print(json.load(open('$JSON_FILE')).get('title',''))" 2>/dev/null)
+    fi
+    # Fallback: replace underscores with spaces
+    if [[ -z "$DISPLAY_TITLE" ]]; then
+        DISPLAY_TITLE=$(echo "$JOB_NAME" | sed 's/[_-]/ /g')
+    fi
 
     local STARTED_AT
     STARTED_AT=$(date -u +"%Y-%m-%dT%H:%M:%S")
