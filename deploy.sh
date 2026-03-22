@@ -419,10 +419,10 @@ if [[ -z "$SEARCH_RESULTS" || $(echo "$SEARCH_RESULTS" | wc -l) -le 1 ]]; then
 fi
 
 # Show numbered list of offers
-echo "=== Available instances ==="
-echo "$SEARCH_RESULTS" | awk 'NR==1 {next} {
+echo "=== Available instances (need ${DISK_GB} GB disk) ==="
+echo "$SEARCH_RESULTS" | awk -v need="$DISK_GB" 'NR==1 {next} {
     id=$1; gpu=$4; pcie=$5; cpu=$6; vcpu=$7; ram=$8; disk=$9; price=$10; loc=$NF
-    printf "[%d] %-20s %sx %s  CPU: %s GHz  RAM: %s GB  Disk: %s GB  $%s/hr  (%s)\n", NR-1, loc, $3, gpu, cpu, ram, disk, price, id
+    printf "[%d] %-20s %sx %s  CPU: %s GHz  RAM: %s GB  Disk: %s GB (need %s GB)  $%s/hr  (%s)\n", NR-1, loc, $3, gpu, cpu, ram, disk, need, price, id
 }'
 echo ""
 
