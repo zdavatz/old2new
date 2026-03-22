@@ -93,6 +93,9 @@ vastai set api-key YOUR_KEY
 # Update scripts + binaries on a running instance (restarts queue)
 ./deploy.sh update 33326865
 
+# Update only dashboard + upload binary (no queue restart, upscaling keeps running)
+./deploy.sh update-server 33326865
+
 # Analyze without deploying
 ./deploy.sh --plan c62HSWqoxKo BR5U-miBmt4
 ./deploy.sh --plan --vastai c62HSWqoxKo        # vast.ai only
