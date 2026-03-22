@@ -463,10 +463,12 @@ CREATE_RESULT=$(vastai create instance "$OFFER_ID" \
     --ssh --direct 2>&1)
 
 echo "$CREATE_RESULT"
-INSTANCE_ID=$(echo "$CREATE_RESULT" | python3 -c "import json,sys; print(json.loads(sys.stdin.read()).get('new_contract',''))" 2>/dev/null)
+# Parse instance ID — vastai outputs "Started. {'new_contract': 12345, ...}" (Python dict, not JSON)
+INSTANCE_ID=$(echo "$CREATE_RESULT" | grep -oP "new_contract['\"]?:\s*(\K[0-9]+)" 2>/dev/null)
 
 if [[ -z "$INSTANCE_ID" ]]; then
     echo "ERROR: Failed to create instance"
+    echo "Output was: $CREATE_RESULT"
     exit 1
 fi
 
