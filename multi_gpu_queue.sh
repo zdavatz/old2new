@@ -12,6 +12,7 @@
 
 set -uo pipefail
 
+export PATH="/opt/venv/bin:/usr/local/bin:/usr/bin:/bin:$PATH"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 QUEUE_DIR="$HOME/json"
 DONE_DIR="$HOME/json_done"
