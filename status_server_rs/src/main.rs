@@ -676,10 +676,23 @@ async fn build_status() -> StatusResponse {
                     }
                 })
                 .unwrap_or_else(|| infer_scale_from_mkv(&job_dir));
-            // Try display_title from: 1) job_meta.json 2) ~/json/{id}.json 3) dir name
+            // Try display_title from: 1) job_meta.json 2) ~/json/{id}.json (or .processing.*) 3) dir name
             let vid_for_lookup = if video_id.is_empty() { &title } else { &video_id };
+            let json_dir = home_dir().join("json");
             let json_meta: Option<JobMeta> =
-                read_json(&home_dir().join("json").join(format!("{}.json", vid_for_lookup)));
+                read_json(&json_dir.join(format!("{}.json", vid_for_lookup)))
+                    .or_else(|| {
+                        // Try .processing.* variants
+                        if let Ok(entries) = fs::read_dir(&json_dir) {
+                            for entry in entries.filter_map(|e| e.ok()) {
+                                let name = entry.file_name().to_string_lossy().to_string();
+                                if name.starts_with(&format!("{}.json.processing", vid_for_lookup)) {
+                                    return read_json(&entry.path());
+                                }
+                            }
+                        }
+                        None
+                    });
             let display_title = meta
                 .as_ref()
                 .and_then(|m| {
