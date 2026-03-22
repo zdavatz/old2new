@@ -8,6 +8,7 @@
 #   ./deploy.sh --plan <video_id> [video_id2] ...    # analyze only, no deploy
 #   ./deploy.sh --plan --vastai <video_id> ...       # search vast.ai only
 #   ./deploy.sh --plan --tensordock <video_id> ...   # search TensorDock only
+#   ./deploy.sh destroy <instance_id>                # destroy an instance
 #
 # Options:
 #   --single    prefer single GPU instance
@@ -35,6 +36,17 @@ while [[ $# -gt 0 ]]; do
     case "$1" in
         new)
             MODE="new"; shift ;;
+        destroy)
+            if [[ -n "${2:-}" ]]; then
+                echo "Destroying instance $2..."
+                vastai destroy instance "$2" 2>/dev/null
+                echo "Instance $2 destroyed."
+                exit 0
+            else
+                echo "Usage: $0 destroy <instance_id>"
+                exit 1
+            fi
+            ;;
         --plan)
             MODE="plan"; shift ;;
         --vastai)
