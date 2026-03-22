@@ -46,6 +46,9 @@ RUN curl -sL https://johnvansickle.com/ffmpeg/releases/ffmpeg-release-amd64-stat
     cp /tmp/ffmpeg-*-amd64-static/ffprobe /usr/local/bin/ffprobe && \
     rm -rf /tmp/ffmpeg-*
 
+# Deno (needed by yt-dlp for YouTube JS challenge solving)
+RUN curl -fsSL https://deno.land/install.sh | DENO_INSTALL=/usr/local sh
+
 # Verify (each import separate so we see which one fails)
 RUN python3 -c "import torch; print(f'PyTorch: {torch.__version__}')"
 RUN python3 -c "import cv2; print(f'OpenCV: {cv2.__version__}')"
