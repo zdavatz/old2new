@@ -86,14 +86,25 @@ while [[ $# -gt 0 ]]; do
             # Make executable
             $UPD_SSH 'chmod +x /root/enhance.sh /root/multi_gpu_queue.sh /root/status_server /root/youtube_upload 2>/dev/null'
 
-            # Restart queue
+            # Restart status_server + queue
             ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=10 -f root@"$UPD_HOST" -p "$UPD_PORT" \
-                'sudo bash -c "cd /root && nohup ./multi_gpu_queue.sh >> /root/enhance.log 2>&1 &"' 2>/dev/null
-            echo "  Queue restarted"
+                'sudo bash -c "cd /root && pkill -f status_server 2>/dev/null; nohup ./status_server >> /root/status_server.log 2>&1 & nohup ./multi_gpu_queue.sh >> /root/enhance.log 2>&1 &"' 2>/dev/null
+            echo "  Status server + queue restarted"
+
+            # Get dashboard URL
+            PROXY_HOST=$(vastai show instance "$UPD_ID" 2>/dev/null | tail -1 | awk '{print $10}')
+            PROXY_PORT=$(vastai show instance "$UPD_ID" 2>/dev/null | tail -1 | awk '{print $11}')
+            DASHBOARD_PORT=$((PROXY_PORT + 1))
+            if [[ "$PROXY_HOST" == ssh*.vast.ai ]]; then
+                DASHBOARD_URL="http://${PROXY_HOST}:${DASHBOARD_PORT}/"
+            else
+                DASHBOARD_URL="http://${UPD_HOST}:$((UPD_PORT + 1))/"
+            fi
 
             echo ""
-            echo "Instance $UPD_ID updated and queue restarted."
-            echo "SSH: ssh -p $UPD_PORT root@$UPD_HOST"
+            echo "Instance $UPD_ID updated and restarted."
+            echo "SSH:       ssh -p $UPD_PORT root@$UPD_HOST"
+            echo "Dashboard: $DASHBOARD_URL"
             exit 0
             ;;
         --plan)
