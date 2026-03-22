@@ -93,12 +93,19 @@ struct DiskInfo {
 }
 
 #[derive(Serialize, Default, Clone)]
+struct NetworkInfo {
+    upload_mbps: f64,
+    download_mbps: f64,
+}
+
+#[derive(Serialize, Default, Clone)]
 struct SystemSpecs {
     gpus: Vec<GpuInfo>,
     gpu_count: usize,
     cpu: CpuInfo,
     memory: MemInfo,
     disk: DiskInfo,
+    network: NetworkInfo,
 }
 
 #[derive(Serialize, Deserialize, Default, Clone)]
@@ -379,15 +386,49 @@ fn get_disk_info() -> DiskInfo {
     info
 }
 
+/// Read /proc/net/dev bytes for the primary network interface
+fn read_net_bytes() -> (u64, u64) {
+    // Returns (rx_bytes, tx_bytes) for first non-lo interface
+    if let Ok(data) = fs::read_to_string("/proc/net/dev") {
+        for line in data.lines().skip(2) {
+            let line = line.trim();
+            if line.starts_with("lo:") {
+                continue;
+            }
+            let parts: Vec<&str> = line.split_whitespace().collect();
+            if parts.len() >= 10 {
+                let rx = parts[1].parse::<u64>().unwrap_or(0);
+                let tx = parts[9].parse::<u64>().unwrap_or(0);
+                return (rx, tx);
+            }
+        }
+    }
+    (0, 0)
+}
+
+async fn get_network_info() -> NetworkInfo {
+    let (rx1, tx1) = read_net_bytes();
+    tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+    let (rx2, tx2) = read_net_bytes();
+    let dl = (rx2.saturating_sub(rx1)) as f64 * 8.0 / 1_000_000.0;
+    let ul = (tx2.saturating_sub(tx1)) as f64 * 8.0 / 1_000_000.0;
+    NetworkInfo {
+        download_mbps: (dl * 10.0).round() / 10.0,
+        upload_mbps: (ul * 10.0).round() / 10.0,
+    }
+}
+
 async fn get_system_specs() -> SystemSpecs {
     let gpus = get_gpu_info().await;
     let gpu_count = gpus.len();
+    let network = get_network_info().await;
     SystemSpecs {
         gpus,
         gpu_count,
         cpu: get_cpu_info(),
         memory: get_mem_info(),
         disk: get_disk_info(),
+        network,
     }
 }
 
@@ -1361,6 +1402,13 @@ async function update() {
           '<div class="spec-row"><span class="sr-label">Total</span><span class="value">' + dk.total_gb + ' GB</span></div>' +
           '<div class="spec-row"><span class="sr-label">Used</span><span class="value">' + dk.used_gb + ' GB (' + dk.util_pct + '%)</span></div>' +
           '<div class="spec-row"><span class="sr-label">Free</span><span class="value">' + dk.free_gb + ' GB</span></div>' +
+        '</div>';
+      }
+      if (s.network) {
+        const n = s.network;
+        h += '<div class="spec-card"><h3>Network</h3>' +
+          '<div class="spec-row"><span class="sr-label">Download</span><span class="value">' + n.download_mbps + ' Mbps</span></div>' +
+          '<div class="spec-row"><span class="sr-label">Upload</span><span class="value">' + n.upload_mbps + ' Mbps</span></div>' +
         '</div>';
       }
       h += '</div>';
