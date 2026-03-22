@@ -72,32 +72,58 @@ gcloud compute instances delete old2new-gpu --project=old2new-davaz --zone=us-ce
 3. Create a project with billing enabled
 4. Request GPUS_ALL_REGIONS quota increase to 1
 
-### Single Video (vast.ai — any YouTube URL)
+### Deploy (recommended — auto-selects GPU instance)
 
-Enhance any YouTube video with one command on a vast.ai RTX 4090:
+The `deploy.sh` script reads video metadata from `json/<video_id>.json`, determines the right GPU type, instance size, and deploys automatically:
 
 ```bash
 # One-time setup
 pipx install vastai
 vastai set api-key YOUR_KEY
 
-# Enhance a video
-./vast_batch.sh "https://www.youtube.com/watch?v=d6ph7n4k35Y"
+# Fetch video metadata first
+./fetch_video_json.sh BR5U-miBmt4 c62HSWqoxKo
 
-# Monitor (shows dashboard URL)
-./vast_batch.sh status
+# Auto-deploy: finds running instance or proposes new one
+./deploy.sh BR5U-miBmt4
 
-# Download when done
-./vast_batch.sh download
+# Deploy multiple videos (auto-selects multi-GPU if > 2 videos)
+./deploy.sh c62HSWqoxKo 8wqZivWVLZs Ydkc8oZzHBY
 
-# Clean up
-./vast_batch.sh destroy
+# Analyze without deploying
+./deploy.sh --plan c62HSWqoxKo BR5U-miBmt4
+./deploy.sh --plan --vastai c62HSWqoxKo        # vast.ai only
+./deploy.sh --plan --tensordock c62HSWqoxKo     # TensorDock only
+
+# Search for a new instance (instead of reusing running ones)
+./deploy.sh new c62HSWqoxKo 8wqZivWVLZs
+
+# Add videos to an existing instance (validates GPU/CPU/RAM/disk fit)
+./deploy.sh --instance 33283417 BR5U-miBmt4
+
+# Prefer single or multi GPU
+./deploy.sh --single BR5U-miBmt4
+./deploy.sh --multi c62HSWqoxKo 8wqZivWVLZs
 ```
 
-The script auto-detects HD videos and recommends 2x upscale. You can also specify the scale:
+The script automatically:
+- Determines GPU (RTX 4090 for SD ≤1.6 MP, RTX 5090 for HD)
+- Calculates disk requirements per video
+- Requires ≥3 GHz CPU for RTX 5090 HD (ideal 5+)
+- Validates existing instances before adding videos
+- Warns if mixed GPU types (recommends separate deploys)
+- Deploys scripts, Rust binaries, credentials, and JSON queue
+- Starts `multi_gpu_queue.sh` (multi-GPU) or `enhance.sh` (single-GPU)
+
+### Legacy: Single Video (vast.ai)
+
+The `vast_batch.sh` script also works for single videos:
 
 ```bash
-./vast_batch.sh "https://www.youtube.com/watch?v=d6ph7n4k35Y" 2
+./vast_batch.sh "https://www.youtube.com/watch?v=d6ph7n4k35Y"
+./vast_batch.sh status
+./vast_batch.sh download
+./vast_batch.sh destroy
 ```
 
 ### Single Video / Batch (TensorDock)
