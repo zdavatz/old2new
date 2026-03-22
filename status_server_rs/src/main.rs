@@ -1453,12 +1453,18 @@ async fn main() {
         .route("/download/{title}", get(download_video));
 
     let addr = "0.0.0.0:8080";
-    println!("Status server running on port 8080");
-
-    let listener = tokio::net::TcpListener::bind(addr)
-        .await
-        .expect("Failed to bind to port 8080");
-    axum::serve(listener, app)
-        .await
-        .expect("Server error");
+    let listener = match tokio::net::TcpListener::bind(addr).await {
+        Ok(l) => {
+            eprintln!("Status server listening on {}", addr);
+            l
+        }
+        Err(e) => {
+            eprintln!("ERROR: Failed to bind to {}: {}", addr, e);
+            std::process::exit(1);
+        }
+    };
+    if let Err(e) = axum::serve(listener, app).await {
+        eprintln!("ERROR: Server crashed: {}", e);
+        std::process::exit(1);
+    }
 }
