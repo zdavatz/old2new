@@ -65,13 +65,7 @@ while [[ $# -gt 0 ]]; do
             UPD_SCP="scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -P $UPD_PORT"
             UPD_SSH="ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=10 root@$UPD_HOST -p $UPD_PORT"
 
-            # Stop running queue
-            $UPD_SSH 'pkill -f multi_gpu_queue 2>/dev/null; sleep 2; echo "Queue stopped"'
-
-            # Rename .processing files back to .json
-            $UPD_SSH 'for f in /root/json/*.processing.*; do [ -f "$f" ] || continue; base=$(echo "$f" | sed "s/\.processing\.[0-9]*//"); mv "$f" "$base"; done; echo "Queue files restored: $(ls /root/json/*.json 2>/dev/null | wc -l) JSON files"'
-
-            # Deploy scripts
+            # Deploy scripts (upload first, kill+restart after)
             $UPD_SCP "$SCRIPT_DIR/enhance.sh" "$SCRIPT_DIR/upscale.py" "$SCRIPT_DIR/multi_gpu_queue.sh" root@"$UPD_HOST":/root/ 2>/dev/null
             echo "  Scripts updated"
 
@@ -86,15 +80,20 @@ while [[ $# -gt 0 ]]; do
             # Make executable
             $UPD_SSH 'chmod +x /root/enhance.sh /root/multi_gpu_queue.sh /root/status_server /root/youtube_upload 2>/dev/null'
 
-            # Restart status_server + queue via helper script on server
+            # NOW kill + restore queue + restart (after all files are deployed)
+            $UPD_SSH 'pkill -f multi_gpu_queue 2>/dev/null; pkill -f status_server 2>/dev/null; sleep 2' 2>/dev/null
+            echo "  Old processes stopped"
+
+            # Rename .processing files back to .json
+            $UPD_SSH 'for f in /root/json/*.processing.*; do [ -f "$f" ] || continue; base=$(echo "$f" | sed "s/\.processing\.[0-9]*//"); mv "$f" "$base"; done; echo "Queue files restored: $(ls /root/json/*.json 2>/dev/null | wc -l) JSON files"'
+
+            # Restart via helper script
             $UPD_SSH 'cat > /tmp/restart.sh << "REOF"
 #!/bin/bash
-pkill -f status_server 2>/dev/null
-pkill -f multi_gpu_queue 2>/dev/null
-sleep 1
 cd /root
 nohup ./status_server >> /root/status_server.log 2>&1 &
 nohup ./multi_gpu_queue.sh >> /root/enhance.log 2>&1 &
+sleep 2
 echo "$(ps aux | grep -E "status_server|multi_gpu_queue" | grep -v grep | wc -l) processes started"
 REOF
 chmod +x /tmp/restart.sh' 2>/dev/null
