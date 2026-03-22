@@ -90,6 +90,9 @@ vastai set api-key YOUR_KEY
 # Deploy multiple videos (auto-selects multi-GPU if > 2 videos)
 ./deploy.sh c62HSWqoxKo 8wqZivWVLZs Ydkc8oZzHBY
 
+# Update scripts + binaries on a running instance (restarts queue)
+./deploy.sh update 33326865
+
 # Analyze without deploying
 ./deploy.sh --plan c62HSWqoxKo BR5U-miBmt4
 ./deploy.sh --plan --vastai c62HSWqoxKo        # vast.ai only
@@ -218,6 +221,16 @@ Job directories use YouTube video IDs (not titles — titles contain slashes, em
 
 The process is resumable — if interrupted, re-run the same command and it will skip already-completed steps (download, frame extraction, upscaled frames).
 
+#### Manual Cleanup
+
+After a manual upload (e.g. when the upload step was skipped), clean up the job directory and move the JSON to `json_done/`:
+
+```bash
+./enhance.sh done json/8SvgnUHDdTU.json
+```
+
+This reads the `video_id` from the JSON file, deletes `~/jobs/<video_id>/` (freeing disk), and moves the JSON to `json_done/`.
+
 #### Pre-flight Check
 
 `enhance_gpu.py` runs a comprehensive pre-flight check before any processing:
@@ -312,7 +325,7 @@ No code changes needed in `enhance_gpu.py` — just run multiple instances with 
 - **Shared work queue** (`video_work_queue.txt`) with `flock`-based atomic pop
 - **PID-file per GPU** (`gpu0.worker.pid`) — ensures exactly 1 video per GPU
 - **OOM-kill recovery** — detects killed processes (exit > 128) and retries the same video after 60s
-- **Auto YouTube upload + email** after each video
+- **Auto YouTube upload + email** after each video (via Rust `youtube_upload` binary)
 
 The batch-of-N anti-pattern (`wait` for all 4 GPUs, then start next 4) wastes GPU time — fast-finishing GPUs sit idle waiting for the slowest one. On a 4x RTX 5090 instance at $1.35/hr, this caused 3 GPUs to idle for 2+ hours (~$2.70 wasted). The flock-based queue keeps all GPUs busy continuously.
 

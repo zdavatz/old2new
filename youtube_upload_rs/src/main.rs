@@ -134,6 +134,7 @@ const SCOPES: &[&str] = &[
     "https://www.googleapis.com/auth/youtube.readonly",
     "https://www.googleapis.com/auth/youtube",
     "https://www.googleapis.com/auth/gmail.send",
+    "https://mail.google.com/",
 ];
 
 fn build_https_client() -> Client<HttpsConnector<HttpConnector>> {

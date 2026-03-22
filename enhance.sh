@@ -4,6 +4,7 @@
 # Replaces enhance_gpu.py with a Bash orchestrator that calls upscale.py.
 #
 # Usage: ./enhance.sh <youtube-url> <scale> [--job-name <title>] [--gpu N]
+#        ./enhance.sh done <json-path>   — clean up after manual upload
 #   scale: 2 or 4
 #   --job-name: custom directory name under ~/jobs/ (default: video ID)
 #   --gpu: GPU index for CUDA_VISIBLE_DEVICES (default: all GPUs)
@@ -678,9 +679,16 @@ upload_video() {
     echo "Uploading to YouTube..."
 
     local UPLOAD_OK=0
-    # Try Rust binary first, fall back to Python
-    if command -v youtube_upload &>/dev/null; then
-        if youtube_upload --video-id="$VIDEO_ID" "$OUTPUT" \
+    # Try Rust binary first (check $HOME and PATH), fall back to Python
+    local UPLOAD_BIN=""
+    if [[ -x "$HOME/youtube_upload" ]]; then
+        UPLOAD_BIN="$HOME/youtube_upload"
+    elif command -v youtube_upload &>/dev/null; then
+        UPLOAD_BIN="youtube_upload"
+    fi
+
+    if [[ -n "$UPLOAD_BIN" ]]; then
+        if "$UPLOAD_BIN" --video-id="$VIDEO_ID" "$OUTPUT" \
             --client-secret "$HOME/client_secret.json" \
             --token "$HOME/youtube_token.json"; then
             UPLOAD_OK=1
@@ -709,8 +717,55 @@ upload_video() {
 }
 
 # ============================================================
+# Done: clean up after manual upload
+# ============================================================
+do_done() {
+    local JSON_PATH="$1"
+    if [[ ! -f "$JSON_PATH" ]]; then
+        echo "ERROR: File not found: $JSON_PATH"
+        exit 1
+    fi
+
+    local VID
+    VID=$(python3 -c "import json,sys; print(json.load(open(sys.argv[1]))['video_id'])" "$JSON_PATH" 2>/dev/null)
+    if [[ -z "$VID" ]]; then
+        # Fall back to filename
+        VID=$(basename "$JSON_PATH" .json)
+    fi
+
+    local JOBDIR="$HOME/jobs/$VID"
+    if [[ -d "$JOBDIR" ]]; then
+        local SIZE
+        SIZE=$(du -sh "$JOBDIR" | cut -f1)
+        rm -rf "$JOBDIR"
+        echo "Deleted $JOBDIR ($SIZE freed)"
+    else
+        echo "No job directory found at $JOBDIR"
+    fi
+
+    # Move JSON to done
+    mkdir -p "$HOME/json_done"
+    if [[ -f "$HOME/json/${VID}.json" ]]; then
+        mv "$HOME/json/${VID}.json" "$HOME/json_done/"
+        echo "Moved ${VID}.json to json_done/"
+    fi
+
+    echo "Done: $VID cleaned up"
+}
+
+# ============================================================
 # Main
 # ============================================================
+if [[ "${1:-}" == "done" ]]; then
+    if [[ -z "${2:-}" ]]; then
+        echo "Usage: $0 done <json-path>"
+        echo "  e.g. $0 done json/8SvgnUHDdTU.json"
+        exit 1
+    fi
+    do_done "$2"
+    exit 0
+fi
+
 main() {
     parse_args "$@"
     write_job_meta
