@@ -584,13 +584,23 @@ $SSH 'chmod +x /root/enhance.sh /root/multi_gpu_queue.sh /root/status_server /ro
 # ============================================================
 # Phase 8: Start processing
 # ============================================================
+# Get the vast.ai proxy host for dashboard URL (port+1 only works via proxy)
+PROXY_HOST=$(vastai show instance "$INSTANCE_ID" 2>/dev/null | tail -1 | awk '{print $10}')
+PROXY_PORT=$(vastai show instance "$INSTANCE_ID" 2>/dev/null | tail -1 | awk '{print $11}')
+DASHBOARD_PORT=$((PROXY_PORT + 1))
+if [[ "$PROXY_HOST" == ssh*.vast.ai ]]; then
+    DASHBOARD_URL="http://${PROXY_HOST}:${DASHBOARD_PORT}/"
+else
+    DASHBOARD_URL="http://${SSH_HOST}:$((SSH_PORT + 1))/ (may need SSH tunnel)"
+fi
+
 echo ""
 echo "============================================="
 echo "DEPLOYED!"
 echo "============================================="
 echo "Instance:  $INSTANCE_ID"
 echo "SSH:       ssh -p $SSH_PORT root@$SSH_HOST"
-echo "Dashboard: http://${SSH_HOST}:$((SSH_PORT + 1))/"
+echo "Dashboard: $DASHBOARD_URL"
 echo "Videos:    $VIDEO_COUNT"
 echo "GPUs:      ${NUM_GPUS}x $GPU_LABEL"
 echo "Cost:      \$${OFFER_PRICE}/hr"
