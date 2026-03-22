@@ -1278,8 +1278,9 @@ const DASHBOARD_HTML: &str = r##"<!DOCTYPE html>
   .instance-bar .item { display: flex; gap: 6px; }
   .instance-bar .ib-label { color: #94a3b8; }
   .instance-bar .value { color: #e2e8f0; font-weight: 500; }
-  .specs { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 12px; margin-bottom: 24px; }
+  .specs { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 12px; margin-bottom: 24px; }
   .spec-card { background: #1e293b; border-radius: 8px; padding: 14px 18px; }
+  .spec-card.wide { grid-column: span 2; }
   .spec-card h3 { font-size: 0.8rem; text-transform: uppercase; letter-spacing: 0.05em; color: #94a3b8; margin-bottom: 8px; }
   .spec-row { display: flex; justify-content: space-between; font-size: 0.85rem; padding: 2px 0; }
   .spec-row .sr-label { color: #94a3b8; }
@@ -1353,7 +1354,7 @@ async function update() {
       h += '<div class="specs">';
       const gpus = s.gpus || [];
       if (gpus.length > 1) {
-        h += '<div class="spec-card"><h3>GPUs (' + gpus.length + 'x ' + esc(gpus[0].name) + ')</h3>';
+        h += '<div class="spec-card wide"><h3>GPUs (' + gpus.length + 'x ' + esc(gpus[0].name) + ')</h3>';
         for (let i = 0; i < gpus.length; i++) {
           const g = gpus[i];
           const gfps = perGpu[String(i)] ? perGpu[String(i)].toFixed(1) + ' fps' : '\u2014';
