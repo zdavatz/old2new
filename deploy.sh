@@ -65,11 +65,9 @@ while [[ $# -gt 0 ]]; do
             UPD_SCP="scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -P $UPD_PORT"
             UPD_SSH="ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=10 root@$UPD_HOST -p $UPD_PORT"
 
-            # Deploy scripts (upload first, kill+restart after)
+            # Step 1: Upload everything first (while old processes still run)
             $UPD_SCP "$SCRIPT_DIR/enhance.sh" "$SCRIPT_DIR/upscale.py" "$SCRIPT_DIR/multi_gpu_queue.sh" root@"$UPD_HOST":/root/ 2>/dev/null
-            echo "  Scripts updated"
-
-            # Upload Rust binaries as .new FIRST (while old ones still run)
+            echo "  Scripts uploaded"
             for bin in status_server_rs/target/release/status_server youtube_upload_rs/target/release/youtube_upload; do
                 if [[ -f "$SCRIPT_DIR/$bin" ]]; then
                     bname=$(basename "$bin")
@@ -78,30 +76,84 @@ while [[ $# -gt 0 ]]; do
                 fi
             done
 
-            # Kill ALL old processes hard, mv .new to final, all in one SSH session
-            $UPD_SSH 'kill -9 $(pgrep -f status_server) $(pgrep -f multi_gpu_queue) 2>/dev/null; sleep 3; mv -f /root/status_server.new /root/status_server 2>/dev/null; mv -f /root/youtube_upload.new /root/youtube_upload 2>/dev/null; chmod +x /root/status_server /root/youtube_upload 2>/dev/null; echo "Old processes killed, binaries replaced"'
-
-            # Make executable
-            $UPD_SSH 'chmod +x /root/enhance.sh /root/multi_gpu_queue.sh /root/status_server /root/youtube_upload 2>/dev/null'
-            echo "  Old processes stopped"
-
-            # Rename .processing files back to .json
-            $UPD_SSH 'for f in /root/json/*.processing.*; do [ -f "$f" ] || continue; base=$(echo "$f" | sed "s/\.processing\.[0-9]*//"); mv "$f" "$base"; done; echo "Queue files restored: $(ls /root/json/*.json 2>/dev/null | wc -l) JSON files"'
-
-            # Restart via helper script
-            $UPD_SSH 'cat > /tmp/restart.sh << "REOF"
+            # Step 2: Write restart script to server
+            $UPD_SSH 'cat > /tmp/update_restart.sh << "REOF"
 #!/bin/bash
+echo "=== Step 1: Kill ALL processes ==="
+kill -9 $(pgrep -f "status_server" | grep -v $$) 2>/dev/null
+kill -9 $(pgrep -f "multi_gpu_queue" | grep -v $$) 2>/dev/null
+kill -9 $(pgrep -f "enhance.sh" | grep -v $$) 2>/dev/null
+kill -9 $(pgrep -f "upscale.py" | grep -v $$) 2>/dev/null
+sleep 3
+
+echo "=== Step 2: Verify all dead ==="
+remaining=$(pgrep -f "status_server|multi_gpu_queue" | wc -l)
+if [ "$remaining" -gt 0 ]; then
+    echo "WARNING: $remaining processes still alive, killing harder"
+    killall -9 status_server multi_gpu_queue.sh enhance.sh 2>/dev/null
+    sleep 2
+fi
+
+echo "=== Step 3: Replace binaries ==="
+mv -f /root/status_server.new /root/status_server 2>/dev/null && echo "status_server replaced" || echo "no status_server.new"
+mv -f /root/youtube_upload.new /root/youtube_upload 2>/dev/null && echo "youtube_upload replaced" || echo "no youtube_upload.new"
+chmod +x /root/enhance.sh /root/multi_gpu_queue.sh /root/status_server /root/youtube_upload 2>/dev/null
+
+echo "=== Step 4: Verify binary ==="
+ls -la /root/status_server | awk "{print \$5, \$6, \$7, \$8}"
+
+echo "=== Step 5: Restore queue files ==="
+for f in /root/json/*.processing.*; do
+    [ -f "$f" ] || continue
+    base=$(echo "$f" | sed "s/\.processing\.[0-9]*//")
+    mv "$f" "$base"
+done
+echo "Queue: $(ls /root/json/*.json 2>/dev/null | wc -l) JSON files"
+
+echo "=== Step 6: Wait for port 8080 to be free ==="
+for i in $(seq 1 10); do
+    if ! ss -tlnp 2>/dev/null | grep -q ":8080 "; then
+        echo "Port 8080 free"
+        break
+    fi
+    echo "Port 8080 still in use, waiting..."
+    sleep 1
+done
+
+echo "=== Step 7: Start status_server ==="
 cd /root
 nohup ./status_server >> /root/status_server.log 2>&1 &
-nohup ./multi_gpu_queue.sh >> /root/enhance.log 2>&1 &
+STATUS_PID=$!
 sleep 2
-echo "$(ps aux | grep -E "status_server|multi_gpu_queue" | grep -v grep | wc -l) processes started"
+if kill -0 $STATUS_PID 2>/dev/null; then
+    echo "status_server started (PID $STATUS_PID)"
+    echo "Binary inode: $(stat -c %i /root/status_server)"
+    echo "Process inode: $(stat -c %i /proc/$STATUS_PID/exe)"
+else
+    echo "ERROR: status_server died immediately"
+    tail -5 /root/status_server.log
+fi
+
+echo "=== Step 8: Start queue ==="
+nohup ./multi_gpu_queue.sh >> /root/enhance.log 2>&1 &
+QUEUE_PID=$!
+sleep 1
+if kill -0 $QUEUE_PID 2>/dev/null; then
+    echo "multi_gpu_queue started (PID $QUEUE_PID)"
+else
+    echo "ERROR: multi_gpu_queue died immediately"
+fi
+
+echo "=== Done ==="
 REOF
-chmod +x /tmp/restart.sh' 2>/dev/null
-            $UPD_SSH 'sudo bash -c "nohup /tmp/restart.sh > /tmp/restart.log 2>&1 &"' 2>/dev/null
-            sleep 3
-            RUNNING=$($UPD_SSH 'cat /tmp/restart.log 2>/dev/null; ps aux | grep -E "status_server|multi_gpu_queue" | grep -v grep | wc -l' 2>/dev/null)
-            echo "  Restart: $RUNNING"
+chmod +x /tmp/update_restart.sh' 2>/dev/null
+
+            # Step 3: Run the restart script
+            echo "  Running restart script..."
+            $UPD_SSH 'sudo bash -c "nohup /tmp/update_restart.sh > /tmp/update_restart.log 2>&1 &"' 2>/dev/null
+            sleep 8
+            echo "  --- Restart log ---"
+            $UPD_SSH 'cat /tmp/update_restart.log 2>/dev/null'
 
             # Get dashboard URL
             PROXY_HOST=$(vastai show instance "$UPD_ID" 2>/dev/null | tail -1 | awk '{print $10}')
