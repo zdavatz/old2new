@@ -410,20 +410,44 @@ fi
 # ============================================================
 echo ""
 
-# Get best vast.ai offer
-SEARCH_RESULTS=$(vastai search offers "num_gpus>=${NUM_GPUS} gpu_name=${GPU_NAME} disk_space>=${DISK_GB} cpu_ghz>=${MIN_CPU_GHZ} verified=true" -o 'dph' 2>/dev/null | head -6)
+# Get vast.ai offers
+SEARCH_RESULTS=$(vastai search offers "num_gpus>=${NUM_GPUS} gpu_name=${GPU_NAME} disk_space>=${DISK_GB} cpu_ghz>=${MIN_CPU_GHZ} verified=true" -o 'dph' 2>/dev/null | head -8)
 
 if [[ -z "$SEARCH_RESULTS" || $(echo "$SEARCH_RESULTS" | wc -l) -le 1 ]]; then
     echo "No matching instances found on vast.ai!"
     exit 1
 fi
 
-OFFER_ID=$(echo "$SEARCH_RESULTS" | awk 'NR==2 {print $1}')
-OFFER_PRICE=$(echo "$SEARCH_RESULTS" | awk 'NR==2 {print $10}')
-OFFER_LOCATION=$(echo "$SEARCH_RESULTS" | awk 'NR==2 {print $NF}')
-
-echo "Best offer: ID=$OFFER_ID, \$${OFFER_PRICE}/hr, $OFFER_LOCATION"
+# Show numbered list of offers
+echo "=== Available instances ==="
+echo "$SEARCH_RESULTS" | awk 'NR==1 {next} {
+    id=$1; gpu=$4; pcie=$5; cpu=$6; vcpu=$7; ram=$8; disk=$9; price=$10; loc=$NF
+    printf "[%d] %-20s %sx %s  CPU: %s GHz  RAM: %s GB  Disk: %s GB  $%s/hr  (%s)\n", NR-1, loc, $3, gpu, cpu, ram, disk, price, id
+}'
 echo ""
+
+NUM_OFFERS=$(echo "$SEARCH_RESULTS" | wc -l)
+NUM_OFFERS=$((NUM_OFFERS - 1))  # minus header
+
+read -p "Select instance [1-${NUM_OFFERS}], or 'n' to abort: " choice
+if [[ "$choice" == "n" || "$choice" == "N" || -z "$choice" ]]; then
+    echo "Aborted."
+    exit 0
+fi
+
+# Validate choice
+if ! [[ "$choice" =~ ^[0-9]+$ ]] || [[ "$choice" -lt 1 || "$choice" -gt "$NUM_OFFERS" ]]; then
+    echo "Invalid choice: $choice"
+    exit 1
+fi
+
+SELECTED_ROW=$((choice + 1))  # +1 for header
+OFFER_ID=$(echo "$SEARCH_RESULTS" | awk "NR==$SELECTED_ROW {print \$1}")
+OFFER_PRICE=$(echo "$SEARCH_RESULTS" | awk "NR==$SELECTED_ROW {print \$10}")
+OFFER_LOCATION=$(echo "$SEARCH_RESULTS" | awk "NR==$SELECTED_ROW {print \$NF}")
+
+echo ""
+echo "Selected: ID=$OFFER_ID, \$${OFFER_PRICE}/hr, $OFFER_LOCATION"
 read -p "Create instance and deploy $VIDEO_COUNT videos? [y/N] " confirm
 if [[ "$confirm" != "y" && "$confirm" != "Y" ]]; then
     echo "Aborted."
