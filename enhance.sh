@@ -3,9 +3,10 @@
 # enhance.sh — Cloud GPU video enhancement pipeline using Real-ESRGAN.
 # Replaces enhance_gpu.py with a Bash orchestrator that calls upscale.py.
 #
-# Usage: ./enhance.sh <youtube-url> <scale> [--job-name <title>]
+# Usage: ./enhance.sh <youtube-url> <scale> [--job-name <title>] [--gpu N]
 #   scale: 2 or 4
 #   --job-name: custom directory name under ~/jobs/ (default: video ID)
+#   --gpu: GPU index for CUDA_VISIBLE_DEVICES (default: all GPUs)
 #
 # Requires: nvidia-smi, python3, ffmpeg, ffprobe, yt-dlp, deno
 # Python packages: torch, realesrgan, basicsr, cv2, numpy
@@ -43,10 +44,16 @@ parse_args() {
     fi
 
     JOB_NAME=""
+    GPU_ID=""
     while [[ $# -gt 0 ]]; do
         case "$1" in
             --job-name)
                 JOB_NAME="$2"
+                shift 2
+                ;;
+            --gpu)
+                GPU_ID="$2"
+                export CUDA_VISIBLE_DEVICES="$GPU_ID"
                 shift 2
                 ;;
             *)
