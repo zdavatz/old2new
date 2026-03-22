@@ -202,19 +202,19 @@ python3 enhance_gpu.py "<youtube-url>" [scale] --job-name "Movie_Title"
 
 ### Output
 
-Enhanced videos are saved as `jobs/<title>/<title>_<scale>x.mkv` using libx264 with CRF 18 (visually lossless) and `-preset medium`. We tested `-preset slow` vs `medium` — at CRF 18 the visual quality is identical (both are visually lossless). `slow` produces ~15% smaller files by searching harder for compression efficiency, but YouTube re-encodes all uploads anyway, making the smaller file size pointless. `medium` is ~2x faster for encoding, saving ~1h on 4K 50fps videos (e.g. 11566 frames at 3840x2160).
+Enhanced videos are saved as `jobs/<video_id>/<video_id>_<scale>x.mkv` using libx264 with CRF 18 (visually lossless) and `-preset medium`. We tested `-preset slow` vs `medium` — at CRF 18 the visual quality is identical (both are visually lossless). `slow` produces ~15% smaller files by searching harder for compression efficiency, but YouTube re-encodes all uploads anyway, making the smaller file size pointless. `medium` is ~2x faster for encoding, saving ~1h on 4K 50fps videos (e.g. 11566 frames at 3840x2160).
 
 For example:
 
 ```
-jobs/009_ChickenPick/
-  009_ChickenPick.mkv        # original downloaded video
-  009_ChickenPick_4x.mkv     # enhanced output
+jobs/JXir0H9XPzY/
+  JXir0H9XPzY.mkv            # original downloaded video
+  JXir0H9XPzY_4x.mkv         # enhanced output
   frames_in/                  # original extracted frames
   frames_out/                 # upscaled frames
 ```
 
-Without `--job-name`, the YouTube video ID is used as the directory and file name.
+Job directories use YouTube video IDs (not titles — titles contain slashes, emojis, special chars that break paths). The display title is read from `json/<video_id>.json` for the dashboard.
 
 The process is resumable — if interrupted, re-run the same command and it will skip already-completed steps (download, frame extraction, upscaled frames).
 

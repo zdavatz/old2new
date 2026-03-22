@@ -35,7 +35,7 @@ old2new enhances old Da Vaz videos using Real-ESRGAN AI upscaling. There are two
 - **not_enhanced_rtx4090.json** — SD videos needing RTX 4090 (4x upscale). 72 videos, 24.8h total. Split by YouTube definition (sd), not by megapixels.
 - **not_enhanced_rtx5090.json** — HD videos needing RTX 5090 (2x upscale). 143 videos, 33.5h total. Split by YouTube definition (hd), not by megapixels. Includes 960x720 and 720x1280 videos that are HD-defined despite low resolution.
 - **realesrgan/** — Auto-downloaded binary and models (gitignored). macOS ARM64 binary from github.com/xinntao/Real-ESRGAN
-- **jobs/<title>/** — Per-video working directories using movie titles (not video IDs). Files named after title: `<title>.mkv` (input), `<title>_4x.mkv` (output). Contains extracted frames in `frames_in/` and upscaled frames in `frames_out/` (gitignored)
+- **jobs/<video_id>/** — Per-video working directories using YouTube video IDs (not titles — titles contain slashes, emojis, special chars that break paths). Files: `<video_id>.mkv` (input), `<video_id>_4x.mkv` (output). Contains extracted frames in `frames_in/` and upscaled frames in `frames_out/` (gitignored). The `enhance_gpu.py` legacy script uses `--job-name` with titles, the new `enhance.sh` + `multi_gpu_queue.sh` use video IDs.
 
 ## Important
 
