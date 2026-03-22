@@ -9,6 +9,7 @@
 #   ./deploy.sh --plan --vastai <video_id> ...       # search vast.ai only
 #   ./deploy.sh --plan --tensordock <video_id> ...   # search TensorDock only
 #   ./deploy.sh destroy <instance_id>                # destroy an instance
+#   ./deploy.sh update <instance_id>                 # redeploy scripts + binaries, restart queue
 #
 # Options:
 #   --single    prefer single GPU instance
@@ -46,6 +47,53 @@ while [[ $# -gt 0 ]]; do
                 echo "Usage: $0 destroy <instance_id>"
                 exit 1
             fi
+            ;;
+        update)
+            if [[ -z "${2:-}" ]]; then
+                echo "Usage: $0 update <instance_id>"
+                exit 1
+            fi
+            UPD_ID="$2"
+            echo "=== Updating instance $UPD_ID ==="
+            UPD_URL=$(vastai ssh-url "$UPD_ID" 2>/dev/null)
+            UPD_HOST=$(echo "$UPD_URL" | sed 's|ssh://root@||' | cut -d: -f1)
+            UPD_PORT=$(echo "$UPD_URL" | sed 's|ssh://root@||' | cut -d: -f2)
+            if [[ -z "$UPD_HOST" ]]; then
+                echo "ERROR: Could not get SSH URL for instance $UPD_ID"
+                exit 1
+            fi
+            UPD_SCP="scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -P $UPD_PORT"
+            UPD_SSH="ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=10 root@$UPD_HOST -p $UPD_PORT"
+
+            # Stop running queue
+            $UPD_SSH 'pkill -f multi_gpu_queue 2>/dev/null; sleep 2; echo "Queue stopped"'
+
+            # Rename .processing files back to .json
+            $UPD_SSH 'for f in /root/json/*.processing.*; do [ -f "$f" ] || continue; base=$(echo "$f" | sed "s/\.processing\.[0-9]*//"); mv "$f" "$base"; done; echo "Queue files restored: $(ls /root/json/*.json 2>/dev/null | wc -l) JSON files"'
+
+            # Deploy scripts
+            $UPD_SCP "$SCRIPT_DIR/enhance.sh" "$SCRIPT_DIR/upscale.py" "$SCRIPT_DIR/multi_gpu_queue.sh" root@"$UPD_HOST":/root/ 2>/dev/null
+            echo "  Scripts updated"
+
+            # Deploy Rust binaries
+            for bin in status_server_rs/target/release/status_server youtube_upload_rs/target/release/youtube_upload; do
+                if [[ -f "$SCRIPT_DIR/$bin" ]]; then
+                    $UPD_SCP "$SCRIPT_DIR/$bin" root@"$UPD_HOST":/root/ 2>/dev/null
+                    echo "  $(basename $bin) updated"
+                fi
+            done
+
+            # Make executable
+            $UPD_SSH 'chmod +x /root/enhance.sh /root/multi_gpu_queue.sh /root/status_server /root/youtube_upload 2>/dev/null'
+
+            # Restart queue
+            $UPD_SSH 'sudo bash -c "cd /root && nohup ./multi_gpu_queue.sh >> /root/enhance.log 2>&1 &"' 2>/dev/null
+            echo "  Queue restarted"
+
+            echo ""
+            echo "Instance $UPD_ID updated and queue restarted."
+            echo "SSH: ssh -p $UPD_PORT root@$UPD_HOST"
+            exit 0
             ;;
         --plan)
             MODE="plan"; shift ;;
