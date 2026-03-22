@@ -10,6 +10,7 @@
 #   ./deploy.sh --plan --tensordock <video_id> ...   # search TensorDock only
 #   ./deploy.sh destroy <instance_id>                # destroy an instance
 #   ./deploy.sh update <instance_id>                 # redeploy scripts + binaries, restart queue
+#   ./deploy.sh update-server <instance_id>          # replace status_server + youtube_upload only (no queue restart)
 #
 # Options:
 #   --single    prefer single GPU instance
@@ -47,6 +48,51 @@ while [[ $# -gt 0 ]]; do
                 echo "Usage: $0 destroy <instance_id>"
                 exit 1
             fi
+            ;;
+        update-server)
+            if [[ -z "${2:-}" ]]; then
+                echo "Usage: $0 update-server <instance_id>"
+                exit 1
+            fi
+            UPD_ID="$2"
+            echo "=== Updating server binaries on $UPD_ID (no queue restart) ==="
+            UPD_URL=$(vastai ssh-url "$UPD_ID" 2>/dev/null)
+            UPD_HOST=$(echo "$UPD_URL" | sed 's|ssh://root@||' | cut -d: -f1)
+            UPD_PORT=$(echo "$UPD_URL" | sed 's|ssh://root@||' | cut -d: -f2)
+            if [[ -z "$UPD_HOST" ]]; then
+                echo "ERROR: Could not get SSH URL for instance $UPD_ID"
+                exit 1
+            fi
+            UPD_SCP="scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -P $UPD_PORT"
+            UPD_SSH="ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=10 root@$UPD_HOST -p $UPD_PORT"
+
+            # Upload binaries
+            for bin in status_server_rs/target/release/status_server youtube_upload_rs/target/release/youtube_upload; do
+                if [[ -f "$SCRIPT_DIR/$bin" ]]; then
+                    bname=$(basename "$bin")
+                    $UPD_SCP "$SCRIPT_DIR/$bin" root@"$UPD_HOST":/root/${bname}.new 2>/dev/null
+                    echo "  $bname uploaded"
+                fi
+            done
+
+            # Also upload scripts (no harm, they're only used on next queue start)
+            $UPD_SCP "$SCRIPT_DIR/enhance.sh" "$SCRIPT_DIR/upscale.py" "$SCRIPT_DIR/multi_gpu_queue.sh" root@"$UPD_HOST":/root/ 2>/dev/null
+            echo "  Scripts uploaded"
+
+            # Replace binaries and restart only status_server
+            $UPD_SSH 'kill $(pgrep -x status_server) 2>/dev/null
+sleep 1
+mv -f /root/status_server.new /root/status_server 2>/dev/null && echo "status_server replaced" || echo "no status_server.new"
+mv -f /root/youtube_upload.new /root/youtube_upload 2>/dev/null && echo "youtube_upload replaced" || echo "no youtube_upload.new"
+chmod +x /root/status_server /root/youtube_upload /root/enhance.sh /root/multi_gpu_queue.sh /root/upscale.py 2>/dev/null
+cd /root && nohup ./status_server >> /root/status_server.log 2>&1 &
+sleep 1
+if pgrep -x status_server > /dev/null; then echo "status_server restarted"; else echo "ERROR: status_server failed to start"; fi' 2>/dev/null
+
+            echo ""
+            echo "Instance $UPD_ID: server binaries updated (queue still running)."
+            echo "SSH: ssh -p $UPD_PORT root@$UPD_HOST"
+            exit 0
             ;;
         update)
             if [[ -z "${2:-}" ]]; then

@@ -1115,23 +1115,26 @@ let idx = Math.min(Math.floor(total / 5), total - 1);
 function show(i) {{
   idx = Math.max(0, Math.min(i, total - 1));
   const f = frames[idx];
-  const inUrl = '/frames/' + title + '/in/' + f;
-  const outUrl = '/frames/' + title + '/out/' + f;
-  document.getElementById('in-img').src = inUrl;
-  document.getElementById('in-link').href = inUrl;
-  document.getElementById('out-img').src = outUrl;
-  document.getElementById('out-link').href = outUrl;
+  document.getElementById('in-img').src = '/frames/' + title + '/in/' + f;
+  document.getElementById('in-link').href = '/frames/' + title + '/in/' + f;
+  document.getElementById('out-img').src = '/frames/' + title + '/out/' + f;
+  document.getElementById('out-link').href = '/frames/' + title + '/out/' + f;
   document.getElementById('in-label').textContent = 'Original (' + f + ')';
   document.getElementById('out-label').textContent = 'Enhanced (' + f + ')';
-  document.getElementById('nav').innerHTML =
-    '<a onclick="show(0)">First</a>' +
-    '<a onclick="show(' + Math.max(0, idx-10) + ')">&laquo; -10</a>' +
-    '<a onclick="show(' + Math.max(0, idx-1) + ')">&lsaquo; Prev</a>' +
+  var nav = document.getElementById('nav');
+  nav.innerHTML =
+    '<a data-go="0">First</a>' +
+    '<a data-go="' + Math.max(0, idx-10) + '">&laquo; -10</a>' +
+    '<a data-go="' + Math.max(0, idx-1) + '">&lsaquo; Prev</a>' +
     '<span class="current">Frame ' + (idx+1) + ' / ' + total + '</span>' +
-    '<a onclick="show(' + Math.min(total-1, idx+1) + ')">Next &rsaquo;</a>' +
-    '<a onclick="show(' + Math.min(total-1, idx+10) + ')">+10 &raquo;</a>' +
-    '<a onclick="show(' + (total-1) + ')">Last</a>';
+    '<a data-go="' + Math.min(total-1, idx+1) + '">Next &rsaquo;</a>' +
+    '<a data-go="' + Math.min(total-1, idx+10) + '">+10 &raquo;</a>' +
+    '<a data-go="' + (total-1) + '">Last</a>';
 }}
+document.getElementById('nav').addEventListener('click', function(e) {{
+  var target = e.target.closest('a[data-go]');
+  if (target) show(parseInt(target.getAttribute('data-go')));
+}});
 show(idx);
 document.addEventListener('keydown', function(e) {{
   if (e.key === 'ArrowLeft') show(idx - 1);
