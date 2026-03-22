@@ -454,6 +454,20 @@ if [[ "$confirm" != "y" && "$confirm" != "Y" ]]; then
     exit 0
 fi
 
+# Cleanup on abort: destroy the instance if it was created
+INSTANCE_ID=""
+cleanup_on_abort() {
+    echo ""
+    echo "Aborted!"
+    if [[ -n "$INSTANCE_ID" ]]; then
+        echo "Destroying instance $INSTANCE_ID..."
+        vastai destroy instance "$INSTANCE_ID" 2>/dev/null
+        echo "Instance destroyed."
+    fi
+    exit 1
+}
+trap cleanup_on_abort INT TERM
+
 echo ""
 echo "=== Creating instance ==="
 CREATE_RESULT=$(vastai create instance "$OFFER_ID" \
