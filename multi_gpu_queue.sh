@@ -80,7 +80,7 @@ gpu_worker() {
             for f in "'"$QUEUE_DIR"'"/*.json; do
                 [ -f "$f" ] || continue
                 mv "$f" "$f.processing.'"$gpu"'"
-                echo "$(basename "$f" .json).processing.'"$gpu"'"
+                basename "$f"
                 break
             done
         ')
@@ -90,8 +90,8 @@ gpu_worker() {
             break
         fi
 
-        local processing_path="$QUEUE_DIR/$json_file"
-        local video_id="${json_file%.processing.*}"
+        local processing_path="$QUEUE_DIR/${json_file}.processing.${gpu}"
+        local video_id="${json_file%.json}"
 
         # Read video info from JSON
         local vid scale title
