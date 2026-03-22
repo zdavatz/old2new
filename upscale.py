@@ -17,6 +17,10 @@ def main():
 
     os.makedirs(args.frames_out, exist_ok=True)
 
+    # Clean up partial writes from interrupted runs
+    for tmp in glob.glob(os.path.join(args.frames_out, "*.tmp")):
+        os.remove(tmp)
+
     # Gather and sort input frames naturally
     inputs = sorted(glob.glob(os.path.join(args.frames_in, "*.png")))
     if not inputs:
@@ -74,7 +78,9 @@ def main():
             item = write_q.get()
             if item is None: break
             out_path, output, in_path = item
-            cv2.imwrite(out_path, output)
+            tmp_path = out_path + ".tmp"
+            cv2.imwrite(tmp_path, output)
+            os.rename(tmp_path, out_path)  # atomic on same filesystem
             try: os.remove(in_path)
             except OSError: pass
             write_q.task_done()
