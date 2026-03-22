@@ -86,12 +86,22 @@ while [[ $# -gt 0 ]]; do
             # Make executable
             $UPD_SSH 'chmod +x /root/enhance.sh /root/multi_gpu_queue.sh /root/status_server /root/youtube_upload 2>/dev/null'
 
-            # Restart status_server + queue
-            $UPD_SSH 'pkill -f status_server 2>/dev/null; pkill -f multi_gpu_queue 2>/dev/null; sleep 1' 2>/dev/null
-            $UPD_SSH 'sudo bash -c "cd /root && setsid ./status_server >> /root/status_server.log 2>&1 < /dev/null & setsid ./multi_gpu_queue.sh >> /root/enhance.log 2>&1 < /dev/null &"' 2>/dev/null
-            sleep 2
-            RUNNING=$($UPD_SSH 'ps aux | grep -E "status_server|multi_gpu_queue" | grep -v grep | wc -l' 2>/dev/null)
-            echo "  Status server + queue restarted ($RUNNING processes)"
+            # Restart status_server + queue via helper script on server
+            $UPD_SSH 'cat > /tmp/restart.sh << "REOF"
+#!/bin/bash
+pkill -f status_server 2>/dev/null
+pkill -f multi_gpu_queue 2>/dev/null
+sleep 1
+cd /root
+nohup ./status_server >> /root/status_server.log 2>&1 &
+nohup ./multi_gpu_queue.sh >> /root/enhance.log 2>&1 &
+echo "$(ps aux | grep -E "status_server|multi_gpu_queue" | grep -v grep | wc -l) processes started"
+REOF
+chmod +x /tmp/restart.sh' 2>/dev/null
+            $UPD_SSH 'sudo bash -c "nohup /tmp/restart.sh > /tmp/restart.log 2>&1 &"' 2>/dev/null
+            sleep 3
+            RUNNING=$($UPD_SSH 'cat /tmp/restart.log 2>/dev/null; ps aux | grep -E "status_server|multi_gpu_queue" | grep -v grep | wc -l' 2>/dev/null)
+            echo "  Restart: $RUNNING"
 
             # Get dashboard URL
             PROXY_HOST=$(vastai show instance "$UPD_ID" 2>/dev/null | tail -1 | awk '{print $10}')
