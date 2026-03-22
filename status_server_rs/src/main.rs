@@ -654,6 +654,7 @@ async fn build_status() -> StatusResponse {
     // Collect all job directories
     let mut videos: Vec<VideoStatus> = Vec::new();
     let mut seen_titles: HashSet<String> = HashSet::new();
+    let mut seen_ids: HashSet<String> = HashSet::new();
 
     if let Ok(entries) = fs::read_dir(&jobs) {
         let mut dirs: Vec<_> = entries.filter_map(|e| e.ok()).collect();
@@ -834,6 +835,10 @@ async fn build_status() -> StatusResponse {
             };
 
             seen_titles.insert(title.clone());
+            seen_ids.insert(title.clone()); // dir name = video ID
+            if !video_id.is_empty() {
+                seen_ids.insert(video_id.clone());
+            }
             videos.push(VideoStatus {
                 id: video_id,
                 title,
@@ -857,9 +862,8 @@ async fn build_status() -> StatusResponse {
         if title.is_empty() || seen_titles.contains(&title) {
             continue;
         }
-        // Also match by video_id in case title differs
-        let dominated = videos.iter().any(|v| !meta.video_id.is_empty() && v.id == meta.video_id);
-        if dominated {
+        // Skip if video_id already seen (job dir name = video_id)
+        if !meta.video_id.is_empty() && seen_ids.contains(&meta.video_id) {
             continue;
         }
         seen_titles.insert(title.clone());
