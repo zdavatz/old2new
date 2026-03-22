@@ -73,11 +73,13 @@ while [[ $# -gt 0 ]]; do
             $UPD_SSH 'pkill -f multi_gpu_queue 2>/dev/null; pkill -f status_server 2>/dev/null; sleep 2' 2>/dev/null
             echo "  Old processes stopped"
 
-            # Deploy Rust binaries (after kill, so files are not locked)
+            # Deploy Rust binaries (upload as .new, then mv to avoid file locking)
             for bin in status_server_rs/target/release/status_server youtube_upload_rs/target/release/youtube_upload; do
                 if [[ -f "$SCRIPT_DIR/$bin" ]]; then
-                    $UPD_SCP "$SCRIPT_DIR/$bin" root@"$UPD_HOST":/root/ 2>/dev/null
-                    echo "  $(basename $bin) updated"
+                    local bname=$(basename "$bin")
+                    $UPD_SCP "$SCRIPT_DIR/$bin" root@"$UPD_HOST":/root/${bname}.new 2>/dev/null
+                    $UPD_SSH "mv -f /root/${bname}.new /root/${bname}" 2>/dev/null
+                    echo "  $bname updated"
                 fi
             done
 
