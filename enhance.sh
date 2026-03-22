@@ -1,291 +1,708 @@
-#!/bin/bash
-set -e
+#!/usr/bin/env bash
+#
+# enhance.sh — Cloud GPU video enhancement pipeline using Real-ESRGAN.
+# Replaces enhance_gpu.py with a Bash orchestrator that calls upscale.py.
+#
+# Usage: ./enhance.sh <youtube-url> <scale> [--job-name <title>]
+#   scale: 2 or 4
+#   --job-name: custom directory name under ~/jobs/ (default: video ID)
+#
+# Requires: nvidia-smi, python3, ffmpeg, ffprobe, yt-dlp, deno
+# Python packages: torch, realesrgan, basicsr, cv2, numpy
+#
+# Each phase is resumable — checks for existing output before re-running.
+
+set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-ESRGAN="$SCRIPT_DIR/realesrgan/realesrgan-ncnn-vulkan"
-MODEL_DIR="$SCRIPT_DIR/realesrgan/models"
-ESRGAN_URL="https://github.com/xinntao/Real-ESRGAN/releases/download/v0.2.5.0/realesrgan-ncnn-vulkan-20220424-macos.zip"
 
-# --- Install Real-ESRGAN if missing ---
-if [ ! -x "$ESRGAN" ]; then
-    echo "Real-ESRGAN not found. Downloading..."
-    curl -L -o "$SCRIPT_DIR/realesrgan-macos.zip" "$ESRGAN_URL"
-    unzip -o "$SCRIPT_DIR/realesrgan-macos.zip" -d "$SCRIPT_DIR/realesrgan"
-    chmod +x "$ESRGAN"
-    rm -f "$SCRIPT_DIR/realesrgan-macos.zip"
-    echo "Real-ESRGAN installed."
-    echo ""
-fi
+# Timing accumulators (seconds)
+TIMING_DOWNLOAD=0
+TIMING_EXTRACTION=0
+TIMING_UPSCALING=0
+TIMING_REASSEMBLY=0
 
-# --- Check dependencies ---
-for cmd in yt-dlp ffmpeg ffprobe bc; do
-    if ! command -v "$cmd" &>/dev/null; then
-        echo "Error: $cmd is required but not installed."
-        echo "Install with: brew install $cmd"
-        exit 1
-    fi
-done
-
-# --- Usage ---
-if [ -z "$1" ]; then
-    echo "Usage: ./enhance.sh \"<youtube-url-or-file>\""
-    echo ""
-    echo "Examples:"
-    echo "  ./enhance.sh \"https://www.youtube.com/watch?v=xyz123\""
-    echo "  ./enhance.sh /path/to/video.mp4"
-    echo ""
-    echo "NOTE: YouTube URLs must be quoted to prevent the shell from interpreting '?' as a glob."
-    exit 1
-fi
-
-ARG="$1"
-
-echo "=== Davaz Video Enhancement ==="
-echo ""
-
-# --- Detect machine specs ---
-CHIP=$(sysctl -n machdep.cpu.brand_string 2>/dev/null || echo "Unknown")
-GPU_CORES=$(system_profiler SPDisplaysDataType 2>/dev/null | grep "Total Number of Cores" | awk '{print $NF}')
-RAM=$(sysctl -n hw.memsize 2>/dev/null | awk '{printf "%.0f", $1/1073741824}')
-
-echo "Machine: $CHIP"
-echo "GPU Cores: ${GPU_CORES:-unknown}"
-echo "RAM: ${RAM:-unknown} GB"
-echo ""
-
-# --- Determine input: local file or YouTube URL ---
-if [ -f "$ARG" ]; then
-    # Local file: use filename (without extension) as job ID
-    VIDEO_ID=$(basename "$ARG" | sed 's/\.[^.]*$//')
-    WORKDIR="$SCRIPT_DIR/jobs/$VIDEO_ID"
-    mkdir -p "$WORKDIR"
-    INPUT="$WORKDIR/original.mkv"
-    if [ -f "$INPUT" ]; then
-        echo "Video already copied to workspace."
-    else
-        echo "Copying local file to workspace..."
-        EXT="${ARG##*.}"
-        if [ "$EXT" = "mkv" ]; then
-            cp "$ARG" "$INPUT"
-        else
-            echo "Converting to MKV..."
-            ffmpeg -i "$ARG" -c copy "$INPUT"
-        fi
-    fi
-else
-    # YouTube URL: extract video ID and download
-    URL="$ARG"
-    VIDEO_ID=$(echo "$URL" | sed -n 's/.*[?&]v=\([^&]*\).*/\1/p')
-    if [ -z "$VIDEO_ID" ]; then
-        VIDEO_ID=$(echo "$URL" | sed -n 's|.*/\([^/?]*\).*|\1|p')
-    fi
-    if [ -z "$VIDEO_ID" ]; then
-        echo "Error: Could not extract video ID from URL"
+# ============================================================
+# Phase 1: Parse Arguments
+# ============================================================
+parse_args() {
+    if [[ $# -lt 2 ]]; then
+        echo "Usage: $0 <youtube-url> <scale> [--job-name <title>]"
+        echo "  scale: 2 or 4"
+        echo "  --job-name: custom directory name under ~/jobs/ (default: video ID)"
         exit 1
     fi
 
-    WORKDIR="$SCRIPT_DIR/jobs/$VIDEO_ID"
-    mkdir -p "$WORKDIR"
-    INPUT="$WORKDIR/original.mkv"
+    URL="$1"
+    SCALE="$2"
+    shift 2
 
-    if [ -f "$INPUT" ]; then
-        echo "Video already downloaded."
-    else
-        echo "Downloading video..."
-        yt-dlp -o "$WORKDIR/original.%(ext)s" --merge-output-format mkv "$URL"
-        if [ ! -f "$INPUT" ]; then
-            DOWNLOADED=$(ls "$WORKDIR"/original.* 2>/dev/null | head -1)
-            if [ -n "$DOWNLOADED" ]; then
-                mv "$DOWNLOADED" "$INPUT"
-            else
-                echo "Error: Download failed"
+    if [[ "$SCALE" != "2" && "$SCALE" != "4" ]]; then
+        echo "ERROR: scale must be 2 or 4, got: $SCALE"
+        exit 1
+    fi
+
+    JOB_NAME=""
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --job-name)
+                JOB_NAME="$2"
+                shift 2
+                ;;
+            *)
+                echo "Unknown argument: $1"
                 exit 1
+                ;;
+        esac
+    done
+
+    # Extract video ID from URL
+    VIDEO_ID=$(echo "$URL" | grep -oP '[?&]v=\K[^&]+' || true)
+    if [[ -z "$VIDEO_ID" ]]; then
+        VIDEO_ID=$(echo "$URL" | grep -oP '/([^/?]+)$' | tr -d '/' || true)
+    fi
+    if [[ -z "$VIDEO_ID" ]]; then
+        echo "ERROR: Could not extract video ID from URL: $URL"
+        exit 1
+    fi
+
+    # Default job name to video ID
+    if [[ -z "$JOB_NAME" ]]; then
+        JOB_NAME="$VIDEO_ID"
+    fi
+
+    JOBS_DIR="$HOME/jobs"
+    WORKDIR="$JOBS_DIR/$JOB_NAME"
+    FRAMES_IN="$WORKDIR/frames_in"
+    FRAMES_OUT="$WORKDIR/frames_out"
+    INPUT="$WORKDIR/$JOB_NAME.mkv"
+
+    mkdir -p "$FRAMES_IN" "$FRAMES_OUT"
+
+    # Backwards compat: use original.mkv if it exists
+    if [[ ! -f "$INPUT" && -f "$WORKDIR/original.mkv" ]]; then
+        INPUT="$WORKDIR/original.mkv"
+    fi
+
+    # Auto-detect cookies
+    COOKIES_OPT=""
+    if [[ -f "$HOME/cookies.txt" ]]; then
+        COOKIES_OPT="--cookies $HOME/cookies.txt"
+        echo "Using cookies: $HOME/cookies.txt"
+    fi
+
+    # yt-dlp JS challenge solver (required since ~March 2026)
+    YTDLP_RC="--remote-components ejs:github"
+
+    echo "Video ID:  $VIDEO_ID"
+    echo "Scale:     ${SCALE}x"
+    echo "Job name:  $JOB_NAME"
+    echo "Work dir:  $WORKDIR"
+    echo
+}
+
+# ============================================================
+# Phase 2: Write job_meta.json (resume-safe)
+# ============================================================
+write_job_meta() {
+    local META_FILE="$WORKDIR/job_meta.json"
+    if [[ -f "$META_FILE" ]]; then
+        echo "job_meta.json already exists (resume)."
+        return
+    fi
+
+    # Build display_title from JOB_NAME: replace underscores/hyphens with spaces, title-case
+    local DISPLAY_TITLE
+    DISPLAY_TITLE=$(echo "$JOB_NAME" | sed 's/[_-]/ /g' | awk '{for(i=1;i<=NF;i++) $i=toupper(substr($i,1,1)) tolower(substr($i,2))}1')
+
+    local STARTED_AT
+    STARTED_AT=$(date -u +"%Y-%m-%dT%H:%M:%S")
+
+    python3 -c "
+import json
+meta = {
+    'video_id': '$VIDEO_ID',
+    'scale': $SCALE,
+    'title': '$JOB_NAME',
+    'display_title': '$DISPLAY_TITLE',
+    'started_at': '$STARTED_AT'
+}
+with open('$META_FILE', 'w') as f:
+    json.dump(meta, f, indent=2)
+"
+    echo "Wrote $META_FILE"
+}
+
+# ============================================================
+# Phase 3: Pre-flight Checks
+# ============================================================
+preflight_checks() {
+    echo "============================================================"
+    echo "PRE-FLIGHT CHECK"
+    echo "============================================================"
+    local ERRORS=()
+    local WARNINGS=()
+
+    # --- GPU ---
+    echo
+    echo "[GPU]"
+    if command -v nvidia-smi &>/dev/null; then
+        local GPU_INFO
+        GPU_INFO=$(nvidia-smi --query-gpu=name,memory.total,driver_version,compute_cap --format=csv,noheader,nounits 2>/dev/null || true)
+        if [[ -n "$GPU_INFO" ]]; then
+            local GPU_NAME GPU_VRAM_MB GPU_DRIVER GPU_COMPUTE
+            IFS=',' read -r GPU_NAME GPU_VRAM_MB GPU_DRIVER GPU_COMPUTE <<< "$GPU_INFO"
+            GPU_NAME=$(echo "$GPU_NAME" | xargs)
+            GPU_VRAM_MB=$(echo "$GPU_VRAM_MB" | xargs)
+            GPU_DRIVER=$(echo "$GPU_DRIVER" | xargs)
+            GPU_COMPUTE=$(echo "$GPU_COMPUTE" | xargs)
+            local GPU_VRAM_GB
+            GPU_VRAM_GB=$(echo "scale=0; $GPU_VRAM_MB / 1024" | bc)
+            echo "  GPU:      $GPU_NAME"
+            echo "  VRAM:     ${GPU_VRAM_GB} GB"
+            echo "  Driver:   $GPU_DRIVER"
+            echo "  Compute:  sm_${GPU_COMPUTE//.}"
+
+            # Power and clock
+            local PW_INFO
+            PW_INFO=$(nvidia-smi --query-gpu=power.limit,clocks.max.graphics --format=csv,noheader,nounits 2>/dev/null || true)
+            if [[ -n "$PW_INFO" ]]; then
+                local POWER_LIMIT MAX_CLOCK
+                IFS=',' read -r POWER_LIMIT MAX_CLOCK <<< "$PW_INFO"
+                POWER_LIMIT=$(echo "$POWER_LIMIT" | xargs)
+                MAX_CLOCK=$(echo "$MAX_CLOCK" | xargs)
+                echo "  Power:    ${POWER_LIMIT}W"
+                echo "  MaxClock: ${MAX_CLOCK} MHz"
+                # Warn about power-limited GPUs
+                local PW_INT
+                PW_INT=$(printf "%.0f" "$POWER_LIMIT")
+                if [[ "$PW_INT" -lt 400 ]] && [[ "$GPU_VRAM_MB" -gt 30000 ]]; then
+                    WARNINGS+=("Low power limit (${POWER_LIMIT}W) for a ${GPU_VRAM_GB}GB GPU -- may be Max-Q/throttled")
+                fi
+            fi
+        else
+            ERRORS+=("nvidia-smi failed -- no GPU detected")
+        fi
+    else
+        ERRORS+=("nvidia-smi not found -- no NVIDIA GPU available")
+    fi
+
+    # --- PyTorch ---
+    echo
+    echo "[PyTorch]"
+    if python3 -c "import torch" 2>/dev/null; then
+        local PT_VER CUDA_VER CUDA_AVAIL
+        PT_VER=$(python3 -c "import torch; print(torch.__version__)")
+        CUDA_VER=$(python3 -c "import torch; print(torch.version.cuda or 'none')")
+        CUDA_AVAIL=$(python3 -c "import torch; print(torch.cuda.is_available())")
+        echo "  PyTorch:  $PT_VER"
+        echo "  CUDA:     $CUDA_VER"
+        echo "  GPU OK:   $CUDA_AVAIL"
+        if [[ "$CUDA_AVAIL" != "True" ]]; then
+            ERRORS+=("CUDA not available -- torch.cuda.is_available() returned False")
+        fi
+    else
+        ERRORS+=("PyTorch not installed -- pip install torch")
+    fi
+
+    # --- CPU ---
+    echo
+    echo "[CPU]"
+    local CPU_MODEL CPU_MHZ CPU_CORES
+    CPU_MODEL=$(grep -m1 "model name" /proc/cpuinfo 2>/dev/null | cut -d: -f2 | xargs || echo "unknown")
+    CPU_MHZ=$(grep -m1 "cpu MHz" /proc/cpuinfo 2>/dev/null | cut -d: -f2 | xargs || echo "0")
+    CPU_CORES=$(nproc 2>/dev/null || echo "1")
+    echo "  Model:    $CPU_MODEL"
+    echo "  Cores:    $CPU_CORES"
+    echo "  MHz:      $CPU_MHZ"
+    if [[ "$CPU_CORES" -lt 8 ]]; then
+        WARNINGS+=("Only $CPU_CORES CPU cores -- I/O pipeline needs 16+ for full GPU utilization.")
+    fi
+
+    # --- RAM ---
+    echo
+    echo "[RAM]"
+    local RAM_TOTAL_GB RAM_AVAIL_GB
+    RAM_TOTAL_GB=$(free -g | awk '/^Mem:/ {print $2}')
+    RAM_AVAIL_GB=$(free -g | awk '/^Mem:/ {print $7}')
+    echo "  Total:    ${RAM_TOTAL_GB} GB"
+    echo "  Avail:    ${RAM_AVAIL_GB} GB"
+    if [[ "$RAM_AVAIL_GB" -lt 4 ]]; then
+        WARNINGS+=("Low available RAM (${RAM_AVAIL_GB} GB). May cause issues with large frames.")
+    fi
+
+    # --- Disk ---
+    echo
+    echo "[Disk]"
+    local DISK_TOTAL DISK_FREE
+    DISK_TOTAL=$(df -BG "$HOME" | awk 'NR==2 {print $2}' | tr -d 'G')
+    DISK_FREE=$(df -BG "$HOME" | awk 'NR==2 {print $4}' | tr -d 'G')
+    echo "  Total:    ${DISK_TOTAL} GB"
+    echo "  Free:     ${DISK_FREE} GB"
+
+    # Disk I/O benchmark
+    echo -n "  Write:    "
+    dd if=/dev/zero of=/tmp/disk_bench_test bs=1M count=100 oflag=direct 2>&1 | tail -1 | grep -oP '[\d.]+ [MG]B/s' || echo "unknown"
+    rm -f /tmp/disk_bench_test
+
+    # --- Software ---
+    echo
+    echo "[Software]"
+    for cmd in ffmpeg ffprobe yt-dlp python3 deno; do
+        if command -v "$cmd" &>/dev/null; then
+            local ver=""
+            case "$cmd" in
+                ffmpeg)   ver=$(ffmpeg -version 2>/dev/null | head -1) ;;
+                ffprobe)  ver="OK" ;;
+                yt-dlp)   ver=$(yt-dlp --version 2>/dev/null) ;;
+                python3)  ver=$(python3 --version 2>/dev/null) ;;
+                deno)     ver=$(deno --version 2>/dev/null | head -1) ;;
+            esac
+            echo "  $cmd:  $ver"
+        else
+            if [[ "$cmd" == "deno" ]]; then
+                WARNINGS+=("deno not found -- needed for yt-dlp JS challenge solving")
+            else
+                ERRORS+=("$cmd not found")
             fi
         fi
+    done
+
+    # Python packages
+    for pkg in numpy cv2 basicsr realesrgan; do
+        if python3 -c "import $pkg" 2>/dev/null; then
+            local pkg_ver
+            pkg_ver=$(python3 -c "import $pkg; print(getattr($pkg, '__version__', 'OK'))" 2>/dev/null || echo "OK")
+            echo "  $pkg:  $pkg_ver"
+        else
+            ERRORS+=("Python package $pkg not installed")
+        fi
+    done
+
+    # --- PCIe ---
+    local PCIE_INFO
+    PCIE_INFO=$(nvidia-smi --query-gpu=pcie.link.gen.current,pcie.link.width.current --format=csv,noheader 2>/dev/null || true)
+    if [[ -n "$PCIE_INFO" ]]; then
+        echo
+        echo "[PCIe]"
+        local PCIE_GEN PCIE_WIDTH
+        IFS=',' read -r PCIE_GEN PCIE_WIDTH <<< "$PCIE_INFO"
+        echo "  Gen:      $(echo "$PCIE_GEN" | xargs)"
+        echo "  Width:    x$(echo "$PCIE_WIDTH" | xargs)"
     fi
-fi
 
-# --- Get video info ---
-eval "$(ffprobe -v quiet -print_format flat -show_streams -select_streams v:0 "$INPUT" 2>/dev/null | grep -E 'width|height|r_frame_rate' | sed 's/\./_/g')"
-SRC_W="${streams_stream_0_width}"
-SRC_H="${streams_stream_0_height}"
-FPS_FRAC="${streams_stream_0_r_frame_rate}"
-FPS=$(echo "$FPS_FRAC" | bc -l | xargs printf "%.0f")
-DURATION=$(ffprobe -v quiet -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "$INPUT" | xargs printf "%.0f")
-TOTAL_FRAMES=$(( DURATION * FPS ))
+    # --- Summary ---
+    echo
+    echo "============================================================"
+    if [[ ${#ERRORS[@]} -gt 0 ]]; then
+        echo "ERRORS (${#ERRORS[@]}):"
+        for e in "${ERRORS[@]}"; do
+            echo "  x $e"
+        done
+    fi
+    if [[ ${#WARNINGS[@]} -gt 0 ]]; then
+        echo "WARNINGS (${#WARNINGS[@]}):"
+        for w in "${WARNINGS[@]}"; do
+            echo "  ! $w"
+        done
+    fi
+    if [[ ${#ERRORS[@]} -eq 0 && ${#WARNINGS[@]} -eq 0 ]]; then
+        echo "ALL CHECKS PASSED"
+    elif [[ ${#ERRORS[@]} -eq 0 ]]; then
+        echo "CHECKS PASSED (with warnings)"
+    fi
+    echo "============================================================"
+    echo
 
-echo ""
-echo "Video: ${SRC_W}x${SRC_H} @ ${FPS}fps, ${DURATION}s (~${TOTAL_FRAMES} frames)"
-
-# --- Check disk space ---
-INPUT_FRAME_MB=$(echo "$SRC_W * $SRC_H * 3 / 1024 / 1024 / 3" | bc -l)
-OUTPUT_4X_FRAME_MB=$(echo "$SRC_W * 4 * $SRC_H * 4 * 3 / 1024 / 1024 / 3" | bc -l)
-EST_INPUT_GB=$(echo "$TOTAL_FRAMES * $INPUT_FRAME_MB / 1024" | bc -l | xargs printf "%.0f")
-EST_OUTPUT_GB=$(echo "$TOTAL_FRAMES * $OUTPUT_4X_FRAME_MB / 1024" | bc -l | xargs printf "%.0f")
-EST_TOTAL_GB=$(( EST_INPUT_GB + EST_OUTPUT_GB + 5 ))
-AVAIL_GB=$(df -g "$WORKDIR" 2>/dev/null | tail -1 | awk '{print $4}' || df -BG "$WORKDIR" | tail -1 | awk '{print $4}' | tr -d 'G')
-
-echo "Estimated disk needed: ~${EST_TOTAL_GB} GB (input: ${EST_INPUT_GB} GB + output: ${EST_OUTPUT_GB} GB)"
-echo "Available disk space:  ${AVAIL_GB} GB"
-
-if [ "$EST_TOTAL_GB" -gt "$AVAIL_GB" ] 2>/dev/null; then
-    echo ""
-    echo "WARNING: May not have enough disk space!"
-    echo "Need ~${EST_TOTAL_GB} GB but only ${AVAIL_GB} GB available."
-    read -p "Continue anyway? [y/N] " DISK_CONFIRM
-    if [ "$DISK_CONFIRM" != "y" ] && [ "$DISK_CONFIRM" != "Y" ]; then
+    if [[ ${#ERRORS[@]} -gt 0 ]]; then
+        echo "Fix the errors above before running enhancement."
         exit 1
-    fi
-fi
-echo ""
-
-# --- Benchmark: upscale one frame at 2x and 4x ---
-echo "Benchmarking your GPU (one frame each)..."
-mkdir -p "$WORKDIR/bench_in" "$WORKDIR/bench_out"
-
-# Extract a single frame for benchmarking
-ffmpeg -v quiet -i "$INPUT" -frames:v 1 -y "$WORKDIR/bench_in/bench.png"
-
-# Benchmark 2x
-TIME_2X=$( { time "$ESRGAN" -i "$WORKDIR/bench_in" -o "$WORKDIR/bench_out" -s 2 -n realesrgan-x4plus -m "$MODEL_DIR" -f png 2>/dev/null; } 2>&1 | grep real | awk '{print $2}' )
-# Parse time (handles both 0m10.123s and 1m30.456s formats)
-MIN_2X=$(echo "$TIME_2X" | sed 's/m.*//')
-SEC_2X=$(echo "$TIME_2X" | sed 's/.*m//' | sed 's/s//')
-SECS_2X=$(echo "$MIN_2X * 60 + $SEC_2X" | bc)
-
-# Clean bench output for 4x run
-rm -f "$WORKDIR/bench_out/"*
-
-# Benchmark 4x
-TIME_4X=$( { time "$ESRGAN" -i "$WORKDIR/bench_in" -o "$WORKDIR/bench_out" -s 4 -n realesrgan-x4plus -m "$MODEL_DIR" -f png 2>/dev/null; } 2>&1 | grep real | awk '{print $2}' )
-MIN_4X=$(echo "$TIME_4X" | sed 's/m.*//')
-SEC_4X=$(echo "$TIME_4X" | sed 's/.*m//' | sed 's/s//')
-SECS_4X=$(echo "$MIN_4X * 60 + $SEC_4X" | bc)
-
-# Clean up benchmark files
-rm -rf "$WORKDIR/bench_in" "$WORKDIR/bench_out"
-
-# --- Calculate estimates ---
-TOTAL_SECS_2X=$(echo "$TOTAL_FRAMES * $SECS_2X" | bc | xargs printf "%.0f")
-TOTAL_SECS_4X=$(echo "$TOTAL_FRAMES * $SECS_4X" | bc | xargs printf "%.0f")
-
-format_time() {
-    local secs=$1
-    local h=$(( secs / 3600 ))
-    local m=$(( (secs % 3600) / 60 ))
-    if [ "$h" -gt 0 ]; then
-        echo "${h}h ${m}m"
-    else
-        echo "${m}m"
     fi
 }
 
-EST_2X=$(format_time "$TOTAL_SECS_2X")
-EST_4X=$(format_time "$TOTAL_SECS_4X")
+# ============================================================
+# Phase 4: Pre-download Disk Check
+# ============================================================
+pre_download_disk_check() {
+    # Skip if video already downloaded
+    if [[ -f "$INPUT" ]]; then
+        return
+    fi
 
-OUT_W_2X=$(( SRC_W * 2 ))
-OUT_H_2X=$(( SRC_H * 2 ))
-OUT_W_4X=$(( SRC_W * 4 ))
-OUT_H_4X=$(( SRC_H * 4 ))
+    echo "Fetching video info for disk estimate..."
+    local JSON_OUT
+    # shellcheck disable=SC2086
+    JSON_OUT=$(yt-dlp $YTDLP_RC --dump-json --no-download $COOKIES_OPT "$URL" 2>/dev/null || true)
 
-# --- Recommend best option ---
-if [ "$SRC_W" -ge 1920 ]; then
-    RECOMMENDED=1
-else
-    RECOMMENDED=2
-fi
+    if [[ -z "$JSON_OUT" ]]; then
+        echo "  Warning: Could not fetch video info, skipping pre-download disk check."
+        echo
+        return
+    fi
 
-echo ""
-echo "==========================================="
-echo "  Enhancement Options"
-echo "==========================================="
-echo ""
-echo "  1) Minimal enhance (2x upscale)"
-echo "     ${SRC_W}x${SRC_H} -> ${OUT_W_2X}x${OUT_H_2X}"
-echo "     Benchmark: ${SECS_2X}s per frame"
-echo "     Estimated time: $EST_2X"
-echo ""
-echo "  2) Maximum enhance (4x upscale)"
-echo "     ${SRC_W}x${SRC_H} -> ${OUT_W_4X}x${OUT_H_4X}"
-echo "     Benchmark: ${SECS_4X}s per frame"
-echo "     Estimated time: $EST_4X"
-echo ""
-echo "  3) Cancel"
-echo ""
-if [ "$RECOMMENDED" -eq 1 ]; then
-    echo "  * Recommended: Option 1 (source is already HD)"
-else
-    echo "  * Recommended: Option 2 (best quality improvement)"
-fi
-echo "==========================================="
-echo ""
-read -p "Select option [1/2/3]: " CHOICE
+    local PRE_INFO
+    PRE_INFO=$(echo "$JSON_OUT" | python3 -c "
+import sys, json
+info = json.load(sys.stdin)
+w = info.get('width', 0) or 0
+h = info.get('height', 0) or 0
+dur = info.get('duration', 0) or 0
+fps = info.get('fps', 25) or 25
+print(f'{w} {h} {dur} {fps}')
+")
+    local PRE_W PRE_H PRE_DUR PRE_FPS
+    read -r PRE_W PRE_H PRE_DUR PRE_FPS <<< "$PRE_INFO"
 
-case "$CHOICE" in
-    1) SCALE=2; MODEL="realesrgan-x4plus"; OUT_W=$OUT_W_2X; OUT_H=$OUT_H_2X ;;
-    2) SCALE=4; MODEL="realesrgan-x4plus"; OUT_W=$OUT_W_4X; OUT_H=$OUT_H_4X ;;
-    3) echo "Cancelled."; exit 0 ;;
-    *) echo "Invalid choice."; exit 1 ;;
-esac
+    if [[ "$PRE_W" -eq 0 || "$PRE_H" -eq 0 ]]; then
+        echo "  Warning: Incomplete video info, skipping disk check."
+        echo
+        return
+    fi
 
-OUTPUT="$WORKDIR/enhanced_${SCALE}x_${OUT_W}x${OUT_H}.mkv"
+    # Calculate disk estimate using Python for float math
+    local DISK_INFO
+    DISK_INFO=$(python3 -c "
+import os, glob
+w, h, dur, fps, scale = $PRE_W, $PRE_H, float('$PRE_DUR'), float('$PRE_FPS'), $SCALE
+frames = int(dur * fps)
+in_sz = (w * h * 3) / (1024 * 1024)
+out_sz = (w * scale * h * scale * 3) / (1024 * 1024)
+# Account for existing frames on resume
+fi_count = len(glob.glob('$FRAMES_IN/frame_*.png'))
+fo_count = len(glob.glob('$FRAMES_OUT/frame_*.png'))
+if fo_count > 0:
+    reclaimable = (fi_count * in_sz / 2.5) / 1024
+    remain_in = max(0, frames - fi_count) * in_sz / 2.5 / 1024
+    remain_out = max(0, frames - fo_count) * out_sz / 2.5 / 1024
+    est_gb = max(remain_in + remain_out - reclaimable, 0) * 1.1 + 2
+else:
+    est_gb = (frames * in_sz / 2.5 + frames * out_sz / 2.5) / 1024
+    est_gb = est_gb * 1.1 + 5
+st = os.statvfs('$WORKDIR')
+avail = (st.f_frsize * st.f_bavail) / (1024**3)
+print(f'{est_gb:.0f} {avail:.0f} {frames}')
+")
+    local EST_GB AVAIL_GB PRE_FRAMES
+    read -r EST_GB AVAIL_GB PRE_FRAMES <<< "$DISK_INFO"
 
-echo ""
-echo "Starting ${SCALE}x enhancement: ${SRC_W}x${SRC_H} -> ${OUT_W}x${OUT_H}"
-echo ""
+    echo "  Video:    ${PRE_W}x${PRE_H} @ ${PRE_FPS}fps, ${PRE_DUR}s (~${PRE_FRAMES} frames)"
+    echo "  Disk est: ~${EST_GB} GB needed, ${AVAIL_GB} GB available"
 
-# --- Extract frames ---
-FRAMES_IN="$WORKDIR/frames_in"
-mkdir -p "$FRAMES_IN"
-if [ "$(ls "$FRAMES_IN"/ 2>/dev/null | wc -l)" -gt 0 ]; then
-    TOTAL=$(ls "$FRAMES_IN"/ | wc -l)
-    echo "Frames already extracted ($TOTAL frames), skipping."
-else
-    echo "Extracting frames..."
-    ffmpeg -i "$INPUT" -qscale:v 2 "$FRAMES_IN/frame_%08d.png" 2>&1 | tail -1
-    TOTAL=$(ls "$FRAMES_IN"/ | wc -l)
-    echo "Extracted $TOTAL frames."
-fi
+    if [[ "$EST_GB" -gt "$AVAIL_GB" ]]; then
+        echo
+        echo "  ERROR: Not enough disk space!"
+        echo "  Need ~${EST_GB} GB but only ${AVAIL_GB} GB available."
+        echo "  Resize disk to at least $((EST_GB * 120 / 100)) GB or use a larger instance."
+        exit 1
+    else
+        local HEADROOM=$((AVAIL_GB - EST_GB))
+        echo "  Disk OK:  ${HEADROOM} GB headroom"
+    fi
+    echo
+}
 
-# --- Upscale frames ---
-FRAMES_OUT="$WORKDIR/frames_out_${SCALE}x"
-mkdir -p "$FRAMES_OUT"
-DONE=$(ls "$FRAMES_OUT"/ 2>/dev/null | wc -l)
+# ============================================================
+# Phase 5: Download
+# ============================================================
+download_video() {
+    if [[ -f "$INPUT" ]]; then
+        echo "Video already downloaded: $INPUT"
+        echo
+        return
+    fi
 
-echo ""
-echo "Upscaling frames with Real-ESRGAN (${SCALE}x)..."
-echo "Progress: $DONE / $TOTAL already done"
+    echo "Downloading video..."
+    local DL_START
+    DL_START=$(date +%s)
 
-if [ "$DONE" -lt "$TOTAL" ]; then
-    START_TIME=$(date +%s)
-    "$ESRGAN" -i "$FRAMES_IN" -o "$FRAMES_OUT" -s "$SCALE" -n "$MODEL" -m "$MODEL_DIR" -f png
-    END_TIME=$(date +%s)
-    ELAPSED=$(( END_TIME - START_TIME ))
-    echo "Upscaling complete in $(format_time $ELAPSED)"
-else
-    echo "All frames already upscaled, skipping."
-fi
+    # shellcheck disable=SC2086
+    yt-dlp $YTDLP_RC -o "$WORKDIR/$JOB_NAME.%(ext)s" --merge-output-format mkv $COOKIES_OPT "$URL"
 
-# --- Reassemble video ---
-echo ""
-echo "Reassembling video..."
+    # If expected file doesn't exist, find what yt-dlp produced
+    if [[ ! -f "$INPUT" ]]; then
+        local FOUND
+        FOUND=$(find "$WORKDIR" -maxdepth 1 -name "*.mkv" ! -name "*enhanced*" ! -name "*_${SCALE}x*" -print -quit 2>/dev/null || true)
+        if [[ -z "$FOUND" ]]; then
+            FOUND=$(find "$WORKDIR" -maxdepth 1 -type f \( -name "*.mp4" -o -name "*.webm" \) -print -quit 2>/dev/null || true)
+        fi
+        if [[ -n "$FOUND" ]]; then
+            mv "$FOUND" "$INPUT"
+        else
+            echo "ERROR: Download failed -- no video file produced"
+            exit 1
+        fi
+    fi
 
-HAS_AUDIO=$(ffprobe -v quiet -select_streams a -show_entries stream=codec_type -of csv=p=0 "$INPUT" 2>/dev/null | head -1)
+    local DL_END DL_SIZE_MB
+    DL_END=$(date +%s)
+    TIMING_DOWNLOAD=$((DL_END - DL_START))
+    DL_SIZE_MB=$(du -m "$INPUT" | cut -f1)
+    echo "Downloaded ${DL_SIZE_MB} MB in ${TIMING_DOWNLOAD}s"
+    echo
+}
 
-if [ -n "$HAS_AUDIO" ]; then
-    ffmpeg -framerate "$FPS" -i "$FRAMES_OUT/frame_%08d.png" \
-        -i "$INPUT" \
-        -map 0:v -map 1:a \
-        -c:v libx264 -crf 18 -preset slow -pix_fmt yuv420p \
-        -c:a copy \
-        -y "$OUTPUT"
-else
-    ffmpeg -framerate "$FPS" -i "$FRAMES_OUT/frame_%08d.png" \
-        -c:v libx264 -crf 18 -preset slow -pix_fmt yuv420p \
-        -y "$OUTPUT"
-fi
+# ============================================================
+# Phase 6: Update job_meta.json with ffprobe info
+# ============================================================
+update_job_meta() {
+    local META_FILE="$WORKDIR/job_meta.json"
 
-echo ""
-echo "=== Done! ==="
-echo "Output: $OUTPUT"
-ls -lh "$OUTPUT"
+    # Get video properties via ffprobe
+    local PROBE_OUT
+    PROBE_OUT=$(ffprobe -v quiet -select_streams v:0 \
+        -show_entries stream=width,height,r_frame_rate \
+        -show_entries format=duration \
+        -of default=noprint_wrappers=1 "$INPUT" 2>/dev/null)
+
+    # Parse probe output
+    SRC_W=$(echo "$PROBE_OUT" | grep "^width=" | head -1 | cut -d= -f2)
+    SRC_H=$(echo "$PROBE_OUT" | grep "^height=" | head -1 | cut -d= -f2)
+    DURATION=$(echo "$PROBE_OUT" | grep "^duration=" | head -1 | cut -d= -f2)
+    FPS_FRAC=$(echo "$PROBE_OUT" | grep "^r_frame_rate=" | head -1 | cut -d= -f2)
+
+    # Calculate numeric fps
+    local FPS_NUM FPS_DEN
+    FPS_NUM=$(echo "$FPS_FRAC" | cut -d/ -f1)
+    FPS_DEN=$(echo "$FPS_FRAC" | cut -d/ -f2)
+    if [[ -n "$FPS_DEN" && "$FPS_DEN" != "0" && "$FPS_DEN" != "$FPS_NUM" ]]; then
+        FPS=$(echo "scale=2; $FPS_NUM / $FPS_DEN" | bc)
+        FPS_INT=$(echo "$FPS_NUM / $FPS_DEN" | bc)
+    else
+        FPS="$FPS_NUM"
+        FPS_INT="$FPS_NUM"
+    fi
+
+    TOTAL_FRAMES=$(python3 -c "print(int(float('$DURATION') * float('$FPS')))")
+
+    echo "Video: ${SRC_W}x${SRC_H} @ ${FPS}fps, $(printf '%.0f' "$DURATION")s ($TOTAL_FRAMES frames)"
+
+    # Update meta file with video info
+    python3 -c "
+import json, os
+meta_path = '$META_FILE'
+if os.path.exists(meta_path):
+    with open(meta_path) as f:
+        meta = json.load(f)
+else:
+    meta = {}
+meta['width'] = $SRC_W
+meta['height'] = $SRC_H
+meta['fps'] = float('$FPS')
+meta['duration_seconds'] = float('$DURATION')
+meta['total_frames'] = $TOTAL_FRAMES
+with open(meta_path, 'w') as f:
+    json.dump(meta, f, indent=2)
+"
+    echo "Updated $META_FILE with video info."
+    echo
+}
+
+# ============================================================
+# Phase 7: Extract Frames
+# ============================================================
+extract_frames() {
+    local EXISTING_COUNT
+    EXISTING_COUNT=$(find "$FRAMES_IN" -maxdepth 1 -name "frame_*.png" 2>/dev/null | wc -l)
+
+    if [[ "$EXISTING_COUNT" -gt 0 ]]; then
+        echo "Frames already extracted: $EXISTING_COUNT"
+        return
+    fi
+
+    echo "Extracting ~$TOTAL_FRAMES frames..."
+    local EX_START
+    EX_START=$(date +%s)
+
+    ffmpeg -i "$INPUT" -qscale:v 2 "$FRAMES_IN/frame_%08d.png" \
+        -loglevel warning -stats
+
+    local EX_END EXTRACTED
+    EX_END=$(date +%s)
+    TIMING_EXTRACTION=$((EX_END - EX_START))
+    EXTRACTED=$(find "$FRAMES_IN" -maxdepth 1 -name "frame_*.png" | wc -l)
+    echo "Extracted $EXTRACTED frames in ${TIMING_EXTRACTION}s"
+    echo
+}
+
+# ============================================================
+# Phase 8: Upscale (calls upscale.py)
+# ============================================================
+upscale_frames() {
+    echo "Upscaling frames (${SCALE}x)..."
+    local UP_START
+    UP_START=$(date +%s)
+
+    python3 "$SCRIPT_DIR/upscale.py" "$FRAMES_IN" "$FRAMES_OUT" "$SCALE"
+
+    local UP_END
+    UP_END=$(date +%s)
+    TIMING_UPSCALING=$((UP_END - UP_START))
+    echo "Upscaling complete in $(echo "scale=1; $TIMING_UPSCALING / 3600" | bc)h (${TIMING_UPSCALING}s)"
+    echo
+}
+
+# ============================================================
+# Phase 9: Reassemble
+# ============================================================
+reassemble_video() {
+    OUTPUT="$WORKDIR/${JOB_NAME}_${SCALE}x.mkv"
+
+    if [[ -f "$OUTPUT" ]]; then
+        echo "Output already exists: $OUTPUT"
+        return
+    fi
+
+    echo "Reassembling video at ${FPS_INT}fps..."
+    local RE_START
+    RE_START=$(date +%s)
+
+    # Check if source has audio
+    local HAS_AUDIO
+    HAS_AUDIO=$(ffprobe -v quiet -select_streams a -show_entries stream=codec_type \
+        -of csv=p=0 "$INPUT" 2>/dev/null || true)
+
+    if [[ -n "$HAS_AUDIO" ]]; then
+        ffmpeg -framerate "$FPS_INT" -i "$FRAMES_OUT/frame_%08d.png" \
+            -i "$INPUT" -map 0:v -map 1:a \
+            -c:v libx264 -crf 18 -preset medium -pix_fmt yuv420p \
+            -c:a copy -y "$OUTPUT" \
+            -loglevel warning -stats
+    else
+        ffmpeg -framerate "$FPS_INT" -i "$FRAMES_OUT/frame_%08d.png" \
+            -c:v libx264 -crf 18 -preset medium -pix_fmt yuv420p \
+            -y "$OUTPUT" \
+            -loglevel warning -stats
+    fi
+
+    local RE_END
+    RE_END=$(date +%s)
+    TIMING_REASSEMBLY=$((RE_END - RE_START))
+    echo "Reassembly complete in ${TIMING_REASSEMBLY}s"
+    echo
+}
+
+# ============================================================
+# Phase 10: Write timing.json
+# ============================================================
+write_timing() {
+    local TIMING_FILE="$WORKDIR/timing.json"
+    python3 -c "
+import json
+timing = {
+    'download': $TIMING_DOWNLOAD,
+    'extraction': $TIMING_EXTRACTION,
+    'upscaling': $TIMING_UPSCALING,
+    'reassembly': $TIMING_REASSEMBLY
+}
+with open('$TIMING_FILE', 'w') as f:
+    json.dump(timing, f, indent=2)
+"
+    echo "Wrote $TIMING_FILE"
+}
+
+# ============================================================
+# Phase 11: Print Summary
+# ============================================================
+print_summary() {
+    local DL=$TIMING_DOWNLOAD
+    local EX=$TIMING_EXTRACTION
+    local UP=$TIMING_UPSCALING
+    local RE=$TIMING_REASSEMBLY
+    local TOTAL_TIME=$((DL + EX + UP + RE))
+    local OVERHEAD=$((DL + EX + RE))
+
+    echo
+    echo "============================================================"
+    echo "TIMING BREAKDOWN"
+    echo "============================================================"
+    echo "  Download:    ${DL}s ($(echo "scale=1; $DL / 60" | bc)m)"
+    echo "  Extraction:  ${EX}s ($(echo "scale=1; $EX / 60" | bc)m)"
+    echo "  Upscaling:   ${UP}s ($(echo "scale=1; $UP / 3600" | bc)h)"
+    echo "  Reassembly:  ${RE}s ($(echo "scale=1; $RE / 60" | bc)m)"
+    echo "  Total:       ${TOTAL_TIME}s ($(echo "scale=1; $TOTAL_TIME / 3600" | bc)h)"
+    if [[ "$TOTAL_TIME" -gt 0 ]]; then
+        local OVERHEAD_PCT
+        OVERHEAD_PCT=$(echo "scale=0; $OVERHEAD * 100 / $TOTAL_TIME" | bc)
+        echo "  Overhead:    ${OVERHEAD}s ($(echo "scale=0; $OVERHEAD / 60" | bc)m, ${OVERHEAD_PCT}% of total)"
+    fi
+
+    OUTPUT="$WORKDIR/${JOB_NAME}_${SCALE}x.mkv"
+    if [[ -f "$OUTPUT" ]]; then
+        local SIZE_MB
+        SIZE_MB=$(du -m "$OUTPUT" | cut -f1)
+        echo
+        echo "Done! Output: $OUTPUT (${SIZE_MB} MB)"
+    fi
+}
+
+# ============================================================
+# Phase 12: Upload (if credentials exist)
+# ============================================================
+upload_video() {
+    OUTPUT="$WORKDIR/${JOB_NAME}_${SCALE}x.mkv"
+
+    if [[ ! -f "$HOME/client_secret.json" ]]; then
+        echo
+        echo "No ~/client_secret.json found, skipping upload."
+        return
+    fi
+
+    if [[ ! -f "$OUTPUT" ]]; then
+        echo
+        echo "No output file found, skipping upload."
+        return
+    fi
+
+    echo
+    echo "Uploading to YouTube..."
+
+    local UPLOAD_OK=0
+    # Try Rust binary first, fall back to Python
+    if command -v youtube_upload &>/dev/null; then
+        if youtube_upload --video-id="$VIDEO_ID" "$OUTPUT" \
+            --client-secret "$HOME/client_secret.json" \
+            --token "$HOME/youtube_token.json"; then
+            UPLOAD_OK=1
+        fi
+    elif [[ -f "$SCRIPT_DIR/youtube_upload.py" ]]; then
+        if python3 "$SCRIPT_DIR/youtube_upload.py" --video-id="$VIDEO_ID" "$OUTPUT"; then
+            UPLOAD_OK=1
+        fi
+    else
+        echo "No upload tool found, skipping upload."
+        return
+    fi
+
+    if [[ "$UPLOAD_OK" -eq 1 ]]; then
+        echo "Upload successful. Cleaning up work directory..."
+        rm -rf "$WORKDIR"
+        # Move JSON from queue to done
+        mkdir -p "$HOME/json_done"
+        if [[ -f "$HOME/json/${VIDEO_ID}.json" ]]; then
+            mv "$HOME/json/${VIDEO_ID}.json" "$HOME/json_done/"
+            echo "Moved ${VIDEO_ID}.json to json_done/"
+        fi
+    else
+        echo "Upload failed. Keeping work directory for retry."
+    fi
+}
+
+# ============================================================
+# Main
+# ============================================================
+main() {
+    parse_args "$@"
+    write_job_meta
+    preflight_checks
+    pre_download_disk_check
+    download_video
+    update_job_meta
+    extract_frames
+    upscale_frames
+    reassemble_video
+    write_timing
+    print_summary
+    upload_video
+}
+
+main "$@"
