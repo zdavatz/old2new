@@ -309,11 +309,13 @@ if [[ -f "$BLACKLIST_FILE" ]]; then
     fi
 fi
 
-# Load cached machine IDs (have our Docker image)
+# Load cached machines (Docker image + benchmark scores)
 CACHE_FILE="$SCRIPT_DIR/cached_machines.txt"
 CACHED=""
+CACHED_BENCH=""  # machine_id:score pairs
 if [[ -f "$CACHE_FILE" ]]; then
     CACHED=$(grep -v '^\s*#' "$CACHE_FILE" | awk '{print $1}' | tr '\n' ',' | sed 's/,$//')
+    CACHED_BENCH=$(grep -v '^\s*#' "$CACHE_FILE" | awk '{print $1":"$2}' | tr '\n' ',' | sed 's/,$//')
 fi
 
 # ============================================================
@@ -325,10 +327,17 @@ search_vastai() {
     local raw
     raw=$(vastai search offers "num_gpus>=${NUM_GPUS} gpu_name=${GPU_NAME} disk_space>=${DISK_GB} cpu_ghz>=${SEARCH_CPU_GHZ} cpu_cores>=${MIN_VCPUS} verified=true" -o 'dph' --raw 2>/dev/null)
     local formatted
-    formatted=$(echo "$raw" | BLACKLISTED="$BLACKLISTED" CACHED="$CACHED" python3 -c "
+    formatted=$(echo "$raw" | BLACKLISTED="$BLACKLISTED" CACHED="$CACHED" CACHED_BENCH="$CACHED_BENCH" python3 -c "
 import json, sys, os
 blacklisted = set(int(x) for x in os.environ.get('BLACKLISTED','').split(',') if x.strip())
 cached = set(int(x) for x in os.environ.get('CACHED','').split(',') if x.strip())
+bench_scores = {}
+for pair in os.environ.get('CACHED_BENCH','').split(','):
+    if ':' in pair:
+        mid, score = pair.split(':', 1)
+        if mid.strip() and score.strip():
+            try: bench_scores[int(mid)] = int(score)
+            except: pass
 CPU_YEAR = {
     '14900': 2023, '13900': 2022, '12900': 2021, '12700': 2021,
     '9950X': 2024, '9900X': 2024, '7950X': 2022, '7900X': 2022, '7900 ': 2022, '5950X': 2020, '5900X': 2020,
@@ -344,7 +353,7 @@ def cpu_year(name):
 data = [d for d in json.load(sys.stdin) if d.get('machine_id') not in blacklisted][:5]
 if not data:
     sys.exit(1)
-hdr = f\"{'Location':<18s} {'ID':<11s} {'GPU':<12s} {'CPU':<26s} {'Yr':>4s} {'GHz':>4s} {'vCPU':>5s} {'Disk':>6s} {'IO MB/s':>8s} {'Net D/U':>10s} {'$/hr':>7s} {'Img'}\"
+hdr = f\"{'Location':<18s} {'ID':<11s} {'GPU':<12s} {'CPU':<26s} {'Yr':>4s} {'GHz':>4s} {'vCPU':>5s} {'Disk':>6s} {'IO MB/s':>8s} {'Net D/U':>10s} {'$/hr':>7s} {'Bench':>6s}\"
 print(hdr)
 print('-' * len(hdr))
 for d in data:
@@ -367,8 +376,9 @@ for d in data:
     inet_down = int(d.get('inet_down', 0) or 0)
     inet_up = int(d.get('inet_up', 0) or 0)
     slow = '*' if disk_bw > 0 and disk_bw < 1000 else ''
-    img = 'YES' if mid in cached else '  -'
-    print(f'{loc:<18s} {oid:<11s} {num}x {gpu:<9s} {cpu_name:<26s} {yr:>4s} {cpu_ghz:>4.1f} {vcpu:>5d} {disk:>5d}G {disk_bw:>7d}{slow} {inet_down:>5d}/{inet_up:<4d} {price:>7.4f} {img}')
+    bs = bench_scores.get(mid, 0)
+    bench = f'{bs/1000000:.1f}M' if bs > 0 else ('  img' if mid in cached else '    -')
+    print(f'{loc:<18s} {oid:<11s} {num}x {gpu:<9s} {cpu_name:<26s} {yr:>4s} {cpu_ghz:>4.1f} {vcpu:>5d} {disk:>5d}G {disk_bw:>7d}{slow} {inet_down:>5d}/{inet_up:<4d} {price:>7.4f} {bench:>6s}')
 " 2>/dev/null)
     if [[ -z "$formatted" ]]; then
         echo "  No matching instances found"
@@ -577,10 +587,17 @@ echo ""
 # Get vast.ai offers (use --raw for cpu_name access)
 SEARCH_RAW=$(vastai search offers "num_gpus>=${NUM_GPUS} gpu_name=${GPU_NAME} disk_space>=${DISK_GB} cpu_ghz>=${SEARCH_CPU_GHZ} cpu_cores>=${MIN_VCPUS} verified=true" -o 'dph' --raw 2>/dev/null)
 
-OFFER_LIST=$(echo "$SEARCH_RAW" | BLACKLISTED="$BLACKLISTED" CACHED="$CACHED" python3 -c "
+OFFER_LIST=$(echo "$SEARCH_RAW" | BLACKLISTED="$BLACKLISTED" CACHED="$CACHED" CACHED_BENCH="$CACHED_BENCH" python3 -c "
 import json, sys, os, re
 blacklisted = set(int(x) for x in os.environ.get('BLACKLISTED','').split(',') if x.strip())
 cached = set(int(x) for x in os.environ.get('CACHED','').split(',') if x.strip())
+bench_scores = {}
+for pair in os.environ.get('CACHED_BENCH','').split(','):
+    if ':' in pair:
+        mid, score = pair.split(':', 1)
+        if mid.strip() and score.strip():
+            try: bench_scores[int(mid)] = int(score)
+            except: pass
 CPU_YEAR = {
     '14900': 2023, '13900': 2022, '12900': 2021, '12700': 2021, '11900': 2021,
     '9950X': 2024, '9900X': 2024, '7950X': 2022, '7900X': 2022, '7900 ': 2022, '5950X': 2020, '5900X': 2020, '3950X': 2019,
@@ -598,7 +615,7 @@ def cpu_year(name):
 data = [d for d in json.load(sys.stdin) if d.get('machine_id') not in blacklisted][:7]
 if not data:
     sys.exit(1)
-hdr = f\"{'#':>3s} {'Location':<18s} {'GPU':<12s} {'CPU':<26s} {'Yr':>4s} {'GHz':>4s} {'vCPU':>5s} {'Disk':>6s} {'IO MB/s':>8s} {'Net D/U':>10s} {'$/hr':>7s} {'ID':>11s} {'Img'}\"
+hdr = f\"{'#':>3s} {'Location':<18s} {'GPU':<12s} {'CPU':<26s} {'Yr':>4s} {'GHz':>4s} {'vCPU':>5s} {'Disk':>6s} {'IO MB/s':>8s} {'Net D/U':>10s} {'$/hr':>7s} {'ID':>11s} {'Bench':>6s}\"
 print(hdr)
 print('-' * len(hdr))
 for i, d in enumerate(data):
@@ -622,8 +639,9 @@ for i, d in enumerate(data):
     oid = str(d.get('id', '?'))
     mid = d.get('machine_id', 0)
     slow = '*' if disk_bw > 0 and disk_bw < 1000 else ''
-    img = 'YES' if mid in cached else '  -'
-    print(f'[{i+1:>1}] {loc:<18s} {num}x {gpu:<9s} {cpu_name:<26s} {yr:>4s} {cpu_ghz:>4.1f} {vcpu:>5d} {disk:>5d}G {disk_bw:>7d}{slow} {inet_down:>5d}/{inet_up:<4d} {price:>7.4f} {oid:>11s} {img}')
+    bs = bench_scores.get(mid, 0)
+    bench = f'{bs/1000000:.1f}M' if bs > 0 else ('  img' if mid in cached else '    -')
+    print(f'[{i+1:>1}] {loc:<18s} {num}x {gpu:<9s} {cpu_name:<26s} {yr:>4s} {cpu_ghz:>4.1f} {vcpu:>5d} {disk:>5d}G {disk_bw:>7d}{slow} {inet_down:>5d}/{inet_up:<4d} {price:>7.4f} {oid:>11s} {bench:>6s}')
 " 2>/dev/null)
 
 if [[ -z "$OFFER_LIST" ]]; then
@@ -816,11 +834,12 @@ if [[ "$bench_rating" == "TOO SLOW" ]]; then
     echo ""
     read -p "  Continue anyway, or destroy instance? [c=continue / D=destroy] " cpu_choice
     if [[ "$cpu_choice" != "c" && "$cpu_choice" != "C" ]]; then
-        # Blacklist this machine so we don't pick it again
+        # Save slow benchmark score to cache — will show in future listings
         MACHINE_ID=$(vastai show instance "$INSTANCE_ID" --raw 2>/dev/null | python3 -c "import json,sys; print(json.load(sys.stdin).get('machine_id',''))" 2>/dev/null)
         if [[ -n "$MACHINE_ID" ]]; then
-            echo "${MACHINE_ID}  # ${actual_cpu_model} — bench ${bench_display} (too slow)" >> "$BLACKLIST_FILE"
-            echo "  Blacklisted machine $MACHINE_ID (${actual_cpu_model})"
+            sed -i "/^${MACHINE_ID} /d" "$CACHE_FILE" 2>/dev/null
+            echo "${MACHINE_ID}  ${bench_score:-0}  # ${OFFER_LOCATION} — ${actual_cpu_model} — SLOW" >> "$CACHE_FILE"
+            echo "  Saved benchmark ${bench_display} for machine $MACHINE_ID (visible in future listings)"
         fi
         echo "  Destroying instance $INSTANCE_ID..."
         vastai destroy instance "$INSTANCE_ID" 2>/dev/null
@@ -903,10 +922,12 @@ ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeou
     "sudo bash -c 'cd /root && nohup ./multi_gpu_queue.sh $NUM_GPUS >> /root/enhance.log 2>&1 &'" 2>/dev/null
 echo "Started multi_gpu_queue.sh on $NUM_GPUS GPU(s)"
 
-# Save machine_id to cache list (has our Docker image now)
+# Save machine_id + benchmark score to cache (has our Docker image now)
 DEPLOY_MACHINE_ID=$(vastai show instance "$INSTANCE_ID" --raw 2>/dev/null | python3 -c "import json,sys; print(json.load(sys.stdin).get('machine_id',''))" 2>/dev/null)
-if [[ -n "$DEPLOY_MACHINE_ID" ]] && ! grep -q "^${DEPLOY_MACHINE_ID} " "$CACHE_FILE" 2>/dev/null; then
-    echo "${DEPLOY_MACHINE_ID}  # ${OFFER_LOCATION} — ${NUM_GPUS}x ${GPU_LABEL}" >> "$CACHE_FILE"
+if [[ -n "$DEPLOY_MACHINE_ID" ]]; then
+    # Remove old entry for this machine (if any) and add with current benchmark
+    sed -i "/^${DEPLOY_MACHINE_ID} /d" "$CACHE_FILE" 2>/dev/null
+    echo "${DEPLOY_MACHINE_ID}  ${bench_score:-0}  # ${OFFER_LOCATION} — ${NUM_GPUS}x ${GPU_LABEL} — ${actual_cpu_model}" >> "$CACHE_FILE"
 fi
 
 echo "Done."

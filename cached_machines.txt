@@ -1,12 +1,13 @@
-# Machines that have ghcr.io/zdavatz/realesrgan-benchmark:latest cached
-# Format: machine_id  # location / notes
-# Auto-updated by deploy.sh after successful instance creation
-13428  # British Columbia, CA — 4x RTX 4090
-30252  # Norway, NO — 1x RTX 5090
-32889  # Japan, JP — 1x RTX 5090
-40979  # Taiwan, TW — 4x RTX 5090
-41076  # Taiwan, TW — 4x RTX 5090
-51417  # Taiwan, TW — 4x RTX 5090
-51714  # North Carolina, US — 4x RTX 5090
-53637  # Washington, US — 1x RTX 5090
-53711  # South Korea, KR — 1x RTX 5090
+# Machines tested with ghcr.io/zdavatz/realesrgan-benchmark:latest
+# Format: machine_id  bench_score  # location — GPU config — CPU model
+# bench_score: hashes/sec (0=not tested). Ryzen 9950X=1.8M, 7950X=1.5M, <0.8M=too slow
+# Auto-updated by deploy.sh after successful deploy
+13428  0  # British Columbia, CA — 4x RTX 4090
+30252  0  # Norway, NO — 1x RTX 5090
+32889  0  # Japan, JP — 1x RTX 5090
+40979  0  # Taiwan, TW — 4x RTX 5090
+41076  0  # Taiwan, TW — 4x RTX 5090
+51417  0  # Taiwan, TW — 4x RTX 5090
+51714  0  # North Carolina, US — 4x RTX 5090
+53637  0  # Washington, US — 1x RTX 5090
+53711  0  # South Korea, KR — 1x RTX 5090
