@@ -329,10 +329,22 @@ search_vastai() {
 import json, sys, os
 blacklisted = set(int(x) for x in os.environ.get('BLACKLISTED','').split(',') if x.strip())
 cached = set(int(x) for x in os.environ.get('CACHED','').split(',') if x.strip())
+CPU_YEAR = {
+    '14900': 2023, '13900': 2022, '12900': 2021, '12700': 2021,
+    '9950X': 2024, '9900X': 2024, '7950X': 2022, '7900X': 2022, '7900 ': 2022, '5950X': 2020, '5900X': 2020,
+    '7960X': 2023, '7970X': 2023, '7975WX': 2023, '7980X': 2023, '5975WX': 2022,
+    'EPYC 97': 2024, 'EPYC 96': 2024, 'EPYC 93': 2022, 'EPYC 77': 2020,
+    '8592': 2024, '8490': 2023, '8481': 2023, '8380': 2021, '6530': 2024, '6430': 2023,
+    '285K': 2024, 'Ultra 9': 2024, 'Ultra 7': 2024, 'Ultra 5': 2024,
+}
+def cpu_year(name):
+    for key, yr in CPU_YEAR.items():
+        if key in name: return str(yr)
+    return '  ?'
 data = [d for d in json.load(sys.stdin) if d.get('machine_id') not in blacklisted][:5]
 if not data:
     sys.exit(1)
-hdr = f\"{'Location':<18s} {'ID':<11s} {'GPU':<12s} {'CPU':<26s} {'GHz':>4s} {'vCPU':>5s} {'Disk':>6s} {'IO MB/s':>8s} {'Net D/U':>10s} {'$/hr':>7s} {'Img'}\"
+hdr = f\"{'Location':<18s} {'ID':<11s} {'GPU':<12s} {'CPU':<26s} {'Yr':>4s} {'GHz':>4s} {'vCPU':>5s} {'Disk':>6s} {'IO MB/s':>8s} {'Net D/U':>10s} {'$/hr':>7s} {'Img'}\"
 print(hdr)
 print('-' * len(hdr))
 for d in data:
@@ -342,6 +354,7 @@ for d in data:
     gpu = d.get('gpu_name', '?')
     cpu_ghz = d.get('cpu_ghz', 0) or 0
     cpu_name = d.get('cpu_name', '?')
+    yr = cpu_year(cpu_name)
     for rm in ['Intel(R) ', 'AMD ', '(R)', '(TM)', ' Processor', '-Core']:
         cpu_name = cpu_name.replace(rm, '')
     if len(cpu_name) > 25: cpu_name = cpu_name[:25]
@@ -355,7 +368,7 @@ for d in data:
     inet_up = int(d.get('inet_up', 0) or 0)
     slow = '*' if disk_bw > 0 and disk_bw < 1000 else ''
     img = 'YES' if mid in cached else '  -'
-    print(f'{loc:<18s} {oid:<11s} {num}x {gpu:<9s} {cpu_name:<26s} {cpu_ghz:>4.1f} {vcpu:>5d} {disk:>5d}G {disk_bw:>7d}{slow} {inet_down:>5d}/{inet_up:<4d} {price:>7.4f} {img}')
+    print(f'{loc:<18s} {oid:<11s} {num}x {gpu:<9s} {cpu_name:<26s} {yr:>4s} {cpu_ghz:>4.1f} {vcpu:>5d} {disk:>5d}G {disk_bw:>7d}{slow} {inet_down:>5d}/{inet_up:<4d} {price:>7.4f} {img}')
 " 2>/dev/null)
     if [[ -z "$formatted" ]]; then
         echo "  No matching instances found"
@@ -565,13 +578,27 @@ echo ""
 SEARCH_RAW=$(vastai search offers "num_gpus>=${NUM_GPUS} gpu_name=${GPU_NAME} disk_space>=${DISK_GB} cpu_ghz>=${SEARCH_CPU_GHZ} cpu_cores>=${MIN_VCPUS} verified=true" -o 'dph' --raw 2>/dev/null)
 
 OFFER_LIST=$(echo "$SEARCH_RAW" | BLACKLISTED="$BLACKLISTED" CACHED="$CACHED" python3 -c "
-import json, sys, os
+import json, sys, os, re
 blacklisted = set(int(x) for x in os.environ.get('BLACKLISTED','').split(',') if x.strip())
 cached = set(int(x) for x in os.environ.get('CACHED','').split(',') if x.strip())
+CPU_YEAR = {
+    '14900': 2023, '13900': 2022, '12900': 2021, '12700': 2021, '11900': 2021,
+    '9950X': 2024, '9900X': 2024, '7950X': 2022, '7900X': 2022, '7900 ': 2022, '5950X': 2020, '5900X': 2020, '3950X': 2019,
+    '7960X': 2023, '7970X': 2023, '7975WX': 2023, '7980X': 2023, '5975WX': 2022, '3970X': 2019, '3990X': 2020,
+    'EPYC 97': 2024, 'EPYC 96': 2024, 'EPYC 95': 2024, 'EPYC 93': 2022, 'EPYC 77': 2020, 'EPYC 75': 2019,
+    '8592': 2024, '8490': 2023, '8481': 2023, '8380': 2021, '8375': 2021, '8358': 2021, '8272': 2019,
+    '6530': 2024, '6448': 2024, '6430': 2023, '6348': 2021, '6258': 2019,
+    'W9-3595': 2024, 'W9-3545': 2024, 'W7-3465': 2023, 'W7-3455': 2023,
+    '285K': 2024, 'Ultra 9': 2024, 'Ultra 7': 2024, 'Ultra 5': 2024,
+}
+def cpu_year(name):
+    for key, yr in CPU_YEAR.items():
+        if key in name: return str(yr)
+    return '  ?'
 data = [d for d in json.load(sys.stdin) if d.get('machine_id') not in blacklisted][:7]
 if not data:
     sys.exit(1)
-hdr = f\"{'#':>3s} {'Location':<18s} {'GPU':<12s} {'CPU':<26s} {'GHz':>4s} {'vCPU':>5s} {'Disk':>6s} {'IO MB/s':>8s} {'Net D/U':>10s} {'$/hr':>7s} {'ID':>11s} {'Img'}\"
+hdr = f\"{'#':>3s} {'Location':<18s} {'GPU':<12s} {'CPU':<26s} {'Yr':>4s} {'GHz':>4s} {'vCPU':>5s} {'Disk':>6s} {'IO MB/s':>8s} {'Net D/U':>10s} {'$/hr':>7s} {'ID':>11s} {'Img'}\"
 print(hdr)
 print('-' * len(hdr))
 for i, d in enumerate(data):
@@ -581,6 +608,7 @@ for i, d in enumerate(data):
     gpu = d.get('gpu_name', '?')
     cpu_ghz = d.get('cpu_ghz', 0) or 0
     cpu_name = d.get('cpu_name', '?')
+    yr = cpu_year(cpu_name)
     for rm in ['Intel(R) ', 'AMD ', '(R)', '(TM)', ' Processor', '-Core']:
         cpu_name = cpu_name.replace(rm, '')
     cpu_name = cpu_name.strip()
@@ -595,7 +623,7 @@ for i, d in enumerate(data):
     mid = d.get('machine_id', 0)
     slow = '*' if disk_bw > 0 and disk_bw < 1000 else ''
     img = 'YES' if mid in cached else '  -'
-    print(f'[{i+1:>1}] {loc:<18s} {num}x {gpu:<9s} {cpu_name:<26s} {cpu_ghz:>4.1f} {vcpu:>5d} {disk:>5d}G {disk_bw:>7d}{slow} {inet_down:>5d}/{inet_up:<4d} {price:>7.4f} {oid:>11s} {img}')
+    print(f'[{i+1:>1}] {loc:<18s} {num}x {gpu:<9s} {cpu_name:<26s} {yr:>4s} {cpu_ghz:>4.1f} {vcpu:>5d} {disk:>5d}G {disk_bw:>7d}{slow} {inet_down:>5d}/{inet_up:<4d} {price:>7.4f} {oid:>11s} {img}')
 " 2>/dev/null)
 
 if [[ -z "$OFFER_LIST" ]]; then
