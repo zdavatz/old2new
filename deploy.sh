@@ -627,12 +627,53 @@ if [[ -z "$SSH_HOST" ]]; then
 fi
 
 # ============================================================
-# Phase 7: Deploy everything
+# Phase 7: Verify actual CPU speed (vast.ai reports boost clock, not actual)
+# ============================================================
+echo ""
+echo "=== Verifying instance hardware ==="
+SSH="ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=10 root@$SSH_HOST -p $SSH_PORT"
+SCP="scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -P $SSH_PORT"
+
+ACTUAL_HW=$($SSH '
+    cpu_mhz=$(grep "cpu MHz" /proc/cpuinfo | head -1 | awk -F: "{print \$2}" | xargs)
+    cpu_model=$(grep "model name" /proc/cpuinfo | head -1 | awk -F: "{print \$2}" | xargs)
+    gpu=$(nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null | head -1)
+    gpu_count=$(nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null | wc -l)
+    ram_gb=$(free -g | grep Mem | awk "{print \$2}")
+    disk_free_gb=$(df -BG / | tail -1 | awk "{print \$4}" | tr -d "G")
+    echo "$cpu_mhz|$cpu_model|$gpu|$gpu_count|$ram_gb|$disk_free_gb"
+' 2>/dev/null)
+
+IFS='|' read -r actual_mhz actual_cpu_model actual_gpu actual_gpu_count actual_ram actual_disk <<< "$ACTUAL_HW"
+actual_ghz=$(python3 -c "print(f'{float(\"${actual_mhz:-0}\") / 1000:.1f}')" 2>/dev/null)
+
+echo "  CPU: $actual_cpu_model @ ${actual_ghz} GHz (actual)"
+echo "  GPU: ${actual_gpu_count}x $actual_gpu"
+echo "  RAM: ${actual_ram} GB"
+echo "  Disk free: ${actual_disk} GB"
+
+if python3 -c "exit(0 if float('${actual_ghz:-0}') < float('$MIN_CPU_GHZ') else 1)" 2>/dev/null; then
+    echo ""
+    echo "  *** CPU TOO SLOW: ${actual_ghz} GHz actual < ${MIN_CPU_GHZ} GHz minimum ***"
+    echo "  vast.ai reported boost clock, but actual speed is ${actual_ghz} GHz."
+    echo "  RTX 5090 HD videos will be very slow (~0.3 fps instead of ~0.5 fps)."
+    echo ""
+    read -p "  Continue anyway, or destroy instance? [c=continue / D=destroy] " cpu_choice
+    if [[ "$cpu_choice" != "c" && "$cpu_choice" != "C" ]]; then
+        echo "  Destroying instance $INSTANCE_ID..."
+        vastai destroy instance "$INSTANCE_ID" 2>/dev/null
+        echo "  Instance destroyed."
+        INSTANCE_ID=""
+        exit 1
+    fi
+    echo "  Continuing with slow CPU..."
+fi
+
+# ============================================================
+# Phase 8: Deploy everything
 # ============================================================
 echo ""
 echo "=== Deploying ==="
-SSH="ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=10 root@$SSH_HOST -p $SSH_PORT"
-SCP="scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -P $SSH_PORT"
 
 # Scripts
 $SCP "$SCRIPT_DIR/enhance.sh" "$SCRIPT_DIR/upscale.py" "$SCRIPT_DIR/multi_gpu_queue.sh" root@"$SSH_HOST":/root/ 2>/dev/null
@@ -670,7 +711,7 @@ EOF" 2>/dev/null
 $SSH 'chmod +x /root/enhance.sh /root/multi_gpu_queue.sh /root/status_server /root/youtube_upload 2>/dev/null' 2>/dev/null
 
 # ============================================================
-# Phase 8: Start processing
+# Phase 9: Start processing
 # ============================================================
 # Get the vast.ai proxy host for dashboard URL (port+1 only works via proxy)
 PROXY_HOST=$(vastai show instance "$INSTANCE_ID" 2>/dev/null | tail -1 | awk '{print $10}')
