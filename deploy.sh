@@ -674,6 +674,14 @@ cleanup_on_abort() {
     echo ""
     echo "Aborted!"
     if [[ -n "$INSTANCE_ID" ]]; then
+        # Blacklist machine if instance never became usable
+        if [[ -z "$SSH_HOST" ]]; then
+            ABORT_MACHINE_ID=$(vastai show instance "$INSTANCE_ID" --raw 2>/dev/null | python3 -c "import json,sys; print(json.load(sys.stdin).get('machine_id',''))" 2>/dev/null)
+            if [[ -n "$ABORT_MACHINE_ID" ]]; then
+                echo "${ABORT_MACHINE_ID}  # ${OFFER_LOCATION:-?} — aborted, never started" >> "$BLACKLIST_FILE"
+                echo "  Blacklisted machine $ABORT_MACHINE_ID"
+            fi
+        fi
         echo "Destroying instance $INSTANCE_ID..."
         vastai destroy instance "$INSTANCE_ID" 2>/dev/null
         echo "Instance destroyed."
@@ -737,8 +745,14 @@ done
 if [[ -z "$SSH_HOST" ]]; then
     echo ""
     echo "ERROR: Instance $INSTANCE_ID did not start within 10 minutes"
-    read -p "Destroy instance? [Y/n] " destroy_confirm
+    read -p "Destroy and blacklist machine? [Y/n] " destroy_confirm
     if [[ "$destroy_confirm" != "n" && "$destroy_confirm" != "N" ]]; then
+        # Blacklist this machine — it can't start properly
+        STUCK_MACHINE_ID=$(vastai show instance "$INSTANCE_ID" --raw 2>/dev/null | python3 -c "import json,sys; print(json.load(sys.stdin).get('machine_id',''))" 2>/dev/null)
+        if [[ -n "$STUCK_MACHINE_ID" ]]; then
+            echo "${STUCK_MACHINE_ID}  # ${OFFER_LOCATION} — stuck loading, never started" >> "$BLACKLIST_FILE"
+            echo "  Blacklisted machine $STUCK_MACHINE_ID"
+        fi
         vastai destroy instance "$INSTANCE_ID" 2>/dev/null
         echo "Instance $INSTANCE_ID destroyed."
         INSTANCE_ID=""  # prevent trap from destroying again
