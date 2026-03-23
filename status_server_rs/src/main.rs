@@ -1443,7 +1443,7 @@ async function update() {
     const paused = d.videos.filter(v => v.status === 'paused');
     const done = d.videos.filter(v => v.status === 'done');
     const queued = d.videos.filter(v => v.status === 'queued');
-    const other = d.videos.filter(v => !['done','upscaling','paused','queued'].includes(v.status));
+    const other = d.videos.filter(v => !['done','upscaling','paused','queued','downloading','extracting','assembling','uploading'].includes(v.status));
 
     const perGpu = d.per_gpu_fps || {};
     const gpuCount = Object.keys(perGpu).length || (d.system.gpu_count || 1);
