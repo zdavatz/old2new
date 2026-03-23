@@ -305,12 +305,33 @@ echo ""
 
 search_vastai() {
     echo "=== vast.ai ==="
-    local results
-    results=$(vastai search offers "num_gpus>=${NUM_GPUS} gpu_name=${GPU_NAME} disk_space>=${DISK_GB} cpu_ghz>=${SEARCH_CPU_GHZ} cpu_cores>=${MIN_VCPUS} verified=true" -o 'dph' 2>/dev/null | head -6)
-    if [[ -z "$results" || $(echo "$results" | wc -l) -le 1 ]]; then
+    local raw
+    raw=$(vastai search offers "num_gpus>=${NUM_GPUS} gpu_name=${GPU_NAME} disk_space>=${DISK_GB} cpu_ghz>=${SEARCH_CPU_GHZ} cpu_cores>=${MIN_VCPUS} verified=true" -o 'dph' --raw 2>/dev/null)
+    local formatted
+    formatted=$(echo "$raw" | python3 -c "
+import json, sys
+data = json.load(sys.stdin)[:5]
+if not data:
+    sys.exit(1)
+for d in data:
+    loc = d.get('geolocation', '?')
+    num = d.get('num_gpus', 1)
+    gpu = d.get('gpu_name', '?')
+    cpu_ghz = d.get('cpu_ghz', 0) or 0
+    cpu_name = d.get('cpu_name', '?')
+    for rm in ['Intel(R) ', 'AMD ', '(R)', '(TM)', ' Processor', '-Core']:
+        cpu_name = cpu_name.replace(rm, '')
+    vcpu = d.get('cpu_cores_effective', 0) or 0
+    ram_gb = (d.get('cpu_ram', 0) or 0) / 1024
+    disk = d.get('disk_space', 0) or 0
+    price = d.get('dph_total', 0) or 0
+    oid = d.get('id', '?')
+    print(f'{oid:<12} {num}x {gpu:<10s} {cpu_name:<28s} {cpu_ghz:.1f}GHz {int(vcpu)}vCPU {ram_gb:.0f}GB RAM {disk:.0f}GB \${price:.2f}/hr {loc}')
+" 2>/dev/null)
+    if [[ -z "$formatted" ]]; then
         echo "  No matching instances found"
     else
-        echo "$results"
+        echo "$formatted"
     fi
     echo ""
 }
@@ -516,24 +537,44 @@ fi
 # ============================================================
 echo ""
 
-# Get vast.ai offers
-SEARCH_RESULTS=$(vastai search offers "num_gpus>=${NUM_GPUS} gpu_name=${GPU_NAME} disk_space>=${DISK_GB} cpu_ghz>=${SEARCH_CPU_GHZ} cpu_cores>=${MIN_VCPUS} verified=true" -o 'dph' 2>/dev/null | head -8)
+# Get vast.ai offers (use --raw for cpu_name access)
+SEARCH_RAW=$(vastai search offers "num_gpus>=${NUM_GPUS} gpu_name=${GPU_NAME} disk_space>=${DISK_GB} cpu_ghz>=${SEARCH_CPU_GHZ} cpu_cores>=${MIN_VCPUS} verified=true" -o 'dph' --raw 2>/dev/null)
 
-if [[ -z "$SEARCH_RESULTS" || $(echo "$SEARCH_RESULTS" | wc -l) -le 1 ]]; then
+OFFER_LIST=$(echo "$SEARCH_RAW" | python3 -c "
+import json, sys
+data = json.load(sys.stdin)[:7]  # top 7 by price
+if not data:
+    sys.exit(1)
+for i, d in enumerate(data):
+    loc = d.get('geolocation', '?')
+    num = d.get('num_gpus', 1)
+    gpu = d.get('gpu_name', '?')
+    cpu_ghz = d.get('cpu_ghz', 0) or 0
+    cpu_name = d.get('cpu_name', '?')
+    # Shorten cpu_name: remove 'Intel(R)', 'AMD', '(R)', '(TM)', '-Core Processor'
+    for rm in ['Intel(R) ', 'AMD ', '(R)', '(TM)', ' Processor', '-Core']:
+        cpu_name = cpu_name.replace(rm, '')
+    cpu_name = cpu_name.strip()
+    vcpu = d.get('cpu_cores_effective', 0) or 0
+    ram = d.get('cpu_ram', 0) or 0
+    ram_gb = ram / 1024
+    disk = d.get('disk_space', 0) or 0
+    price = d.get('dph_total', 0) or 0
+    oid = d.get('id', '?')
+    print(f'[{i+1}] {loc:<20s} {num}x {gpu:<10s}  {cpu_name:<28s} {cpu_ghz:.1f}GHz(boost) {int(vcpu)}vCPU  {ram_gb:.0f}GB RAM  {disk:.0f}GB disk  \${price:.4f}/hr  ({oid})')
+" 2>/dev/null)
+
+if [[ -z "$OFFER_LIST" ]]; then
     echo "No matching instances found on vast.ai!"
     exit 1
 fi
 
 # Show numbered list of offers
 echo "=== Available instances (need ${DISK_GB} GB disk) ==="
-echo "$SEARCH_RESULTS" | awk -v need="$DISK_GB" 'NR==1 {next} {
-    id=$1; gpu=$4; pcie=$5; cpu=$6; vcpu=$7; ram=$8; disk=$9; price=$10; net_up=$16; net_down=$17; loc=$NF
-    printf "[%d] %-20s %sx %s  CPU: %s GHz (boost)  vCPUs: %s  RAM: %s GB  Disk: %s GB (need %s GB)  $%s/hr  (%s)\n", NR-1, loc, $3, gpu, cpu, vcpu, ram, disk, need, price, id
-}'
+echo "$OFFER_LIST"
 echo ""
 
-NUM_OFFERS=$(echo "$SEARCH_RESULTS" | wc -l)
-NUM_OFFERS=$((NUM_OFFERS - 1))  # minus header
+NUM_OFFERS=$(echo "$OFFER_LIST" | wc -l)
 
 read -p "Select instance [1-${NUM_OFFERS}], or 'n' to abort: " choice
 if [[ "$choice" == "n" || "$choice" == "N" || -z "$choice" ]]; then
@@ -547,10 +588,14 @@ if ! [[ "$choice" =~ ^[0-9]+$ ]] || [[ "$choice" -lt 1 || "$choice" -gt "$NUM_OF
     exit 1
 fi
 
-SELECTED_ROW=$((choice + 1))  # +1 for header
-OFFER_ID=$(echo "$SEARCH_RESULTS" | awk "NR==$SELECTED_ROW {print \$1}")
-OFFER_PRICE=$(echo "$SEARCH_RESULTS" | awk "NR==$SELECTED_ROW {print \$10}")
-OFFER_LOCATION=$(echo "$SEARCH_RESULTS" | awk "NR==$SELECTED_ROW {print \$NF}")
+# Extract offer details from raw JSON by index
+SELECTED_IDX=$((choice - 1))
+read -r OFFER_ID OFFER_PRICE OFFER_LOCATION <<< "$(echo "$SEARCH_RAW" | python3 -c "
+import json, sys
+data = json.load(sys.stdin)[:7]
+d = data[$SELECTED_IDX]
+print(d.get('id',''), f\"{d.get('dph_total',0):.4f}\", d.get('geolocation','?'))
+" 2>/dev/null)"
 
 echo ""
 echo "Selected: ID=$OFFER_ID, \$${OFFER_PRICE}/hr, $OFFER_LOCATION"
