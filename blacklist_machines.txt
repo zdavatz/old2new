@@ -1,0 +1,5 @@
+30252  # AMD Ryzen Threadripper PRO 7975WX 32-Cores @ 1.5 GHz — too slow
+55712  # Texas, US — aborted, never started
+28876  # Ontario, CA — aborted, never started
+46165  # Argentina, AR — aborted, never started
+11051  # Japan, JP — aborted, never started

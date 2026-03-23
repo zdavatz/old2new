@@ -11,3 +11,11 @@
 51714  0  # North Carolina, US — 4x RTX 5090
 53637  0  # Washington, US — 1x RTX 5090
 53711  0  # South Korea, KR — 1x RTX 5090
+46469  3924172  # New York, US — 1x RTX 5090 — AMD Ryzen Threadripper 7960X 24-Cores
+55712  3967641  # Texas — AMD Ryzen 9 7950X 16-Core Processor
+34847  4811052  # Ontario, CA — 1x RTX 5090 — AMD Ryzen 9 9950X 16-Core Processor
+45826  5156128  # Spain, ES — 1x RTX 5090 — AMD Ryzen 9 9950X 16-Core Processor
+45820  4854350  # Spain, ES — 1x RTX 5090 — AMD Ryzen 9 9950X 16-Core Processor
+43685  5223319  # Spain, ES — 1x RTX 5090 — AMD Ryzen 9 9950X 16-Core Processor
+55896  5067800  # Texas, US — 1x RTX 5090 — AMD Ryzen 9 9950X3D 16-Core Processor
+35097  4090982  # Quebec, CA — 1x RTX 5090 — AMD Ryzen 9 9950X 16-Core Processor
