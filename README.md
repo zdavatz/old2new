@@ -121,7 +121,22 @@ The script automatically:
 - Shows numbered list of matching instances — user chooses (not auto-cheapest)
 - Deploys scripts, Rust binaries, credentials, and JSON queue
 - Starts `multi_gpu_queue.sh` (multi-GPU) or `enhance.sh` (single-GPU)
-- **Safety**: Ctrl+C auto-destroys created instance (no cost leak). Instance stuck loading > 5 min → asks to destroy.
+- **Safety**: Ctrl+C auto-destroys created instance (no cost leak). Instance stuck loading > 10 min → asks to destroy.
+
+#### Dashboard (Rust)
+
+Each instance runs a Rust dashboard binary (`status_server`) on port 8080, showing real-time progress for all pipeline phases:
+
+| Phase | Progress shown |
+|-------|---------------|
+| downloading | yt-dlp download percentage |
+| extracting | frame count |
+| upscaling | frames done/total, fps per GPU |
+| assembling | ffmpeg frame count, speed (e.g. "frame 12345/44382 (28%) 30.5x") |
+| uploading | upload percentage + file size (e.g. "45% of 1234 MB") |
+| done | output file size |
+
+Access via `http://<ssh-host>:<ssh-port+1>` on vast.ai. The dashboard auto-scans `~/jobs/` for live status and `~/json/` for the video queue — no manual `video_queue.json` needed.
 
 ### Legacy: Single Video (vast.ai)
 
