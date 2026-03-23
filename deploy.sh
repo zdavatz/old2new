@@ -329,7 +329,7 @@ for d in data:
     inet_down = d.get('inet_down', 0) or 0
     inet_up = d.get('inet_up', 0) or 0
     disk_warn = ' !!SLOW' if disk_bw > 0 and disk_bw < 1000 else ''
-    print(f'{oid:<12} {num}x {gpu:<10s} {cpu_name:<28s} {cpu_ghz:.1f}GHz {int(vcpu)}vCPU {disk:.0f}GB {disk_bw:.0f}MB/s{disk_warn} Net:{inet_down:.0f}/{inet_up:.0f} \${price:.2f}/hr {loc}')
+    print(f'{loc:<20s} {oid:<12} {num}x {gpu:<10s} {cpu_name:<28s} {cpu_ghz:.1f}GHz {int(vcpu)}vCPU {disk:.0f}GB {disk_bw:.0f}MB/s{disk_warn} Net:{inet_down:.0f}/{inet_up:.0f} \${price:.2f}/hr')
 " 2>/dev/null)
     if [[ -z "$formatted" ]]; then
         echo "  No matching instances found"
