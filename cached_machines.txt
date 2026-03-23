@@ -1,0 +1,12 @@
+# Machines that have ghcr.io/zdavatz/realesrgan-benchmark:latest cached
+# Format: machine_id  # location / notes
+# Auto-updated by deploy.sh after successful instance creation
+13428  # British Columbia, CA — 4x RTX 4090
+30252  # Norway, NO — 1x RTX 5090
+32889  # Japan, JP — 1x RTX 5090
+40979  # Taiwan, TW — 4x RTX 5090
+41076  # Taiwan, TW — 4x RTX 5090
+51417  # Taiwan, TW — 4x RTX 5090
+51714  # North Carolina, US — 4x RTX 5090
+53637  # Washington, US — 1x RTX 5090
+53711  # South Korea, KR — 1x RTX 5090

@@ -309,6 +309,13 @@ if [[ -f "$BLACKLIST_FILE" ]]; then
     fi
 fi
 
+# Load cached machine IDs (have our Docker image)
+CACHE_FILE="$SCRIPT_DIR/cached_machines.txt"
+CACHED=""
+if [[ -f "$CACHE_FILE" ]]; then
+    CACHED=$(grep -v '^\s*#' "$CACHE_FILE" | awk '{print $1}' | tr '\n' ',' | sed 's/,$//')
+fi
+
 # ============================================================
 # Phase 3: Search providers
 # ============================================================
@@ -318,13 +325,14 @@ search_vastai() {
     local raw
     raw=$(vastai search offers "num_gpus>=${NUM_GPUS} gpu_name=${GPU_NAME} disk_space>=${DISK_GB} cpu_ghz>=${SEARCH_CPU_GHZ} cpu_cores>=${MIN_VCPUS} verified=true" -o 'dph' --raw 2>/dev/null)
     local formatted
-    formatted=$(echo "$raw" | BLACKLISTED="$BLACKLISTED" python3 -c "
+    formatted=$(echo "$raw" | BLACKLISTED="$BLACKLISTED" CACHED="$CACHED" python3 -c "
 import json, sys, os
 blacklisted = set(int(x) for x in os.environ.get('BLACKLISTED','').split(',') if x.strip())
+cached = set(int(x) for x in os.environ.get('CACHED','').split(',') if x.strip())
 data = [d for d in json.load(sys.stdin) if d.get('machine_id') not in blacklisted][:5]
 if not data:
     sys.exit(1)
-hdr = f\"{'Location':<18s} {'ID':<11s} {'GPU':<12s} {'CPU':<26s} {'GHz':>4s} {'vCPU':>5s} {'Disk':>6s} {'IO MB/s':>8s} {'Net D/U':>10s} {'$/hr':>7s}\"
+hdr = f\"{'Location':<18s} {'ID':<11s} {'GPU':<12s} {'CPU':<26s} {'GHz':>4s} {'vCPU':>5s} {'Disk':>6s} {'IO MB/s':>8s} {'Net D/U':>10s} {'$/hr':>7s} {'Img'}\"
 print(hdr)
 print('-' * len(hdr))
 for d in data:
@@ -341,11 +349,13 @@ for d in data:
     disk = int(d.get('disk_space', 0) or 0)
     disk_bw = int(d.get('disk_bw', 0) or 0)
     price = d.get('dph_total', 0) or 0
-    oid = d.get('id', '?')
+    oid = str(d.get('id', '?'))
+    mid = d.get('machine_id', 0)
     inet_down = int(d.get('inet_down', 0) or 0)
     inet_up = int(d.get('inet_up', 0) or 0)
     slow = '*' if disk_bw > 0 and disk_bw < 1000 else ''
-    print(f'{loc:<18s} {oid:<11s} {num}x {gpu:<9s} {cpu_name:<26s} {cpu_ghz:>4.1f} {vcpu:>5d} {disk:>5d}G {disk_bw:>7d}{slow} {inet_down:>5d}/{inet_up:<4d} {price:>7.4f}')
+    img = 'YES' if mid in cached else '  -'
+    print(f'{loc:<18s} {oid:<11s} {num}x {gpu:<9s} {cpu_name:<26s} {cpu_ghz:>4.1f} {vcpu:>5d} {disk:>5d}G {disk_bw:>7d}{slow} {inet_down:>5d}/{inet_up:<4d} {price:>7.4f} {img}')
 " 2>/dev/null)
     if [[ -z "$formatted" ]]; then
         echo "  No matching instances found"
@@ -554,13 +564,14 @@ echo ""
 # Get vast.ai offers (use --raw for cpu_name access)
 SEARCH_RAW=$(vastai search offers "num_gpus>=${NUM_GPUS} gpu_name=${GPU_NAME} disk_space>=${DISK_GB} cpu_ghz>=${SEARCH_CPU_GHZ} cpu_cores>=${MIN_VCPUS} verified=true" -o 'dph' --raw 2>/dev/null)
 
-OFFER_LIST=$(echo "$SEARCH_RAW" | BLACKLISTED="$BLACKLISTED" python3 -c "
+OFFER_LIST=$(echo "$SEARCH_RAW" | BLACKLISTED="$BLACKLISTED" CACHED="$CACHED" python3 -c "
 import json, sys, os
 blacklisted = set(int(x) for x in os.environ.get('BLACKLISTED','').split(',') if x.strip())
+cached = set(int(x) for x in os.environ.get('CACHED','').split(',') if x.strip())
 data = [d for d in json.load(sys.stdin) if d.get('machine_id') not in blacklisted][:7]
 if not data:
     sys.exit(1)
-hdr = f\"{'#':>3s} {'Location':<18s} {'GPU':<12s} {'CPU':<26s} {'GHz':>4s} {'vCPU':>5s} {'Disk':>6s} {'IO MB/s':>8s} {'Net D/U':>10s} {'$/hr':>7s} {'ID':>11s}\"
+hdr = f\"{'#':>3s} {'Location':<18s} {'GPU':<12s} {'CPU':<26s} {'GHz':>4s} {'vCPU':>5s} {'Disk':>6s} {'IO MB/s':>8s} {'Net D/U':>10s} {'$/hr':>7s} {'ID':>11s} {'Img'}\"
 print(hdr)
 print('-' * len(hdr))
 for i, d in enumerate(data):
@@ -581,8 +592,10 @@ for i, d in enumerate(data):
     inet_up = int(d.get('inet_up', 0) or 0)
     price = d.get('dph_total', 0) or 0
     oid = str(d.get('id', '?'))
+    mid = d.get('machine_id', 0)
     slow = '*' if disk_bw > 0 and disk_bw < 1000 else ''
-    print(f'[{i+1:>1}] {loc:<18s} {num}x {gpu:<9s} {cpu_name:<26s} {cpu_ghz:>4.1f} {vcpu:>5d} {disk:>5d}G {disk_bw:>7d}{slow} {inet_down:>5d}/{inet_up:<4d} {price:>7.4f} {oid:>11s}')
+    img = 'YES' if mid in cached else '  -'
+    print(f'[{i+1:>1}] {loc:<18s} {num}x {gpu:<9s} {cpu_name:<26s} {cpu_ghz:>4.1f} {vcpu:>5d} {disk:>5d}G {disk_bw:>7d}{slow} {inet_down:>5d}/{inet_up:<4d} {price:>7.4f} {oid:>11s} {img}')
 " 2>/dev/null)
 
 if [[ -z "$OFFER_LIST" ]]; then
@@ -827,4 +840,11 @@ echo "=== Starting processing ==="
 ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=10 -f root@"$SSH_HOST" -p "$SSH_PORT" \
     "sudo bash -c 'cd /root && nohup ./multi_gpu_queue.sh $NUM_GPUS >> /root/enhance.log 2>&1 &'" 2>/dev/null
 echo "Started multi_gpu_queue.sh on $NUM_GPUS GPU(s)"
+
+# Save machine_id to cache list (has our Docker image now)
+DEPLOY_MACHINE_ID=$(vastai show instance "$INSTANCE_ID" --raw 2>/dev/null | python3 -c "import json,sys; print(json.load(sys.stdin).get('machine_id',''))" 2>/dev/null)
+if [[ -n "$DEPLOY_MACHINE_ID" ]] && ! grep -q "^${DEPLOY_MACHINE_ID} " "$CACHE_FILE" 2>/dev/null; then
+    echo "${DEPLOY_MACHINE_ID}  # ${OFFER_LOCATION} — ${NUM_GPUS}x ${GPU_LABEL}" >> "$CACHE_FILE"
+fi
+
 echo "Done."
