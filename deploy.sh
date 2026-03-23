@@ -686,19 +686,24 @@ if [[ "$confirm" != "y" && "$confirm" != "Y" ]]; then
     exit 0
 fi
 
-# Cleanup on abort: destroy the instance if it was created
+# Get machine_id from the selected offer (needed for blacklist before instance is destroyed)
+SELECTED_MACHINE_ID=$(echo "$SEARCH_RAW" | BLACKLISTED="$BLACKLISTED" python3 -c "
+import json, sys, os
+blacklisted = set(int(x) for x in os.environ.get('BLACKLISTED','').split(',') if x.strip())
+data = [d for d in json.load(sys.stdin) if d.get('machine_id') not in blacklisted][:7]
+print(data[$SELECTED_IDX].get('machine_id',''))
+" 2>/dev/null)
+
+# Cleanup on abort: blacklist + destroy the instance if it was created
 INSTANCE_ID=""
 cleanup_on_abort() {
     echo ""
     echo "Aborted!"
     if [[ -n "$INSTANCE_ID" ]]; then
-        # Blacklist machine if instance never became usable
-        if [[ -z "$SSH_HOST" ]]; then
-            ABORT_MACHINE_ID=$(vastai show instance "$INSTANCE_ID" --raw 2>/dev/null | python3 -c "import json,sys; print(json.load(sys.stdin).get('machine_id',''))" 2>/dev/null)
-            if [[ -n "$ABORT_MACHINE_ID" ]]; then
-                echo "${ABORT_MACHINE_ID}  # ${OFFER_LOCATION:-?} — aborted, never started" >> "$BLACKLIST_FILE"
-                echo "  Blacklisted machine $ABORT_MACHINE_ID"
-            fi
+        # Blacklist machine if instance never became usable (SSH never connected)
+        if [[ -z "$SSH_HOST" && -n "$SELECTED_MACHINE_ID" ]]; then
+            echo "${SELECTED_MACHINE_ID}  # ${OFFER_LOCATION:-?} — aborted, never started" >> "$BLACKLIST_FILE"
+            echo "  Blacklisted machine $SELECTED_MACHINE_ID"
         fi
         echo "Destroying instance $INSTANCE_ID..."
         vastai destroy instance "$INSTANCE_ID" 2>/dev/null
@@ -766,10 +771,9 @@ if [[ -z "$SSH_HOST" ]]; then
     read -p "Destroy and blacklist machine? [Y/n] " destroy_confirm
     if [[ "$destroy_confirm" != "n" && "$destroy_confirm" != "N" ]]; then
         # Blacklist this machine — it can't start properly
-        STUCK_MACHINE_ID=$(vastai show instance "$INSTANCE_ID" --raw 2>/dev/null | python3 -c "import json,sys; print(json.load(sys.stdin).get('machine_id',''))" 2>/dev/null)
-        if [[ -n "$STUCK_MACHINE_ID" ]]; then
-            echo "${STUCK_MACHINE_ID}  # ${OFFER_LOCATION} — stuck loading, never started" >> "$BLACKLIST_FILE"
-            echo "  Blacklisted machine $STUCK_MACHINE_ID"
+        if [[ -n "$SELECTED_MACHINE_ID" ]]; then
+            echo "${SELECTED_MACHINE_ID}  # ${OFFER_LOCATION} — stuck loading, never started" >> "$BLACKLIST_FILE"
+            echo "  Blacklisted machine $SELECTED_MACHINE_ID"
         fi
         vastai destroy instance "$INSTANCE_ID" 2>/dev/null
         echo "Instance $INSTANCE_ID destroyed."
