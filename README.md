@@ -116,7 +116,7 @@ The script automatically:
 - Determines GPU (RTX 4090 for SD ≤1.6 MP, RTX 5090 for HD)
 - Calculates disk requirements per video
 - Requires ≥3 GHz actual CPU for RTX 5090 HD (ideal 5+)
-- **CPU verification**: vast.ai `cpu_ghz` is boost clock (not actual — e.g. Xeon 8481C listed 3.8 GHz, runs 2.7 GHz). Searches with `cpu_ghz>=4.0` boost to ensure ≥3.0 GHz actual. Instance listings show **CPU model name** (e.g. "Ryzen 9 9950X" vs "Xeon Platinum 8481C") so you can avoid slow server CPUs. Post-deploy SSH check reads `/proc/cpuinfo` MHz — option to destroy if too slow. Destroyed machines are blacklisted in `blacklist_machines.txt` and excluded from future searches.
+- **CPU verification**: vast.ai `cpu_ghz` is boost clock (not actual — e.g. Xeon 8481C listed 3.8 GHz, runs 2.7 GHz). Searches with `cpu_ghz>=4.0` boost to ensure ≥3.0 GHz actual. Instance listings show **CPU model name** (e.g. "Ryzen 9 9950X" vs "Xeon Platinum 8481C") so you can avoid slow server CPUs. Post-deploy SSH check reads `/proc/cpuinfo` MHz — option to destroy if too slow. Destroyed machines are blacklisted in `blacklist_machines.txt` and excluded from future searches (slow CPU, stuck loading, or Ctrl+C abort). Listings also show CPU release year, disk I/O speed (MB/s), and Docker image cache status (`Img: YES/-`).
 - Requires ≥32 vCPUs for RTX 5090 (cv2.imread/imwrite bottleneck on large PNGs), ≥16 for RTX 4090
 - Validates existing instances before adding videos
 - Warns if mixed GPU types (recommends separate deploys)
