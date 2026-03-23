@@ -90,11 +90,11 @@ vastai set api-key YOUR_KEY
 # Deploy multiple videos (auto-selects multi-GPU if > 2 videos)
 ./deploy.sh c62HSWqoxKo 8wqZivWVLZs Ydkc8oZzHBY
 
-# Update scripts + binaries on a running instance (restarts queue)
+# Update scripts + binaries on a running instance (auto-restarts via restart.sh)
 ./deploy.sh update 33326865
 
-# Update only dashboard + upload binary (no queue restart, upscaling keeps running)
-./deploy.sh update-server 33326865
+# Destroy an instance
+./deploy.sh destroy 33326865
 
 # Analyze without deploying
 ./deploy.sh --plan c62HSWqoxKo BR5U-miBmt4
