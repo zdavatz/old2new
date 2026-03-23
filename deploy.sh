@@ -474,12 +474,7 @@ for inst in data:
         MODE="instance"
         INSTANCE_ID="$MATCH_ID"
     else
-        echo "No matching running instance found."
-        echo ""
-        read -p "Search for a new instance? [Y/n] " confirm
-        if [[ "$confirm" == "n" || "$confirm" == "N" ]]; then
-            exit 0
-        fi
+        echo "No matching running instance found — searching for new instance..."
         MODE="new"
     fi
 fi
