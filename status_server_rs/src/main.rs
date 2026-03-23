@@ -951,7 +951,27 @@ async fn build_status() -> StatusResponse {
                     format!("{:.0} MB", size_mb),
                 )
             } else if frames_out_dir.exists() && count_out > 0 {
-                let total = count_in.max(count_out);
+                // Total frames: prefer job_meta/json_meta, else count_in + count_out
+                // (frames_in are deleted during upscaling, so count_in shrinks while count_out grows)
+                let meta_total = meta
+                    .as_ref()
+                    .map(|m| {
+                        if m.total_frames > 0 { m.total_frames }
+                        else if m.fps > 0.0 && m.duration_seconds > 0.0 { (m.fps * m.duration_seconds) as u64 }
+                        else { 0 }
+                    })
+                    .or_else(|| json_meta.as_ref().map(|m| {
+                        if m.total_frames > 0 { m.total_frames }
+                        else if m.fps > 0.0 && m.duration_seconds > 0.0 { (m.fps * m.duration_seconds) as u64 }
+                        else { 0 }
+                    }))
+                    .unwrap_or(0);
+                let total = if meta_total > 0 {
+                    meta_total
+                } else {
+                    // Fallback: count_in + count_out (deleted in = created out)
+                    count_in + count_out
+                };
                 let pct = if total > 0 {
                     (count_out as f64 / total as f64 * 1000.0).round() / 10.0
                 } else {
