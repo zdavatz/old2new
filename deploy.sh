@@ -122,99 +122,25 @@ if pgrep -x status_server > /dev/null; then echo "status_server restarted"; else
                 fi
             done
 
-            # Step 2: Write restart script to server
-            $UPD_SSH 'cat > /tmp/update_restart.sh << "REOF"
-#!/bin/bash
-echo "=== Step 1: Kill ALL processes ==="
-kill -9 $(pgrep -f "status_server" | grep -v $$) 2>/dev/null
-kill -9 $(pgrep -f "multi_gpu_queue" | grep -v $$) 2>/dev/null
-kill -9 $(pgrep -f "enhance.sh" | grep -v $$) 2>/dev/null
-kill -9 $(pgrep -f "upscale.py" | grep -v $$) 2>/dev/null
-sleep 3
-
-echo "=== Step 2: Verify all dead ==="
-remaining=$(pgrep -f "status_server|multi_gpu_queue" | wc -l)
-if [ "$remaining" -gt 0 ]; then
-    echo "WARNING: $remaining processes still alive, killing harder"
-    killall -9 status_server multi_gpu_queue.sh enhance.sh 2>/dev/null
-    sleep 2
-fi
-
-echo "=== Step 3: Replace binaries ==="
-mv -f /root/status_server.new /root/status_server 2>/dev/null && echo "status_server replaced" || echo "no status_server.new"
-mv -f /root/youtube_upload.new /root/youtube_upload 2>/dev/null && echo "youtube_upload replaced" || echo "no youtube_upload.new"
-chmod +x /root/enhance.sh /root/multi_gpu_queue.sh /root/status_server /root/youtube_upload 2>/dev/null
-
-echo "=== Step 4: Verify binary ==="
-ls -la /root/status_server | awk "{print \$5, \$6, \$7, \$8}"
-
-echo "=== Step 5: Restore queue files ==="
-for f in /root/json/*.processing.*; do
-    [ -f "$f" ] || continue
-    base=$(echo "$f" | sed "s/\.processing\.[0-9]*//")
-    mv "$f" "$base"
-done
-echo "Queue: $(ls /root/json/*.json 2>/dev/null | wc -l) JSON files"
-
-echo "=== Step 6: Wait for port 8080 to be free ==="
-for i in $(seq 1 10); do
-    if ! ss -tlnp 2>/dev/null | grep -q ":8080 "; then
-        echo "Port 8080 free"
-        break
-    fi
-    echo "Port 8080 still in use, waiting..."
-    sleep 1
-done
-
-echo "=== Step 7: Start status_server ==="
-cd /root
-nohup ./status_server >> /root/status_server.log 2>&1 &
-STATUS_PID=$!
-sleep 2
-if kill -0 $STATUS_PID 2>/dev/null; then
-    echo "status_server started (PID $STATUS_PID)"
-    echo "Binary inode: $(stat -c %i /root/status_server)"
-    echo "Process inode: $(stat -c %i /proc/$STATUS_PID/exe)"
-else
-    echo "ERROR: status_server died immediately"
-    tail -5 /root/status_server.log
-fi
-
-echo "=== Step 8: Start queue ==="
-nohup ./multi_gpu_queue.sh >> /root/enhance.log 2>&1 &
-QUEUE_PID=$!
-sleep 1
-if kill -0 $QUEUE_PID 2>/dev/null; then
-    echo "multi_gpu_queue started (PID $QUEUE_PID)"
-else
-    echo "ERROR: multi_gpu_queue died immediately"
-fi
-
-echo "=== Done ==="
-REOF
-chmod +x /tmp/update_restart.sh' 2>/dev/null
-
-            # Step 3: Run the restart script
-            echo "  Running restart script..."
-            $UPD_SSH 'sudo bash -c "nohup /tmp/update_restart.sh > /tmp/update_restart.log 2>&1 &"' 2>/dev/null
-            sleep 8
-            echo "  --- Restart log ---"
-            $UPD_SSH 'cat /tmp/update_restart.log 2>/dev/null'
-
-            # Get dashboard URL
-            PROXY_HOST=$(vastai show instance "$UPD_ID" 2>/dev/null | tail -1 | awk '{print $10}')
-            PROXY_PORT=$(vastai show instance "$UPD_ID" 2>/dev/null | tail -1 | awk '{print $11}')
-            DASHBOARD_PORT=$((PROXY_PORT + 1))
-            if [[ "$PROXY_HOST" == ssh*.vast.ai ]]; then
-                DASHBOARD_URL="http://${PROXY_HOST}:${DASHBOARD_PORT}/"
-            else
-                DASHBOARD_URL="http://${UPD_HOST}:$((UPD_PORT + 1))/"
-            fi
-
             echo ""
-            echo "Instance $UPD_ID updated and restarted."
-            echo "SSH:       ssh -p $UPD_PORT root@$UPD_HOST"
-            echo "Dashboard: $DASHBOARD_URL"
+            echo "  Files uploaded. Now SSH in and restart manually:"
+            echo ""
+            echo "  ssh -p $UPD_PORT root@$UPD_HOST"
+            echo ""
+            echo "  # 1. Kill all old processes"
+            echo "  kill -9 \$(pgrep -f 'status_server|multi_gpu_queue|enhance|upscale|korea_single') 2>/dev/null; sleep 2"
+            echo ""
+            echo "  # 2. Replace binaries"
+            echo "  mv -f /root/status_server.new /root/status_server 2>/dev/null"
+            echo "  mv -f /root/youtube_upload.new /root/youtube_upload 2>/dev/null"
+            echo "  chmod +x /root/status_server /root/youtube_upload /root/enhance.sh /root/multi_gpu_queue.sh"
+            echo ""
+            echo "  # 3. Restore queue"
+            echo "  for f in /root/json/*.processing.*; do [ -f \"\\\$f\" ] || continue; mv \"\\\$f\" \"\\\$(echo \\\$f | sed 's/.processing.[0-9]*//')\"; done"
+            echo ""
+            echo "  # 4. Start"
+            echo "  nohup ./status_server >> /root/status_server.log 2>&1 &"
+            echo "  nohup ./multi_gpu_queue.sh >> /root/enhance.log 2>&1 &"
             exit 0
             ;;
         --plan)
@@ -786,16 +712,7 @@ echo "============================================="
 echo ""
 
 echo "=== Starting processing ==="
-if [[ $NUM_GPUS -gt 1 ]]; then
-    # Use ssh -f to fork into background and not block
-    ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=10 -f root@"$SSH_HOST" -p "$SSH_PORT" \
-        'sudo bash -c "cd /root && nohup ./multi_gpu_queue.sh >> /root/enhance.log 2>&1 &"' 2>/dev/null
-    echo "Started multi_gpu_queue.sh on $NUM_GPUS GPUs"
-else
-    vid="${VIDEOS[0]}"
-    IFS='|' read -r v_id v_w v_h v_dur v_mp v_scale v_gpu v_disk v_title <<< "$vid"
-    ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=10 -f root@"$SSH_HOST" -p "$SSH_PORT" \
-        "sudo bash -c 'cd /root && nohup ./enhance.sh \"https://www.youtube.com/watch?v=$v_id\" $v_scale --job-name \"$v_title\" >> /root/enhance.log 2>&1 &'" 2>/dev/null
-    echo "Started enhance.sh for $v_title"
-fi
+ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=10 -f root@"$SSH_HOST" -p "$SSH_PORT" \
+    "sudo bash -c 'cd /root && nohup ./multi_gpu_queue.sh $NUM_GPUS >> /root/enhance.log 2>&1 &'" 2>/dev/null
+echo "Started multi_gpu_queue.sh on $NUM_GPUS GPU(s)"
 echo "Done."
