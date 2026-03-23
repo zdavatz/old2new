@@ -138,7 +138,7 @@ Each instance runs a Rust dashboard binary (`status_server`) on port 8080, showi
 | uploading | upload percentage + file size (e.g. "45% of 1234 MB") |
 | done | output file size |
 
-Access via `http://<ssh-host>:<ssh-port+1>` on vast.ai. The dashboard auto-scans `~/jobs/` for live status and `~/json/` for the video queue — no manual `video_queue.json` needed.
+Access via `http://<ssh-host>:<ssh-port+1>` on vast.ai. The dashboard auto-scans `~/jobs/` for live status and `~/json/` for the video queue — no manual `video_queue.json` needed. Each video has a compare view (`/compare/<id>`) showing original vs enhanced frames side by side — `upscale.py` keeps the last 10 input frames for this purpose.
 
 ### Legacy: Single Video (vast.ai)
 
