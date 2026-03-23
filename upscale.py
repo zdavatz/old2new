@@ -73,7 +73,7 @@ def main():
             continue
         output, _ = upsampler.enhance(img, outscale=args.scale)
         # Atomic write: tmp then rename
-        tmp_path = out_path + ".tmp"
+        tmp_path = out_path.rsplit(".", 1)[0] + ".tmp.png"
         cv2.imwrite(tmp_path, output)
         os.rename(tmp_path, out_path)
         # Delete input frame to free disk

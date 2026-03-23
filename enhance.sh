@@ -141,17 +141,17 @@ write_job_meta() {
     STARTED_AT=$(date -u +"%Y-%m-%dT%H:%M:%S")
 
     python3 -c "
-import json
+import json, sys
 meta = {
-    'video_id': '$VIDEO_ID',
-    'scale': $SCALE,
-    'title': '$JOB_NAME',
-    'display_title': '$DISPLAY_TITLE',
-    'started_at': '$STARTED_AT'
+    'video_id': sys.argv[1],
+    'scale': int(sys.argv[2]),
+    'title': sys.argv[3],
+    'display_title': sys.argv[4],
+    'started_at': sys.argv[5]
 }
-with open('$META_FILE', 'w') as f:
+with open(sys.argv[6], 'w') as f:
     json.dump(meta, f, indent=2)
-"
+" "$VIDEO_ID" "$SCALE" "$JOB_NAME" "$DISPLAY_TITLE" "$STARTED_AT" "$META_FILE"
     echo "Wrote $META_FILE"
 }
 
