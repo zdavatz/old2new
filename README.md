@@ -125,7 +125,7 @@ The script automatically:
 
 #### Dashboard (Rust)
 
-Each instance runs a Rust dashboard binary (`status_server`) on port 8080, showing real-time progress for all pipeline phases:
+Each instance runs a Rust dashboard binary (`status_server`) on port 8080, showing real-time progress for all pipeline phases. The binary is cross-compiled and deployed via `deploy.sh update`. On instances with older glibc (e.g. `pytorch:2.1.0-cuda12.1`), build on the server: `apt install gcc pkg-config libssl-dev git && curl -sSf https://sh.rustup.rs | sh -s -- -y && git clone https://github.com/zdavatz/old2new.git && cd old2new/status_server_rs && cargo build --release && cp target/release/status_server ~/`.
 
 | Phase | Progress shown |
 |-------|---------------|
@@ -493,7 +493,7 @@ rm json/BR5U-miBmt4.json && ./fetch_video_json.sh BR5U-miBmt4
 
 Each JSON file contains: title, description, channel, upload_date, resolution, duration, fps, megapixels, definition (hd/sd), recommended scale (2x/4x), recommended GPU (RTX 4090/RTX 5090), view_count, categories, tags, and thumbnail URL. The Rust dashboard reads these files instead of a static `video_queue.json`.
 
-As of March 2026: 11 of 226 videos enhanced, 215 remaining (72 SD → RTX 4090 4x, 143 HD → RTX 5090 2x). Videos are split by YouTube definition (hd/sd), not by resolution.
+As of March 2026: 29 of 226 videos enhanced, 197 remaining. Videos are split by YouTube definition (hd/sd), not by resolution.
 
 ### YouTube API Quota
 
