@@ -112,7 +112,7 @@ if pgrep -x status_server > /dev/null; then echo "status_server restarted"; else
             UPD_SSH="ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=10 root@$UPD_HOST -p $UPD_PORT"
 
             # Step 1: Upload everything first (while old processes still run)
-            $UPD_SCP "$SCRIPT_DIR/enhance.sh" "$SCRIPT_DIR/upscale.py" "$SCRIPT_DIR/multi_gpu_queue.sh" root@"$UPD_HOST":/root/ 2>/dev/null
+            $UPD_SCP "$SCRIPT_DIR/enhance.sh" "$SCRIPT_DIR/upscale.py" "$SCRIPT_DIR/multi_gpu_queue.sh" "$SCRIPT_DIR/restart.sh" root@"$UPD_HOST":/root/ 2>/dev/null
             echo "  Scripts uploaded"
             for bin in status_server_rs/target/release/status_server youtube_upload_rs/target/release/youtube_upload; do
                 if [[ -f "$SCRIPT_DIR/$bin" ]]; then
@@ -123,24 +123,9 @@ if pgrep -x status_server > /dev/null; then echo "status_server restarted"; else
             done
 
             echo ""
-            echo "  Files uploaded. Now SSH in and restart manually:"
+            echo "  Files uploaded. Now restart:"
             echo ""
-            echo "  ssh -p $UPD_PORT root@$UPD_HOST"
-            echo ""
-            echo "  # 1. Kill all old processes"
-            echo "  kill -9 \$(pgrep -f 'status_server|multi_gpu_queue|enhance|upscale|korea_single') 2>/dev/null; sleep 2"
-            echo ""
-            echo "  # 2. Replace binaries"
-            echo "  mv -f /root/status_server.new /root/status_server 2>/dev/null"
-            echo "  mv -f /root/youtube_upload.new /root/youtube_upload 2>/dev/null"
-            echo "  chmod +x /root/status_server /root/youtube_upload /root/enhance.sh /root/multi_gpu_queue.sh"
-            echo ""
-            echo "  # 3. Restore queue"
-            echo "  for f in /root/json/*.processing.*; do [ -f \"\\\$f\" ] || continue; mv \"\\\$f\" \"\\\$(echo \\\$f | sed 's/.processing.[0-9]*//')\"; done"
-            echo ""
-            echo "  # 4. Start"
-            echo "  nohup ./status_server >> /root/status_server.log 2>&1 &"
-            echo "  nohup ./multi_gpu_queue.sh >> /root/enhance.log 2>&1 &"
+            echo "  ssh -p $UPD_PORT root@$UPD_HOST './restart.sh'"
             exit 0
             ;;
         --plan)
