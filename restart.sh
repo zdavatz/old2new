@@ -63,4 +63,11 @@ else
 fi
 
 echo ""
+echo "=== Dashboard ==="
+# Read instance meta for label
+if [[ -f /root/instance_meta.json ]]; then
+    python3 -c "import json; d=json.load(open('/root/instance_meta.json')); print(f'  Instance: {d.get(\"label\",\"?\")} ({d.get(\"location\",\"?\")})')" 2>/dev/null
+fi
+echo "  Port: 8080 (access via vast.ai SSH port+1 or SSH tunnel)"
+echo ""
 echo "=== Done ==="
