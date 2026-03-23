@@ -326,8 +326,10 @@ for d in data:
     disk_bw = d.get('disk_bw', 0) or 0
     price = d.get('dph_total', 0) or 0
     oid = d.get('id', '?')
+    inet_down = d.get('inet_down', 0) or 0
+    inet_up = d.get('inet_up', 0) or 0
     disk_warn = ' !!SLOW' if disk_bw > 0 and disk_bw < 1000 else ''
-    print(f'{oid:<12} {num}x {gpu:<10s} {cpu_name:<28s} {cpu_ghz:.1f}GHz {int(vcpu)}vCPU {disk:.0f}GB {disk_bw:.0f}MB/s{disk_warn} \${price:.2f}/hr {loc}')
+    print(f'{oid:<12} {num}x {gpu:<10s} {cpu_name:<28s} {cpu_ghz:.1f}GHz {int(vcpu)}vCPU {disk:.0f}GB {disk_bw:.0f}MB/s{disk_warn} Net:{inet_down:.0f}/{inet_up:.0f} \${price:.2f}/hr {loc}')
 " 2>/dev/null)
     if [[ -z "$formatted" ]]; then
         echo "  No matching instances found"
@@ -567,10 +569,12 @@ for i, d in enumerate(data):
         disk_name = disk_name.replace(rm, '')
     if len(disk_name) > 16:
         disk_name = disk_name[:16]
+    inet_down = d.get('inet_down', 0) or 0
+    inet_up = d.get('inet_up', 0) or 0
     price = d.get('dph_total', 0) or 0
     oid = d.get('id', '?')
     disk_warn = ' !!SLOW' if disk_bw > 0 and disk_bw < 1000 else ''
-    print(f'[{i+1}] {loc:<20s} {num}x {gpu:<10s}  {cpu_name:<28s} {cpu_ghz:.1f}GHz {int(vcpu)}vCPU  {disk:.0f}GB {disk_bw:.0f}MB/s{disk_warn}  \${price:.4f}/hr  ({oid})')
+    print(f'[{i+1}] {loc:<20s} {num}x {gpu:<10s}  {cpu_name:<28s} {cpu_ghz:.1f}GHz {int(vcpu)}vCPU  {disk:.0f}GB {disk_bw:.0f}MB/s{disk_warn}  Net:{inet_down:.0f}/{inet_up:.0f}Mbps  \${price:.4f}/hr  ({oid})')
 " 2>/dev/null)
 
 if [[ -z "$OFFER_LIST" ]]; then
