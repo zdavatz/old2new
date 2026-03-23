@@ -132,7 +132,7 @@ Each instance runs a Rust dashboard binary (`status_server`) on port 8080, showi
 | Phase | Progress shown |
 |-------|---------------|
 | downloading | yt-dlp download percentage |
-| extracting | frame count |
+| extracting | frames extracted / total estimated (from job_meta.json) |
 | upscaling | frames done/total, fps per GPU |
 | assembling | ffmpeg frame count, speed (e.g. "frame 12345/44382 (28%) 30.5x") |
 | uploading | upload percentage + file size (e.g. "45% of 1234 MB") |
