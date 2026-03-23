@@ -16,7 +16,7 @@
 
 set -euo pipefail
 
-export PATH="/opt/venv/bin:/usr/local/bin:/usr/bin:/bin:$PATH"
+export PATH="/opt/venv/bin:/opt/conda/bin:/usr/local/bin:/usr/bin:/bin:$PATH"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
 # Timing accumulators (seconds)
