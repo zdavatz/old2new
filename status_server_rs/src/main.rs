@@ -985,7 +985,36 @@ async fn build_status() -> StatusResponse {
                 } else {
                     "queued"
                 };
-                (st.to_string(), count_in, 0u64, 0.0, String::new())
+                // For extracting: use total_frames from job_meta, count_in as progress
+                let est_total = meta
+                    .as_ref()
+                    .map(|m| {
+                        if m.total_frames > 0 {
+                            m.total_frames
+                        } else if m.fps > 0.0 && m.duration_seconds > 0.0 {
+                            (m.fps * m.duration_seconds) as u64
+                        } else {
+                            0
+                        }
+                    })
+                    .or_else(|| {
+                        json_meta.as_ref().map(|m| {
+                            if m.total_frames > 0 {
+                                m.total_frames
+                            } else if m.fps > 0.0 && m.duration_seconds > 0.0 {
+                                (m.fps * m.duration_seconds) as u64
+                            } else {
+                                0
+                            }
+                        })
+                    })
+                    .unwrap_or(0);
+                let ext_pct = if est_total > 0 && count_in > 0 {
+                    (count_in as f64 / est_total as f64 * 1000.0).round() / 10.0
+                } else {
+                    0.0
+                };
+                (st.to_string(), est_total, count_in, ext_pct, String::new())
             } else {
                 // Check for input MKV (downloaded state)
                 let has_input = job_dir.join(format!("{title}.mkv")).exists()
