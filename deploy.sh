@@ -299,6 +299,16 @@ echo "  RAM:  >= ${MIN_RAM_GB} GB"
 echo "  Disk: >= ${DISK_GB} GB"
 echo ""
 
+# Load blacklisted machine IDs (slow CPUs etc)
+BLACKLIST_FILE="$SCRIPT_DIR/blacklist_machines.txt"
+BLACKLISTED=""
+if [[ -f "$BLACKLIST_FILE" ]]; then
+    BLACKLISTED=$(grep -v '^\s*#' "$BLACKLIST_FILE" | awk '{print $1}' | tr '\n' ',' | sed 's/,$//')
+    if [[ -n "$BLACKLISTED" ]]; then
+        echo "  Blacklisted machines: $BLACKLISTED"
+    fi
+fi
+
 # ============================================================
 # Phase 3: Search providers
 # ============================================================
@@ -308,9 +318,10 @@ search_vastai() {
     local raw
     raw=$(vastai search offers "num_gpus>=${NUM_GPUS} gpu_name=${GPU_NAME} disk_space>=${DISK_GB} cpu_ghz>=${SEARCH_CPU_GHZ} cpu_cores>=${MIN_VCPUS} verified=true" -o 'dph' --raw 2>/dev/null)
     local formatted
-    formatted=$(echo "$raw" | python3 -c "
-import json, sys
-data = json.load(sys.stdin)[:5]
+    formatted=$(echo "$raw" | BLACKLISTED="$BLACKLISTED" python3 -c "
+import json, sys, os
+blacklisted = set(int(x) for x in os.environ.get('BLACKLISTED','').split(',') if x.strip())
+data = [d for d in json.load(sys.stdin) if d.get('machine_id') not in blacklisted][:5]
 if not data:
     sys.exit(1)
 hdr = f\"{'Location':<18s} {'ID':<11s} {'GPU':<12s} {'CPU':<26s} {'GHz':>4s} {'vCPU':>5s} {'Disk':>6s} {'IO MB/s':>8s} {'Net D/U':>10s} {'$/hr':>7s}\"
@@ -548,9 +559,10 @@ echo ""
 # Get vast.ai offers (use --raw for cpu_name access)
 SEARCH_RAW=$(vastai search offers "num_gpus>=${NUM_GPUS} gpu_name=${GPU_NAME} disk_space>=${DISK_GB} cpu_ghz>=${SEARCH_CPU_GHZ} cpu_cores>=${MIN_VCPUS} verified=true" -o 'dph' --raw 2>/dev/null)
 
-OFFER_LIST=$(echo "$SEARCH_RAW" | python3 -c "
-import json, sys
-data = json.load(sys.stdin)[:7]  # top 7 by price
+OFFER_LIST=$(echo "$SEARCH_RAW" | BLACKLISTED="$BLACKLISTED" python3 -c "
+import json, sys, os
+blacklisted = set(int(x) for x in os.environ.get('BLACKLISTED','').split(',') if x.strip())
+data = [d for d in json.load(sys.stdin) if d.get('machine_id') not in blacklisted][:7]
 if not data:
     sys.exit(1)
 hdr = f\"{'#':>3s} {'Location':<18s} {'GPU':<12s} {'CPU':<26s} {'GHz':>4s} {'vCPU':>5s} {'Disk':>6s} {'IO MB/s':>8s} {'Net D/U':>10s} {'$/hr':>7s} {'ID':>11s}\"
@@ -604,9 +616,10 @@ fi
 
 # Extract offer details from raw JSON by index
 SELECTED_IDX=$((choice - 1))
-read -r OFFER_ID OFFER_PRICE OFFER_LOCATION <<< "$(echo "$SEARCH_RAW" | python3 -c "
-import json, sys
-data = json.load(sys.stdin)[:7]
+read -r OFFER_ID OFFER_PRICE OFFER_LOCATION <<< "$(echo "$SEARCH_RAW" | BLACKLISTED="$BLACKLISTED" python3 -c "
+import json, sys, os
+blacklisted = set(int(x) for x in os.environ.get('BLACKLISTED','').split(',') if x.strip())
+data = [d for d in json.load(sys.stdin) if d.get('machine_id') not in blacklisted][:7]
 d = data[$SELECTED_IDX]
 print(d.get('id',''), f\"{d.get('dph_total',0):.4f}\", d.get('geolocation','?'))
 " 2>/dev/null)"
@@ -733,6 +746,12 @@ if python3 -c "exit(0 if float('${actual_ghz:-0}') < float('$MIN_CPU_GHZ') else 
     echo ""
     read -p "  Continue anyway, or destroy instance? [c=continue / D=destroy] " cpu_choice
     if [[ "$cpu_choice" != "c" && "$cpu_choice" != "C" ]]; then
+        # Blacklist this machine so we don't pick it again
+        MACHINE_ID=$(vastai show instance "$INSTANCE_ID" --raw 2>/dev/null | python3 -c "import json,sys; print(json.load(sys.stdin).get('machine_id',''))" 2>/dev/null)
+        if [[ -n "$MACHINE_ID" ]]; then
+            echo "${MACHINE_ID}  # ${actual_cpu_model} @ ${actual_ghz} GHz — too slow" >> "$SCRIPT_DIR/blacklist_machines.txt"
+            echo "  Blacklisted machine $MACHINE_ID (${actual_cpu_model})"
+        fi
         echo "  Destroying instance $INSTANCE_ID..."
         vastai destroy instance "$INSTANCE_ID" 2>/dev/null
         echo "  Instance destroyed."
