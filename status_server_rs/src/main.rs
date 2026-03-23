@@ -594,8 +594,25 @@ fn parse_fps_from_logs() -> (f64, HashMap<String, f64>, String) {
         }
     }
 
-    let total_fps: f64 = per_gpu_fps.values().sum();
-    (total_fps, per_gpu_fps, log_tail)
+    // Filter out stale fps: only count GPUs that are actively upscaling
+    // A GPU is active if its log was modified in the last 60 seconds
+    let now = std::time::SystemTime::now();
+    let active_fps: HashMap<String, f64> = per_gpu_fps
+        .into_iter()
+        .filter(|(gpu_id, _)| {
+            let log_path = home.join(format!("gpu{}.log", gpu_id));
+            if let Ok(meta) = fs::metadata(&log_path) {
+                if let Ok(modified) = meta.modified() {
+                    if let Ok(age) = now.duration_since(modified) {
+                        return age.as_secs() < 60;
+                    }
+                }
+            }
+            false
+        })
+        .collect();
+    let total_fps: f64 = active_fps.values().sum();
+    (total_fps, active_fps, log_tail)
 }
 
 fn parse_fps_line(line: &str) -> Option<f64> {
