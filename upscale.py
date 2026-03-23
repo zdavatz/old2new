@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""Minimal Real-ESRGAN upscaler. Threaded I/O pipeline for performance."""
+"""Minimal Real-ESRGAN upscaler. Simple sequential loop — no threads, no deadlocks."""
 
-import argparse, glob, os, queue, sys, threading, time
+import argparse, glob, os, sys, time
 import cv2
 import torch
 from basicsr.archs.rrdbnet_arch import RRDBNet
@@ -18,21 +18,25 @@ def main():
     os.makedirs(args.frames_out, exist_ok=True)
 
     # Clean up partial writes from interrupted runs
-    for tmp in glob.glob(os.path.join(args.frames_out, "*.tmp")):
+    for tmp in glob.glob(os.path.join(args.frames_out, "*.tmp*")):
         os.remove(tmp)
 
-    # Gather and sort input frames naturally
-    inputs = sorted(glob.glob(os.path.join(args.frames_in, "*.png")))
+    # Gather and sort input frames
+    inputs = sorted(glob.glob(os.path.join(args.frames_in, "frame_*.png")))
     if not inputs:
         sys.exit(f"No PNG frames found in {args.frames_in}")
     total = len(inputs)
 
     # Skip already-done frames (resume support)
-    todo = [(f, os.path.join(args.frames_out, os.path.basename(f)))
-            for f in inputs if not os.path.exists(os.path.join(args.frames_out, os.path.basename(f)))]
+    todo = []
+    for f in inputs:
+        out_path = os.path.join(args.frames_out, os.path.basename(f))
+        if not os.path.exists(out_path):
+            todo.append((f, out_path))
     done = total - len(todo)
     if not todo:
-        print(f"All {total} frames already upscaled."); return
+        print(f"All {total} frames already upscaled.")
+        return
     print(f"{done}/{total} already done, {len(todo)} remaining")
 
     # Auto-detect tile size
@@ -60,67 +64,32 @@ def main():
     logging.getLogger('basicsr').setLevel(logging.WARNING)
     logging.getLogger('realesrgan').setLevel(logging.WARNING)
 
-    # I/O pipeline: threaded pre-read + async write
-    cpus = os.cpu_count() or 1
-    n_read = min(max(cpus // 4, 2), 8)
-    n_write = min(max(cpus // 4, 2), 8)
-    prefetch = n_read * 4
-    read_q = queue.Queue(maxsize=prefetch)
-    write_q = queue.Queue(maxsize=prefetch)
-
-    def reader(chunk):
-        for seq, (in_path, out_path) in chunk:
-            img = cv2.imread(in_path, cv2.IMREAD_UNCHANGED)
-            read_q.put((seq, in_path, img, out_path))
-
-    recent_in = []  # sliding window of last 10 input frames for compare view
-
-    def writer():
-        while True:
-            item = write_q.get()
-            if item is None: break
-            out_path, output, in_path = item
-            tmp_path = out_path + ".tmp"
-            cv2.imwrite(tmp_path, output)
-            os.rename(tmp_path, out_path)  # atomic on same filesystem
-            # Keep last 10 frames_in for compare view, delete older ones
-            recent_in.append(in_path)
-            if len(recent_in) > 10:
-                old = recent_in.pop(0)
-                try: os.remove(old)
-                except OSError: pass
-            write_q.task_done()
-
-    indexed = list(enumerate(todo))
-    chunk_sz = max(1, (len(todo) + n_read - 1) // n_read)
-    chunks = [indexed[k:k+chunk_sz] for k in range(0, len(indexed), chunk_sz)]
-
-    for chunk in chunks:
-        threading.Thread(target=reader, args=(chunk,), daemon=True).start()
-    for _ in range(n_write):
-        threading.Thread(target=writer, daemon=True).start()
-
-    # GPU loop with reordering
+    # Simple sequential loop — read, upscale, write, delete input
     start = time.time()
-    processed, next_seq, pending = 0, 0, {}
-    while processed < len(todo):
-        while next_seq not in pending:
-            seq, in_path, img, out_path = read_q.get()
-            pending[seq] = (in_path, img, out_path)
-        in_path, img, out_path = pending.pop(next_seq)
-        next_seq += 1
+    for i, (in_path, out_path) in enumerate(todo):
+        img = cv2.imread(in_path, cv2.IMREAD_UNCHANGED)
+        if img is None:
+            print(f"  WARNING: Could not read {in_path}, skipping")
+            continue
         output, _ = upsampler.enhance(img, outscale=args.scale)
-        write_q.put((out_path, output, in_path))
-        processed += 1
-        if processed % 10 == 0:
+        # Atomic write: tmp then rename
+        tmp_path = out_path + ".tmp"
+        cv2.imwrite(tmp_path, output)
+        os.rename(tmp_path, out_path)
+        # Delete input frame to free disk
+        try:
+            os.remove(in_path)
+        except OSError:
+            pass
+
+        processed = i + 1
+        if processed % 10 == 0 or processed == len(todo):
             elapsed = time.time() - start
             fps = processed / elapsed
             remain = (len(todo) - processed) / fps if fps > 0 else 0
             print(f"  {done + processed}/{total} ({fps:.1f} fps, ~{remain/60:.0f}m remaining)")
             sys.stdout.flush()
 
-    write_q.join()
-    for _ in range(n_write): write_q.put(None)
     elapsed = time.time() - start
     print(f"Upscaling complete in {elapsed/3600:.1f}h ({elapsed:.0f}s)")
 
