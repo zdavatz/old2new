@@ -615,6 +615,59 @@ fn parse_fps_from_logs() -> (f64, HashMap<String, f64>, String) {
     (total_fps, active_fps, log_tail)
 }
 
+/// Parse ffmpeg reassembly progress from GPU logs or enhance.log
+/// Looks for "frame= 12345" pattern and calculates % of total frames
+fn parse_ffmpeg_progress(job_name: &str, total_frames: u64) -> String {
+    if total_frames == 0 {
+        return String::new();
+    }
+    let home = home_dir();
+
+    // Check GPU logs and enhance.log for ffmpeg output
+    let mut last_frame: u64 = 0;
+    let mut last_speed = String::new();
+    for log_name in &["gpu0.log", "gpu1.log", "gpu2.log", "gpu3.log", "enhance.log"] {
+        let path = home.join(log_name);
+        let tail = read_tail(&path, 8192);
+        // Only parse if this log mentions our job
+        if !tail.contains(job_name) && *log_name != "enhance.log" {
+            continue;
+        }
+        // Parse "frame= 12345" and "speed=30.5x"
+        for line in tail.lines() {
+            if let Some(idx) = line.find("frame=") {
+                let rest = line[idx + 6..].trim_start();
+                if let Some(num_end) = rest.find(|c: char| !c.is_ascii_digit()) {
+                    if let Ok(f) = rest[..num_end].parse::<u64>() {
+                        if f > last_frame {
+                            last_frame = f;
+                        }
+                    }
+                }
+            }
+            if let Some(idx) = line.find("speed=") {
+                let rest = line[idx + 6..].trim();
+                if let Some(end) = rest.find(|c: char| c == ' ' || c == '\t' || c == '\r') {
+                    last_speed = rest[..end].to_string();
+                } else {
+                    last_speed = rest.to_string();
+                }
+            }
+        }
+    }
+    if last_frame > 0 {
+        let pct = (last_frame as f64 / total_frames as f64 * 100.0).round();
+        let remaining = total_frames.saturating_sub(last_frame);
+        if last_speed.is_empty() {
+            format!("frame {}/{} ({:.0}%)", last_frame, total_frames, pct)
+        } else {
+            format!("frame {}/{} ({:.0}%) {}", last_frame, total_frames, pct, last_speed)
+        }
+    } else {
+        String::new()
+    }
+}
+
 fn parse_fps_line(line: &str) -> Option<f64> {
     // Match pattern: "1234/5678 (2.50 fps" or "2.50 fps"
     let idx = line.find("fps")?;
@@ -851,7 +904,9 @@ async fn build_status() -> StatusResponse {
                     0.0
                 };
                 let st = if is_ffmpeg && enhanced_mkv.is_some() {
-                    // ffmpeg running + output MKV growing = assembling
+                    "assembling"
+                } else if is_ffmpeg && !is_enhancing && count_out > 0 {
+                    // ffmpeg running but no upscale = also assembling
                     "assembling"
                 } else if is_enhancing {
                     "upscaling"
@@ -860,7 +915,14 @@ async fn build_status() -> StatusResponse {
                 } else {
                     "queued"
                 };
-                (st.to_string(), total, count_out, pct, String::new())
+                // For assembling: parse ffmpeg progress from GPU log
+                let asm_eta = if st == "assembling" {
+                    parse_ffmpeg_progress(&title, total)
+                } else {
+                    String::new()
+                };
+                let final_eta = if asm_eta.is_empty() { String::new() } else { asm_eta };
+                (st.to_string(), total, count_out, pct, final_eta)
             } else if frames_in_dir.exists() {
                 let st = if is_enhancing || is_ffmpeg {
                     "extracting"
