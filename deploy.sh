@@ -237,16 +237,24 @@ if [[ ${#RTX4090_VIDS[@]} -gt 0 && ${#RTX5090_VIDS[@]} -gt 0 ]]; then
 fi
 
 # GPU type
+# NOTE: vast.ai cpu_ghz is BOOST CLOCK, not actual running speed.
+# Xeon 8481C listed as 3.8 GHz boost but runs at 2.7 GHz actual.
+# We search for higher boost values to ensure adequate actual speed.
+# Post-deploy SSH check verifies actual MHz from /proc/cpuinfo.
 if [[ "$NEEDS_5090" -eq 1 ]]; then
     GPU_NAME="RTX_5090"
     GPU_LABEL="RTX 5090"
-    MIN_CPU_GHZ="3.0"
+    MIN_CPU_GHZ="3.0"          # actual minimum (checked post-deploy via SSH)
+    SEARCH_CPU_GHZ="4.0"      # search filter (boost clock, ~30% higher than actual)
     MIN_RAM_GB=128
+    MIN_VCPUS=32               # need enough cores for cv2 I/O with large PNGs
 else
     GPU_NAME="RTX_4090"
     GPU_LABEL="RTX 4090"
     MIN_CPU_GHZ="2.0"
+    SEARCH_CPU_GHZ="2.5"
     MIN_RAM_GB=32
+    MIN_VCPUS=16
 fi
 
 # Single vs Multi GPU
@@ -285,7 +293,8 @@ fi
 echo ""
 echo "=== Recommended Setup ==="
 echo "  GPU:  ${NUM_GPUS}x $GPU_LABEL"
-echo "  CPU:  >= ${MIN_CPU_GHZ} GHz (ideal 5+ for RTX 5090 HD)"
+echo "  CPU:  >= ${MIN_CPU_GHZ} GHz actual (search: >= ${SEARCH_CPU_GHZ} GHz boost)"
+echo "  vCPUs: >= ${MIN_VCPUS}"
 echo "  RAM:  >= ${MIN_RAM_GB} GB"
 echo "  Disk: >= ${DISK_GB} GB"
 echo ""
@@ -297,7 +306,7 @@ echo ""
 search_vastai() {
     echo "=== vast.ai ==="
     local results
-    results=$(vastai search offers "num_gpus>=${NUM_GPUS} gpu_name=${GPU_NAME} disk_space>=${DISK_GB} cpu_ghz>=${MIN_CPU_GHZ} verified=true" -o 'dph' 2>/dev/null | head -6)
+    results=$(vastai search offers "num_gpus>=${NUM_GPUS} gpu_name=${GPU_NAME} disk_space>=${DISK_GB} cpu_ghz>=${SEARCH_CPU_GHZ} cpu_cores>=${MIN_VCPUS} verified=true" -o 'dph' 2>/dev/null | head -6)
     if [[ -z "$results" || $(echo "$results" | wc -l) -le 1 ]]; then
         echo "  No matching instances found"
     else
@@ -348,24 +357,28 @@ for inst in data:
     disk_used = inst.get('disk_usage', 0) or 0
     disk_free = disk_total - disk_used
     cpu_ghz = inst.get('cpu_ghz', 0) or 0
+    vcpus = inst.get('cpu_cores_effective', 0) or inst.get('vcpus', 0) or 0
     ram = inst.get('total_ram', 0) or 0
     iid = inst.get('id', '')
     status = inst.get('actual_status', '?')
     if status != 'running':
         continue
     # Check if this instance can handle the videos
+    # NOTE: cpu_ghz from vast.ai is BOOST clock, not actual — use SEARCH_CPU_GHZ threshold
     gpu_ok = '${GPU_NAME}'.replace('_',' ') in gpu or '${GPU_NAME}'.replace('_','') in gpu.replace(' ','')
-    cpu_ok = cpu_ghz >= float('${MIN_CPU_GHZ}')
+    cpu_ok = cpu_ghz >= float('${SEARCH_CPU_GHZ}')
+    vcpu_ok = vcpus >= ${MIN_VCPUS}
     ram_ok = ram >= ${MIN_RAM_GB}
     disk_ok = disk_free >= ${DISK_GB} * 0.5  # need at least half the required disk free
-    fit = 'MATCH' if gpu_ok and cpu_ok and ram_ok and disk_ok else 'no fit'
+    fit = 'MATCH' if gpu_ok and cpu_ok and vcpu_ok and ram_ok and disk_ok else 'no fit'
     reason = []
     if not gpu_ok: reason.append(f'GPU:{gpu}')
-    if not cpu_ok: reason.append(f'CPU:{cpu_ghz:.1f}GHz')
+    if not cpu_ok: reason.append(f'CPU:{cpu_ghz:.1f}GHz boost<${SEARCH_CPU_GHZ}')
+    if not vcpu_ok: reason.append(f'vCPUs:{vcpus:.0f}<${MIN_VCPUS}')
     if not ram_ok: reason.append(f'RAM:{ram:.0f}GB')
     if not disk_ok: reason.append(f'Disk:{disk_free:.0f}GB free')
     reason_str = ' (' + ', '.join(reason) + ')' if reason else ''
-    print(f'  {iid:>10} {label:<30} {num_gpus}x {gpu:<12} {cpu_ghz:.1f}GHz {ram:.0f}GB RAM {disk_free:.0f}GB free \${dph:.2f}/hr [{fit}{reason_str}]')
+    print(f'  {iid:>10} {label:<30} {num_gpus}x {gpu:<12} {cpu_ghz:.1f}GHz {int(vcpus)}vCPU {ram:.0f}GB RAM {disk_free:.0f}GB free \${dph:.2f}/hr [{fit}{reason_str}]')
 " 2>/dev/null)
     if [[ -z "$instances" ]]; then
         echo "  No running instances"
@@ -407,10 +420,11 @@ for inst in data:
     if inst.get('actual_status') != 'running': continue
     gpu = inst.get('gpu_name', '')
     cpu_ghz = inst.get('cpu_ghz', 0) or 0
+    vcpus = inst.get('cpu_cores_effective', 0) or inst.get('vcpus', 0) or 0
     ram = inst.get('total_ram', 0) or 0
     disk_free = (inst.get('disk_space', 0) or 0) - (inst.get('disk_usage', 0) or 0)
     gpu_ok = '${GPU_NAME}'.replace('_',' ') in gpu or '${GPU_NAME}'.replace('_','') in gpu.replace(' ','')
-    if gpu_ok and cpu_ghz >= float('${MIN_CPU_GHZ}') and ram >= ${MIN_RAM_GB} and disk_free >= ${DISK_GB} * 0.3:
+    if gpu_ok and cpu_ghz >= float('${SEARCH_CPU_GHZ}') and vcpus >= ${MIN_VCPUS} and ram >= ${MIN_RAM_GB} and disk_free >= ${DISK_GB} * 0.3:
         print(inst.get('id', ''))
         break
 " 2>/dev/null)
@@ -503,7 +517,7 @@ fi
 echo ""
 
 # Get vast.ai offers
-SEARCH_RESULTS=$(vastai search offers "num_gpus>=${NUM_GPUS} gpu_name=${GPU_NAME} disk_space>=${DISK_GB} cpu_ghz>=${MIN_CPU_GHZ} verified=true" -o 'dph' 2>/dev/null | head -8)
+SEARCH_RESULTS=$(vastai search offers "num_gpus>=${NUM_GPUS} gpu_name=${GPU_NAME} disk_space>=${DISK_GB} cpu_ghz>=${SEARCH_CPU_GHZ} cpu_cores>=${MIN_VCPUS} verified=true" -o 'dph' 2>/dev/null | head -8)
 
 if [[ -z "$SEARCH_RESULTS" || $(echo "$SEARCH_RESULTS" | wc -l) -le 1 ]]; then
     echo "No matching instances found on vast.ai!"
@@ -514,7 +528,7 @@ fi
 echo "=== Available instances (need ${DISK_GB} GB disk) ==="
 echo "$SEARCH_RESULTS" | awk -v need="$DISK_GB" 'NR==1 {next} {
     id=$1; gpu=$4; pcie=$5; cpu=$6; vcpu=$7; ram=$8; disk=$9; price=$10; net_up=$16; net_down=$17; loc=$NF
-    printf "[%d] %-20s %sx %s  CPU: %s GHz  RAM: %s GB  Disk: %s GB (need %s GB)  Net: %s/%s Mbps  $%s/hr  (%s)\n", NR-1, loc, $3, gpu, cpu, ram, disk, need, net_up, net_down, price, id
+    printf "[%d] %-20s %sx %s  CPU: %s GHz (boost)  vCPUs: %s  RAM: %s GB  Disk: %s GB (need %s GB)  $%s/hr  (%s)\n", NR-1, loc, $3, gpu, cpu, vcpu, ram, disk, need, price, id
 }'
 echo ""
 
