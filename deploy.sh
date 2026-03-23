@@ -123,9 +123,8 @@ if pgrep -x status_server > /dev/null; then echo "status_server restarted"; else
             done
 
             echo ""
-            echo "  Files uploaded. Now restart:"
-            echo ""
-            echo "  ssh -p $UPD_PORT root@$UPD_HOST './restart.sh'"
+            echo "  Restarting..."
+            $UPD_SSH './restart.sh'
             exit 0
             ;;
         --plan)
