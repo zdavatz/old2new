@@ -313,23 +313,28 @@ import json, sys
 data = json.load(sys.stdin)[:5]
 if not data:
     sys.exit(1)
+hdr = f\"{'Location':<18s} {'ID':<11s} {'GPU':<12s} {'CPU':<26s} {'GHz':>4s} {'vCPU':>5s} {'Disk':>6s} {'IO MB/s':>8s} {'Net D/U':>10s} {'$/hr':>7s}\"
+print(hdr)
+print('-' * len(hdr))
 for d in data:
     loc = d.get('geolocation', '?')
+    if len(loc) > 17: loc = loc[:17]
     num = d.get('num_gpus', 1)
     gpu = d.get('gpu_name', '?')
     cpu_ghz = d.get('cpu_ghz', 0) or 0
     cpu_name = d.get('cpu_name', '?')
     for rm in ['Intel(R) ', 'AMD ', '(R)', '(TM)', ' Processor', '-Core']:
         cpu_name = cpu_name.replace(rm, '')
-    vcpu = d.get('cpu_cores_effective', 0) or 0
-    disk = d.get('disk_space', 0) or 0
-    disk_bw = d.get('disk_bw', 0) or 0
+    if len(cpu_name) > 25: cpu_name = cpu_name[:25]
+    vcpu = int(d.get('cpu_cores_effective', 0) or 0)
+    disk = int(d.get('disk_space', 0) or 0)
+    disk_bw = int(d.get('disk_bw', 0) or 0)
     price = d.get('dph_total', 0) or 0
     oid = d.get('id', '?')
-    inet_down = d.get('inet_down', 0) or 0
-    inet_up = d.get('inet_up', 0) or 0
-    disk_warn = ' !!SLOW' if disk_bw > 0 and disk_bw < 1000 else ''
-    print(f'{loc:<20s} {oid:<12} {num}x {gpu:<10s} {cpu_name:<28s} {cpu_ghz:.1f}GHz {int(vcpu)}vCPU {disk:.0f}GB {disk_bw:.0f}MB/s{disk_warn} Net:{inet_down:.0f}/{inet_up:.0f} \${price:.2f}/hr')
+    inet_down = int(d.get('inet_down', 0) or 0)
+    inet_up = int(d.get('inet_up', 0) or 0)
+    slow = '*' if disk_bw > 0 and disk_bw < 1000 else ''
+    print(f'{loc:<18s} {oid:<11s} {num}x {gpu:<9s} {cpu_name:<26s} {cpu_ghz:>4.1f} {vcpu:>5d} {disk:>5d}G {disk_bw:>7d}{slow} {inet_down:>5d}/{inet_up:<4d} {price:>7.4f}')
 " 2>/dev/null)
     if [[ -z "$formatted" ]]; then
         echo "  No matching instances found"
@@ -548,33 +553,29 @@ import json, sys
 data = json.load(sys.stdin)[:7]  # top 7 by price
 if not data:
     sys.exit(1)
+hdr = f\"{'#':>3s} {'Location':<18s} {'GPU':<12s} {'CPU':<26s} {'GHz':>4s} {'vCPU':>5s} {'Disk':>6s} {'IO MB/s':>8s} {'Net D/U':>10s} {'$/hr':>7s} {'ID':>11s}\"
+print(hdr)
+print('-' * len(hdr))
 for i, d in enumerate(data):
     loc = d.get('geolocation', '?')
+    if len(loc) > 17: loc = loc[:17]
     num = d.get('num_gpus', 1)
     gpu = d.get('gpu_name', '?')
     cpu_ghz = d.get('cpu_ghz', 0) or 0
     cpu_name = d.get('cpu_name', '?')
-    # Shorten cpu_name: remove 'Intel(R)', 'AMD', '(R)', '(TM)', '-Core Processor'
     for rm in ['Intel(R) ', 'AMD ', '(R)', '(TM)', ' Processor', '-Core']:
         cpu_name = cpu_name.replace(rm, '')
     cpu_name = cpu_name.strip()
-    vcpu = d.get('cpu_cores_effective', 0) or 0
-    ram = d.get('cpu_ram', 0) or 0
-    ram_gb = ram / 1024
-    disk = d.get('disk_space', 0) or 0
-    disk_bw = d.get('disk_bw', 0) or 0
-    disk_name = d.get('disk_name', '?')
-    # Shorten disk_name
-    for rm in ['Samsung ', 'SSD ', 'NVMe ', 'INTEL ', 'Micron ']:
-        disk_name = disk_name.replace(rm, '')
-    if len(disk_name) > 16:
-        disk_name = disk_name[:16]
-    inet_down = d.get('inet_down', 0) or 0
-    inet_up = d.get('inet_up', 0) or 0
+    if len(cpu_name) > 25: cpu_name = cpu_name[:25]
+    vcpu = int(d.get('cpu_cores_effective', 0) or 0)
+    disk = int(d.get('disk_space', 0) or 0)
+    disk_bw = int(d.get('disk_bw', 0) or 0)
+    inet_down = int(d.get('inet_down', 0) or 0)
+    inet_up = int(d.get('inet_up', 0) or 0)
     price = d.get('dph_total', 0) or 0
-    oid = d.get('id', '?')
-    disk_warn = ' !!SLOW' if disk_bw > 0 and disk_bw < 1000 else ''
-    print(f'[{i+1}] {loc:<20s} {num}x {gpu:<10s}  {cpu_name:<28s} {cpu_ghz:.1f}GHz {int(vcpu)}vCPU  {disk:.0f}GB {disk_bw:.0f}MB/s{disk_warn}  Net:{inet_down:.0f}/{inet_up:.0f}Mbps  \${price:.4f}/hr  ({oid})')
+    oid = str(d.get('id', '?'))
+    slow = '*' if disk_bw > 0 and disk_bw < 1000 else ''
+    print(f'[{i+1:>1}] {loc:<18s} {num}x {gpu:<9s} {cpu_name:<26s} {cpu_ghz:>4.1f} {vcpu:>5d} {disk:>5d}G {disk_bw:>7d}{slow} {inet_down:>5d}/{inet_up:<4d} {price:>7.4f} {oid:>11s}')
 " 2>/dev/null)
 
 if [[ -z "$OFFER_LIST" ]]; then
