@@ -122,7 +122,7 @@ The script automatically:
 - Warns if mixed GPU types (recommends separate deploys)
 - Shows numbered list of matching instances — user chooses (not auto-cheapest)
 - Deploys scripts, Rust binaries, credentials, and JSON queue
-- Starts `multi_gpu_queue.sh` (multi-GPU) or `enhance.sh` (single-GPU)
+- Starts `multi_gpu_queue.sh` with actual GPU count from machine (auto-detected via nvidia-smi, not from video count)
 - **Safety**: Ctrl+C auto-destroys created instance (no cost leak). Instance stuck loading > 10 min → asks to destroy.
 
 #### Dashboard (Rust)
