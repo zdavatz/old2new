@@ -617,6 +617,34 @@ fn parse_fps_from_logs() -> (f64, HashMap<String, f64>, String) {
 
 /// Parse ffmpeg reassembly progress from GPU logs or enhance.log
 /// Looks for "frame= 12345" pattern and calculates % of total frames
+fn parse_ffmpeg_frame(job_name: &str, total_frames: u64) -> u64 {
+    if total_frames == 0 {
+        return 0;
+    }
+    let home = home_dir();
+    let mut last_frame: u64 = 0;
+    for log_name in &["gpu0.log", "gpu1.log", "gpu2.log", "gpu3.log", "enhance.log"] {
+        let path = home.join(log_name);
+        let tail = read_tail(&path, 8192);
+        if !tail.contains(job_name) && *log_name != "enhance.log" {
+            continue;
+        }
+        for line in tail.lines() {
+            if let Some(idx) = line.find("frame=") {
+                let rest = line[idx + 6..].trim_start();
+                if let Some(num_end) = rest.find(|c: char| !c.is_ascii_digit()) {
+                    if let Ok(f) = rest[..num_end].parse::<u64>() {
+                        if f > last_frame {
+                            last_frame = f;
+                        }
+                    }
+                }
+            }
+        }
+    }
+    last_frame
+}
+
 fn parse_ffmpeg_progress(job_name: &str, total_frames: u64) -> String {
     if total_frames == 0 {
         return String::new();
@@ -989,14 +1017,20 @@ async fn build_status() -> StatusResponse {
                 } else {
                     "queued"
                 };
-                // For assembling: parse ffmpeg progress from GPU log
-                let asm_eta = if st == "assembling" {
-                    parse_ffmpeg_progress(&title, total)
+                // For assembling: parse ffmpeg progress from GPU log and use for progress bar
+                if st == "assembling" {
+                    let asm_info = parse_ffmpeg_progress(&title, total);
+                    // Extract frame count from ffmpeg for progress bar
+                    let asm_frame = parse_ffmpeg_frame(&title, total);
+                    let asm_pct = if total > 0 && asm_frame > 0 {
+                        (asm_frame as f64 / total as f64 * 1000.0).round() / 10.0
+                    } else {
+                        0.0
+                    };
+                    (st.to_string(), total, asm_frame, asm_pct, asm_info)
                 } else {
-                    String::new()
-                };
-                let final_eta = if asm_eta.is_empty() { String::new() } else { asm_eta };
-                (st.to_string(), total, count_out, pct, final_eta)
+                    (st.to_string(), total, count_out, pct, String::new())
+                }
             } else if frames_in_dir.exists() {
                 let st = if is_enhancing || is_ffmpeg {
                     "extracting"
