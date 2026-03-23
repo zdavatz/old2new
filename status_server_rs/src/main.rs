@@ -668,6 +668,53 @@ fn parse_ffmpeg_progress(job_name: &str, total_frames: u64) -> String {
     }
 }
 
+/// Parse YouTube upload progress from GPU logs or enhance.log
+/// Looks for "Uploading: 45%" pattern from youtube_upload binary
+fn parse_upload_progress(job_name: &str) -> (f64, String) {
+    let home = home_dir();
+    let mut last_pct: f64 = 0.0;
+    let mut file_info = String::new();
+
+    for log_name in &["gpu0.log", "gpu1.log", "gpu2.log", "gpu3.log", "enhance.log"] {
+        let path = home.join(log_name);
+        let tail = read_tail(&path, 8192);
+        if !tail.contains(job_name) && *log_name != "enhance.log" {
+            continue;
+        }
+        for line in tail.lines() {
+            // Parse "Uploading: 45%" or "  Uploading: 45%"
+            if let Some(idx) = line.find("Uploading:") {
+                let rest = line[idx + 10..].trim();
+                if let Some(pct_end) = rest.find('%') {
+                    if let Ok(pct) = rest[..pct_end].trim().parse::<f64>() {
+                        if pct > last_pct {
+                            last_pct = pct;
+                        }
+                    }
+                }
+            }
+            // Parse file size: "Uploading: video.mkv (1234 MB)"
+            if line.contains("Uploading:") && line.contains("MB)") {
+                if let Some(start) = line.find('(') {
+                    if let Some(end) = line.find("MB)") {
+                        file_info = line[start + 1..end + 2].trim().to_string();
+                    }
+                }
+            }
+        }
+    }
+    let info = if last_pct > 0.0 {
+        if file_info.is_empty() {
+            format!("{:.0}%", last_pct)
+        } else {
+            format!("{:.0}% of {}", last_pct, file_info)
+        }
+    } else {
+        String::new()
+    };
+    (last_pct, info)
+}
+
 fn parse_fps_line(line: &str) -> Option<f64> {
     // Match pattern: "1234/5678 (2.50 fps" or "2.50 fps"
     let idx = line.find("fps")?;
@@ -869,18 +916,25 @@ async fn build_status() -> StatusResponse {
             let enhanced_mkv = find_enhanced_mkv(&job_dir, &title, scale);
 
             let (status, total_frames, done_frames, progress, eta) = if is_uploading {
-                // youtube_upload process running
+                // youtube_upload process running — parse upload progress from logs
                 let size_mb = enhanced_mkv
                     .as_ref()
                     .and_then(|p| fs::metadata(p).ok())
                     .map(|m| m.len() as f64 / (1024.0 * 1024.0))
                     .unwrap_or(0.0);
+                let (upload_pct, upload_info) = parse_upload_progress(&title);
+                let pct = if upload_pct > 0.0 { upload_pct } else { 0.0 };
+                let eta_str = if upload_info.is_empty() {
+                    format!("{:.0} MB", size_mb)
+                } else {
+                    upload_info
+                };
                 (
                     "uploading".to_string(),
                     0u64,
                     0u64,
-                    100.0,
-                    format!("{:.0} MB", size_mb),
+                    pct,
+                    eta_str,
                 )
             } else if enhanced_mkv.is_some() && !is_ffmpeg {
                 // Enhanced MKV exists, no ffmpeg running = done
