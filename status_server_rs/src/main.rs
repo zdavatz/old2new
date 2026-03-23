@@ -630,7 +630,12 @@ fn parse_ffmpeg_frame(job_name: &str, total_frames: u64) -> u64 {
             continue;
         }
         for line in tail.lines() {
+            // Only match reassembly ffmpeg lines (have "size=" with actual data, not "N/A")
+            // Extraction lines have "size=N/A", reassembly has "size= 12345KiB"
             if let Some(idx) = line.find("frame=") {
+                if !line.contains("size=") || line.contains("size=N/A") {
+                    continue; // skip extraction ffmpeg lines
+                }
                 let rest = line[idx + 6..].trim_start();
                 if let Some(num_end) = rest.find(|c: char| !c.is_ascii_digit()) {
                     if let Ok(f) = rest[..num_end].parse::<u64>() {
@@ -661,9 +666,12 @@ fn parse_ffmpeg_progress(job_name: &str, total_frames: u64) -> String {
         if !tail.contains(job_name) && *log_name != "enhance.log" {
             continue;
         }
-        // Parse "frame= 12345" and "speed=30.5x"
+        // Parse "frame= 12345" and "speed=30.5x" — only reassembly lines (have size= with data)
         for line in tail.lines() {
             if let Some(idx) = line.find("frame=") {
+                if !line.contains("size=") || line.contains("size=N/A") {
+                    continue; // skip extraction ffmpeg lines
+                }
                 let rest = line[idx + 6..].trim_start();
                 if let Some(num_end) = rest.find(|c: char| !c.is_ascii_digit()) {
                     if let Ok(f) = rest[..num_end].parse::<u64>() {
