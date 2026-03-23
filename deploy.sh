@@ -771,35 +771,55 @@ SSH="ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectT
 SCP="scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -P $SSH_PORT"
 
 ACTUAL_HW=$($SSH '
-    cpu_mhz=$(grep "cpu MHz" /proc/cpuinfo | head -1 | awk -F: "{print \$2}" | xargs)
     cpu_model=$(grep "model name" /proc/cpuinfo | head -1 | awk -F: "{print \$2}" | xargs)
     gpu=$(nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null | head -1)
     gpu_count=$(nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null | wc -l)
     ram_gb=$(free -g | grep Mem | awk "{print \$2}")
     disk_free_gb=$(df -BG / | tail -1 | awk "{print \$4}" | tr -d "G")
-    echo "$cpu_mhz|$cpu_model|$gpu|$gpu_count|$ram_gb|$disk_free_gb"
+    # Single-core CPU benchmark (~2s): hash loop, correlates with cv2 imread/imwrite
+    bench_score=$(python3 -c "
+import time, hashlib
+start = time.time()
+h = b\"bench\"
+for _ in range(500000):
+    h = hashlib.sha256(h).digest()
+elapsed = time.time() - start
+score = 500000 / elapsed  # hashes/sec, higher=faster
+# Reference: Ryzen 9950X ~1.8M, 7950X ~1.5M, Xeon 8481C@2.7GHz ~0.8M, throttled@1.5GHz ~0.4M
+print(f\"{score:.0f}\")
+" 2>/dev/null)
+    echo "$cpu_model|$gpu|$gpu_count|$ram_gb|$disk_free_gb|$bench_score"
 ' 2>/dev/null)
 
-IFS='|' read -r actual_mhz actual_cpu_model actual_gpu actual_gpu_count actual_ram actual_disk <<< "$ACTUAL_HW"
-actual_ghz=$(python3 -c "print(f'{float(\"${actual_mhz:-0}\") / 1000:.1f}')" 2>/dev/null)
+IFS='|' read -r actual_cpu_model actual_gpu actual_gpu_count actual_ram actual_disk bench_score <<< "$ACTUAL_HW"
 
-echo "  CPU: $actual_cpu_model @ ${actual_ghz} GHz (actual)"
+# Benchmark thresholds (hashes/sec): >=1.2M=good, 0.8-1.2M=ok, <0.8M=too slow
+bench_rating="GOOD"
+if python3 -c "exit(0 if float('${bench_score:-0}') < 800000 else 1)" 2>/dev/null; then
+    bench_rating="TOO SLOW"
+elif python3 -c "exit(0 if float('${bench_score:-0}') < 1200000 else 1)" 2>/dev/null; then
+    bench_rating="OK"
+fi
+bench_display=$(python3 -c "print(f'{float(\"${bench_score:-0}\") / 1000000:.2f}M')" 2>/dev/null)
+
+echo "  CPU: $actual_cpu_model"
+echo "  Benchmark: ${bench_display} hashes/sec (${bench_rating}) — Ryzen 9950X=1.8M, 7950X=1.5M"
 echo "  GPU: ${actual_gpu_count}x $actual_gpu"
 echo "  RAM: ${actual_ram} GB"
 echo "  Disk free: ${actual_disk} GB"
 
-if python3 -c "exit(0 if float('${actual_ghz:-0}') < float('$MIN_CPU_GHZ') else 1)" 2>/dev/null; then
+if [[ "$bench_rating" == "TOO SLOW" ]]; then
     echo ""
-    echo "  *** CPU TOO SLOW: ${actual_ghz} GHz actual < ${MIN_CPU_GHZ} GHz minimum ***"
-    echo "  vast.ai reported boost clock, but actual speed is ${actual_ghz} GHz."
-    echo "  RTX 5090 HD videos will be very slow (~0.3 fps instead of ~0.5 fps)."
+    echo "  *** CPU BENCHMARK TOO SLOW: ${bench_display} hashes/sec ***"
+    echo "  CPU is throttled or misconfigured (power-saving mode?)."
+    echo "  RTX 5090 HD videos will be very slow (~0.1 fps instead of ~0.5 fps)."
     echo ""
     read -p "  Continue anyway, or destroy instance? [c=continue / D=destroy] " cpu_choice
     if [[ "$cpu_choice" != "c" && "$cpu_choice" != "C" ]]; then
         # Blacklist this machine so we don't pick it again
         MACHINE_ID=$(vastai show instance "$INSTANCE_ID" --raw 2>/dev/null | python3 -c "import json,sys; print(json.load(sys.stdin).get('machine_id',''))" 2>/dev/null)
         if [[ -n "$MACHINE_ID" ]]; then
-            echo "${MACHINE_ID}  # ${actual_cpu_model} @ ${actual_ghz} GHz — too slow" >> "$SCRIPT_DIR/blacklist_machines.txt"
+            echo "${MACHINE_ID}  # ${actual_cpu_model} — bench ${bench_display} (too slow)" >> "$BLACKLIST_FILE"
             echo "  Blacklisted machine $MACHINE_ID (${actual_cpu_model})"
         fi
         echo "  Destroying instance $INSTANCE_ID..."
