@@ -76,11 +76,13 @@ def main():
         tmp_path = out_path.rsplit(".", 1)[0] + ".tmp.png"
         cv2.imwrite(tmp_path, output)
         os.rename(tmp_path, out_path)
-        # Delete input frame to free disk
-        try:
-            os.remove(in_path)
-        except OSError:
-            pass
+        # Delete input frame to free disk, but keep last 10 for compare view
+        if i >= 10:
+            old_in_path = todo[i - 10][0]
+            try:
+                os.remove(old_in_path)
+            except OSError:
+                pass
 
         processed = i + 1
         if processed % 10 == 0 or processed == len(todo):

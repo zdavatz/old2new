@@ -1248,8 +1248,26 @@ async fn compare_page(Path(title): Path<String>) -> Html<String> {
     let frames_in_dir = job_dir.join("frames_in");
     let frames_out_dir = job_dir.join("frames_out");
 
-    // Find frames present in both directories
-    let out_names: HashSet<String> = fs::read_dir(&frames_out_dir)
+    // Find frames: prefer pairs (in both dirs), fallback to frames_out only (input deleted during upscale)
+    let out_names: Vec<String> = fs::read_dir(&frames_out_dir)
+        .ok()
+        .map(|entries| {
+            entries
+                .filter_map(|e| e.ok())
+                .filter_map(|e| {
+                    let n = e.file_name().to_string_lossy().to_string();
+                    if n.starts_with("frame_") && n.ends_with(".png") && !n.contains(".tmp") {
+                        Some(n)
+                    } else {
+                        None
+                    }
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    let out_set: HashSet<String> = out_names.iter().cloned().collect();
+
+    let in_names: HashSet<String> = fs::read_dir(&frames_in_dir)
         .ok()
         .map(|entries| {
             entries
@@ -1266,23 +1284,22 @@ async fn compare_page(Path(title): Path<String>) -> Html<String> {
         })
         .unwrap_or_default();
 
-    let mut available: Vec<String> = fs::read_dir(&frames_in_dir)
-        .ok()
-        .map(|entries| {
-            entries
-                .filter_map(|e| e.ok())
-                .filter_map(|e| {
-                    let n = e.file_name().to_string_lossy().to_string();
-                    if n.starts_with("frame_") && n.ends_with(".png") && out_names.contains(&n) {
-                        Some(n)
-                    } else {
-                        None
-                    }
-                })
-                .collect()
-        })
-        .unwrap_or_default();
-    available.sort();
+    // Frames in both dirs (for side-by-side compare)
+    let mut paired: Vec<String> = out_names.iter()
+        .filter(|n| in_names.contains(*n))
+        .cloned()
+        .collect();
+    paired.sort();
+
+    // If no paired frames, use last 10 from frames_out only
+    let (available, has_input) = if !paired.is_empty() {
+        (paired, true)
+    } else {
+        let mut out_sorted: Vec<String> = out_names;
+        out_sorted.sort();
+        let start = out_sorted.len().saturating_sub(10);
+        (out_sorted[start..].to_vec(), false)
+    };
 
     if available.is_empty() {
         return Html(
@@ -1294,6 +1311,7 @@ async fn compare_page(Path(title): Path<String>) -> Html<String> {
     }
 
     let display_title = title.replace('_', " ");
+    let has_input_json = if has_input { "true" } else { "false" };
     // The JavaScript will handle frame navigation client-side
     Html(format!(
         r#"<!DOCTYPE html>
@@ -1321,7 +1339,7 @@ async fn compare_page(Path(title): Path<String>) -> Html<String> {
 <h1>{display_title}</h1>
 <div class="nav" id="nav"></div>
 <div class="compare">
-  <div class="panel">
+  <div class="panel" id="in-panel">
     <h2 id="in-label">Original</h2>
     <a id="in-link" target="_blank"><img id="in-img" alt="Original"></a>
   </div>
@@ -1333,17 +1351,21 @@ async fn compare_page(Path(title): Path<String>) -> Html<String> {
 <script>
 const title = {title_json};
 const frames = {frames_json};
+const hasInput = {has_input_json};
 const total = frames.length;
 let idx = Math.min(Math.floor(total / 5), total - 1);
+if (!hasInput) {{ document.getElementById('in-panel').style.display = 'none'; }}
 
 function show(i) {{
   idx = Math.max(0, Math.min(i, total - 1));
   const f = frames[idx];
-  document.getElementById('in-img').src = '/frames/' + title + '/in/' + f;
-  document.getElementById('in-link').href = '/frames/' + title + '/in/' + f;
+  if (hasInput) {{
+    document.getElementById('in-img').src = '/frames/' + title + '/in/' + f;
+    document.getElementById('in-link').href = '/frames/' + title + '/in/' + f;
+    document.getElementById('in-label').textContent = 'Original (' + f + ')';
+  }}
   document.getElementById('out-img').src = '/frames/' + title + '/out/' + f;
   document.getElementById('out-link').href = '/frames/' + title + '/out/' + f;
-  document.getElementById('in-label').textContent = 'Original (' + f + ')';
   document.getElementById('out-label').textContent = 'Enhanced (' + f + ')';
   var nav = document.getElementById('nav');
   nav.innerHTML =
@@ -1369,6 +1391,7 @@ document.addEventListener('keydown', function(e) {{
         display_title = display_title,
         title_json = serde_json::to_string(&title).unwrap_or_default(),
         frames_json = serde_json::to_string(&available).unwrap_or_default(),
+        has_input_json = has_input_json,
     ))
 }
 
