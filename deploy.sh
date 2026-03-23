@@ -922,9 +922,11 @@ echo "============================================="
 echo ""
 
 echo "=== Starting processing ==="
+# Use actual GPU count from machine (auto-detected in Phase 7), not search NUM_GPUS
+ACTUAL_GPUS="${actual_gpu_count:-$NUM_GPUS}"
 ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=10 -f root@"$SSH_HOST" -p "$SSH_PORT" \
-    "sudo bash -c 'cd /root && nohup ./multi_gpu_queue.sh $NUM_GPUS >> /root/enhance.log 2>&1 &'" 2>/dev/null
-echo "Started multi_gpu_queue.sh on $NUM_GPUS GPU(s)"
+    "sudo bash -c 'cd /root && nohup ./multi_gpu_queue.sh $ACTUAL_GPUS >> /root/enhance.log 2>&1 &'" 2>/dev/null
+echo "Started multi_gpu_queue.sh on $ACTUAL_GPUS GPU(s)"
 
 # Save machine_id + benchmark score to cache (has our Docker image now)
 DEPLOY_MACHINE_ID=$(vastai show instance "$INSTANCE_ID" --raw 2>/dev/null | python3 -c "import json,sys; print(json.load(sys.stdin).get('machine_id',''))" 2>/dev/null)
