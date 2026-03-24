@@ -104,8 +104,10 @@ gpu_worker() {
         ')
 
         if [[ -z "$json_file" ]]; then
-            echo "[GPU $gpu] No more videos in queue. Done at $(date)."
-            break
+            # No video available — wait and poll instead of exiting
+            # Videos may be added to the queue later
+            sleep 30
+            continue
         fi
 
         local processing_path="$QUEUE_DIR/${json_file}.processing.${gpu}"
