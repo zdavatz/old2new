@@ -28,6 +28,15 @@ echo ""
 echo "=== Replacing binaries ==="
 mv -f /root/status_server.new /root/status_server 2>/dev/null && echo "  status_server replaced" || echo "  status_server: no .new file"
 mv -f /root/youtube_upload.new /root/youtube_upload 2>/dev/null && echo "  youtube_upload replaced" || echo "  youtube_upload: no .new file"
+# Fallback to Docker image binaries if local ones fail (glibc mismatch)
+if ! /root/status_server --help >/dev/null 2>&1 && [ -f /usr/local/bin/status_server ]; then
+    cp /usr/local/bin/status_server /root/status_server
+    echo "  status_server: using Docker image binary (glibc compat)"
+fi
+if ! /root/youtube_upload --help >/dev/null 2>&1 && [ -f /usr/local/bin/youtube_upload ]; then
+    cp /usr/local/bin/youtube_upload /root/youtube_upload
+    echo "  youtube_upload: using Docker image binary (glibc compat)"
+fi
 chmod +x /root/status_server /root/youtube_upload /root/enhance.sh /root/multi_gpu_queue.sh 2>/dev/null
 
 echo ""
