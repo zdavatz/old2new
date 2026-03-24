@@ -104,8 +104,59 @@ gpu_worker() {
         ')
 
         if [[ -z "$json_file" ]]; then
-            # No video available — wait and poll instead of exiting
-            # Videos may be added to the queue later
+            # No video available — check if we can help another GPU via dynamic joining
+            if [[ "$NUM_GPUS" -gt 1 ]]; then
+                local other_active
+                other_active=$(ls "$QUEUE_DIR"/*.processing.* 2>/dev/null | wc -l)
+                if [[ "$other_active" -ge 1 ]]; then
+                    # Find a video with remaining frames to help with
+                    local active_file active_vid job_dir frames_in frames_out remaining
+                    for af in "$QUEUE_DIR"/*.processing.*; do
+                        [ -f "$af" ] || continue
+                        active_vid=$(basename "$af" | sed 's/\.json\.processing\..*//')
+                        job_dir="$HOME/jobs/$active_vid"
+                        frames_in="$job_dir/frames_in"
+                        frames_out="$job_dir/frames_out"
+                        local total_in=$(ls "$frames_in"/frame_*.png 2>/dev/null | wc -l)
+                        local total_out=$(ls "$frames_out"/frame_*.png 2>/dev/null | wc -l)
+                        remaining=$((total_in - total_out))
+                        if [[ "$remaining" -gt 500 ]]; then
+                            active_file="$af"
+                            break
+                        fi
+                    done
+
+                    if [[ -n "${active_file:-}" && "$remaining" -gt 500 ]]; then
+                        local scale
+                        scale=$(python3 -c "import json; print(json.load(open('$active_file')).get('scale',4))" 2>/dev/null)
+
+                        # Count how many GPUs are free (including us)
+                        local busy_gpus free_gpus
+                        busy_gpus=$(ls "$QUEUE_DIR"/*.processing.* 2>/dev/null | wc -l)
+                        free_gpus=$((NUM_GPUS - busy_gpus))
+                        [[ "$free_gpus" -lt 1 ]] && free_gpus=1
+
+                        # Calculate our segment from the remaining frames
+                        # We take the LAST portion — the original GPU continues from the front
+                        local total_in
+                        total_in=$(ls "$frames_in"/frame_*.png 2>/dev/null | wc -l)
+                        local seg_size=$(( remaining / (free_gpus + 1) ))  # +1 for the original GPU
+                        local our_start=$(( total_in - seg_size ))
+                        [[ "$our_start" -lt 0 ]] && our_start=0
+
+                        echo "[GPU $gpu] Joining upscale for $active_vid: frames $our_start-$total_in ($seg_size frames, $free_gpus free GPUs)"
+
+                        CUDA_VISIBLE_DEVICES=$gpu python3 "$SCRIPT_DIR/upscale.py" \
+                            "$frames_in" "$frames_out" "$scale" \
+                            --start "$our_start" --end "$total_in" >> "$logfile" 2>&1
+
+                        echo "[GPU $gpu] Done helping with $active_vid"
+                        continue
+                    fi
+                fi
+            fi
+
+            # Normal polling — wait for new videos
             sleep 30
             continue
         fi
