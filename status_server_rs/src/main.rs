@@ -617,6 +617,60 @@ fn parse_fps_from_logs() -> (f64, HashMap<String, f64>, String) {
 
 /// Parse ffmpeg reassembly progress from GPU logs or enhance.log
 /// Looks for "frame= 12345" pattern and calculates % of total frames
+/// Parse yt-dlp download progress from GPU logs
+/// Looks for "[download] 45.2% of 1.2GiB" or "ERROR:" patterns
+fn parse_download_progress(job_name: &str) -> (f64, String) {
+    let home = home_dir();
+    let mut last_pct: f64 = 0.0;
+    let mut info = String::new();
+    let mut error_count = 0u32;
+
+    for log_name in &["gpu0.log", "gpu1.log", "gpu2.log", "gpu3.log"] {
+        let path = home.join(log_name);
+        let tail = read_tail(&path, 8192);
+        if !tail.contains(job_name) {
+            continue;
+        }
+        for line in tail.lines() {
+            // Parse "[download]  45.2% of  1.23GiB"
+            if line.contains("[download]") && line.contains('%') {
+                if let Some(idx) = line.find('%') {
+                    let before = line[..idx].trim_end();
+                    let num_start = before.rfind(|c: char| !c.is_ascii_digit() && c != '.')
+                        .map(|i| i + 1)
+                        .unwrap_or(0);
+                    if let Ok(pct) = before[num_start..].parse::<f64>() {
+                        if pct > last_pct {
+                            last_pct = pct;
+                        }
+                    }
+                }
+                // Extract file size info
+                if let Some(of_idx) = line.find("of") {
+                    let size_part = line[of_idx + 2..].trim();
+                    if let Some(end) = size_part.find(|c: char| c == ' ' || c == '\t') {
+                        info = size_part[..end].to_string();
+                    } else {
+                        info = size_part.to_string();
+                    }
+                }
+            }
+            // Count errors
+            if line.contains("ERROR:") {
+                error_count += 1;
+            }
+        }
+    }
+
+    if error_count > 3 && last_pct < 1.0 {
+        (0.0, "FAILED: download error (bot detection?)".to_string())
+    } else if last_pct > 0.0 {
+        (last_pct, if info.is_empty() { format!("{:.0}%", last_pct) } else { format!("{:.0}% of {}", last_pct, info) })
+    } else {
+        (0.0, String::new())
+    }
+}
+
 fn parse_ffmpeg_frame(job_name: &str, total_frames: u64) -> u64 {
     if total_frames == 0 {
         return 0;
@@ -1089,7 +1143,14 @@ async fn build_status() -> StatusResponse {
                 } else {
                     "queued"
                 };
-                (st.to_string(), 0u64, 0u64, 0.0, String::new())
+                // Parse download progress or detect failure from GPU logs
+                let (dl_pct, dl_info) = if st == "downloading" {
+                    parse_download_progress(&title)
+                } else {
+                    (0.0, String::new())
+                };
+                let final_st = if dl_info.contains("FAILED") { "failed" } else { st };
+                (final_st.to_string(), 0u64, 0u64, dl_pct, dl_info)
             };
 
             seen_titles.insert(title.clone());
