@@ -951,7 +951,7 @@ done
 
 # Final confirmation before deploying
 echo ""
-read -p "Proceed with deployment? [Y/n/d=destroy] " final_choice
+read -p "Proceed with deployment? [Y/d=destroy] " final_choice
 if [[ "$final_choice" == "d" || "$final_choice" == "D" ]]; then
     echo "  Destroying instance $INSTANCE_ID..."
     # Save benchmark to cache even if not deploying
@@ -964,10 +964,6 @@ if [[ "$final_choice" == "d" || "$final_choice" == "D" ]]; then
     echo "  Instance destroyed."
     INSTANCE_ID=""
     exit 1
-elif [[ "$final_choice" == "n" || "$final_choice" == "N" ]]; then
-    echo "  Instance kept running but not deployed: ssh -p $SSH_PORT root@$SSH_HOST"
-    echo "  Destroy later: ./deploy.sh destroy $INSTANCE_ID"
-    exit 0
 fi
 
 # ============================================================
