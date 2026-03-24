@@ -571,7 +571,7 @@ upscale_frames() {
     fi
 
     local TOTAL_FRAMES
-    TOTAL_FRAMES=$(ls "$FRAMES_IN"/frame_*.png 2>/dev/null | wc -l)
+    TOTAL_FRAMES=$(find "$FRAMES_IN" -maxdepth 1 -name "frame_*.png" 2>/dev/null | wc -l)
 
     if [[ "$AVAIL_GPUS" -gt 1 && "$TOTAL_FRAMES" -gt 1000 ]]; then
         # Multi-GPU segment splitting: divide frames across GPUs
