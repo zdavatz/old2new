@@ -936,4 +936,14 @@ if [[ -n "$DEPLOY_MACHINE_ID" ]]; then
     echo "${DEPLOY_MACHINE_ID}  ${bench_score:-0}  # ${OFFER_LOCATION} — ${NUM_GPUS}x ${GPU_LABEL} — ${actual_cpu_model}" >> "$CACHE_FILE"
 fi
 
+# Test dashboard HTTP proxy
+sleep 3
+if curl -s --connect-timeout 5 "$DASHBOARD_URL" >/dev/null 2>&1; then
+    echo "Dashboard: OK ($DASHBOARD_URL)"
+else
+    echo "WARNING: Dashboard not reachable via vast.ai proxy!"
+    echo "  Use SSH tunnel instead: ssh -p $SSH_PORT -L 8080:localhost:8080 root@$SSH_HOST"
+    echo "  Then open: http://localhost:8080"
+fi
+
 echo "Done."
