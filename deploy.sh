@@ -137,6 +137,8 @@ if pgrep -x status_server > /dev/null; then echo "status_server restarted"; else
             GPU_PREF="single"; shift ;;
         --multi)
             GPU_PREF="multi"; shift ;;
+        --multi-one)
+            GPU_PREF="multi-one"; shift ;;
         --instance)
             MODE="instance"; INSTANCE_ID="$2"; shift 2 ;;
         -h|--help)
@@ -147,7 +149,7 @@ if pgrep -x status_server > /dev/null; then echo "status_server restarted"; else
 done
 
 if [[ ${#VIDEO_IDS[@]} -eq 0 ]]; then
-    echo "Usage: $0 [new|--plan|--instance ID] [--single|--multi] [--vastai|--tensordock] <video_id> ..."
+    echo "Usage: $0 [new|--plan|--instance ID] [--single|--multi|--multi-one] [--vastai|--tensordock] <video_id> ..."
     echo "Run '$0 --help' for details."
     exit 1
 fi
@@ -327,6 +329,10 @@ fi
 # Single vs Multi GPU
 if [[ "$GPU_PREF" == "single" ]]; then
     NUM_GPUS=1
+elif [[ "$GPU_PREF" == "multi-one" ]]; then
+    NUM_GPUS=4
+    echo ""
+    echo "=== Multi-One mode: $NUM_GPUS GPUs × 1 video (segment splitting) ==="
 elif [[ "$GPU_PREF" == "multi" ]]; then
     NUM_GPUS=4
 elif [[ $VIDEO_COUNT -le 2 ]]; then
@@ -348,8 +354,9 @@ fi
 # Disk calculation — concurrent videos each need their own disk budget
 # Largest video determines minimum (even on multi-GPU, one video can fill the disk)
 MAX_SINGLE=$(printf '%s\n' "${VIDEOS[@]}" | sort -t'|' -k8 -rn | head -1 | cut -d'|' -f8)
-if [[ $NUM_GPUS -eq 1 ]]; then
-    DISK_GB=$((MAX_SINGLE + 100))  # single video + headroom
+if [[ "$GPU_PREF" == "multi-one" || $NUM_GPUS -eq 1 ]]; then
+    # multi-one: all GPUs work on 1 video (segment splitting), disk = single video
+    DISK_GB=$((MAX_SINGLE + 100))
 else
     # N largest concurrent (N = min of GPUs, videos)
     CONCURRENT=$(( NUM_GPUS < VIDEO_COUNT ? NUM_GPUS : VIDEO_COUNT ))
@@ -364,6 +371,9 @@ fi
 
 echo ""
 echo "=== Recommended Setup ==="
+if [[ "$GPU_PREF" == "multi-one" ]]; then
+    echo "  Mode: SEGMENT SPLITTING (${NUM_GPUS} GPUs × 1 video = ~${NUM_GPUS}x speedup)"
+fi
 echo "  GPU:  ${NUM_GPUS}x $GPU_LABEL"
 echo "  CPU:  >= ${MIN_CPU_GHZ} GHz actual (search: >= ${SEARCH_CPU_GHZ} GHz boost)"
 echo "  vCPUs: >= ${MIN_VCPUS}"
