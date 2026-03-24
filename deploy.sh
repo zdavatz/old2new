@@ -941,9 +941,19 @@ sleep 3
 if curl -s --connect-timeout 5 "$DASHBOARD_URL" >/dev/null 2>&1; then
     echo "Dashboard: OK ($DASHBOARD_URL)"
 else
+    echo ""
     echo "WARNING: Dashboard not reachable via vast.ai proxy!"
-    echo "  Use SSH tunnel instead: ssh -p $SSH_PORT -L 8080:localhost:8080 root@$SSH_HOST"
+    echo "  SSH tunnel: ssh -p $SSH_PORT -L 8080:localhost:8080 root@$SSH_HOST"
     echo "  Then open: http://localhost:8080"
+    echo ""
+    read -p "Continue with SSH tunnel, or destroy instance? [c=continue / D=destroy] " dash_choice
+    if [[ "$dash_choice" != "c" && "$dash_choice" != "C" ]]; then
+        echo "  Destroying instance $INSTANCE_ID..."
+        vastai destroy instance "$INSTANCE_ID" 2>/dev/null
+        echo "  Instance destroyed. Try a different host."
+        INSTANCE_ID=""
+        exit 1
+    fi
 fi
 
 echo "Done."
