@@ -926,7 +926,36 @@ ACTUAL_HW=$($SSH 'cpu_model=$(grep "model name" /proc/cpuinfo | head -1 | awk -F
 
 IFS='|' read -r actual_cpu_model actual_gpu actual_gpu_count actual_ram actual_disk <<< "$ACTUAL_HW"
 
-# Step 2: Run parallel CPU benchmark (separate SSH to avoid quoting hell)
+# Step 2: Verify CUDA works (catches driver/PyTorch mismatch before wasting time)
+CUDA_OK=$($SSH "python3 -c \"
+import torch
+if not torch.cuda.is_available():
+    print('NO_CUDA')
+else:
+    try:
+        torch.cuda.get_device_name(0)
+        print('OK')
+    except Exception as e:
+        print(f'FAIL:{e}')
+\"" 2>/dev/null)
+
+if [[ "$CUDA_OK" != "OK" ]]; then
+    echo ""
+    echo "  *** CUDA FAILED: $CUDA_OK ***"
+    echo "  GPU driver incompatible with PyTorch/CUDA in Docker image."
+    echo "  This host cannot run Real-ESRGAN."
+    echo ""
+    read -p "  Destroy instance? [Y/n] " cuda_choice
+    if [[ "$cuda_choice" != "n" && "$cuda_choice" != "N" ]]; then
+        echo "  Destroying instance $INSTANCE_ID..."
+        vastai destroy instance "$INSTANCE_ID" 2>/dev/null
+        echo "  Instance destroyed."
+        INSTANCE_ID=""
+        exit 1
+    fi
+fi
+
+# Step 3: Run parallel CPU benchmark (separate SSH to avoid quoting hell)
 ACTUAL_GPUS="${actual_gpu_count:-1}"
 bench_score=$($SSH "python3 -c \"
 import time, hashlib, multiprocessing
