@@ -188,7 +188,10 @@ title = d.get('title', '$vid')
 frames = int(dur * fps)
 input_sz = w * h * 3 / 2.5 / 1024 / 1024
 output_sz = w * scale * h * scale * 3 / 2.5 / 1024 / 1024
-disk_gb = (frames * input_sz + frames * output_sz) / 1024 * 1.2 + 5
+# Peak disk = max of extraction (all input) or upscaling (all output + 10 rolling input)
+all_in = frames * input_sz / 1024
+all_out = frames * output_sz / 1024
+disk_gb = max(all_in, all_out + 10 * input_sz / 1024) * 1.1 + 5
 print(f'{video_id}|{w}|{h}|{dur}|{mp}|{scale}|{gpu}|{disk_gb:.0f}|{title}')
 ")
 
@@ -278,17 +281,22 @@ if [[ "$GPU_PREF" == "multi" && $VIDEO_COUNT -le 1 ]]; then
     echo "NOTE: 1 video on multi GPU — extra GPUs will be idle."
 fi
 
-# Disk calculation
+# Disk calculation — concurrent videos each need their own disk budget
+# Largest video determines minimum (even on multi-GPU, one video can fill the disk)
+MAX_SINGLE=$(printf '%s\n' "${VIDEOS[@]}" | sort -t'|' -k8 -rn | head -1 | cut -d'|' -f8)
 if [[ $NUM_GPUS -eq 1 ]]; then
-    # Largest single video × 2 for safety
-    MAX_SINGLE=$(printf '%s\n' "${VIDEOS[@]}" | sort -t'|' -k8 -rn | head -1 | cut -d'|' -f8)
-    DISK_GB=$((MAX_SINGLE * 2))
+    DISK_GB=$((MAX_SINGLE + 100))  # single video + headroom
 else
-    # 4 largest concurrent
-    TOP4_DISK=$(printf '%s\n' "${VIDEOS[@]}" | sort -t'|' -k8 -rn | head -4 | awk -F'|' '{sum+=$8} END {print int(sum)}')
-    DISK_GB=$((TOP4_DISK + 100))
+    # N largest concurrent (N = min of GPUs, videos)
+    CONCURRENT=$(( NUM_GPUS < VIDEO_COUNT ? NUM_GPUS : VIDEO_COUNT ))
+    TOP_N_DISK=$(printf '%s\n' "${VIDEOS[@]}" | sort -t'|' -k8 -rn | head -"$CONCURRENT" | awk -F'|' '{sum+=$8} END {print int(sum)}')
+    DISK_GB=$((TOP_N_DISK + 100))
 fi
 [[ $DISK_GB -lt 500 ]] && DISK_GB=500
+# Show warning if largest video needs >60% of total disk
+if [[ $((MAX_SINGLE * 100 / DISK_GB)) -gt 60 ]]; then
+    echo "  NOTE: Largest video needs ~${MAX_SINGLE}GB — may not fit on shared instances"
+fi
 
 echo ""
 echo "=== Recommended Setup ==="
