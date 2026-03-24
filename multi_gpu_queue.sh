@@ -126,12 +126,29 @@ gpu_worker() {
 
         echo "[GPU $gpu] Starting: $title ($vid) ($(date +%H:%M))"
 
+        # Check if this is the only video and multiple GPUs are free → segment splitting
+        local remaining_queue
+        remaining_queue=$(ls "$QUEUE_DIR"/*.json 2>/dev/null | wc -l)
+        local other_processing
+        other_processing=$(ls "$QUEUE_DIR"/*.processing.* 2>/dev/null | grep -v "processing.${gpu}" | wc -l)
+        local use_segment_split=0
+        if [[ "$remaining_queue" -eq 0 && "$other_processing" -eq 0 && "$NUM_GPUS" -gt 1 ]]; then
+            use_segment_split=1
+            echo "[GPU $gpu] Only video in queue — segment splitting across $NUM_GPUS GPUs"
+        fi
+
         # Retry on OOM-kill (exit > 128)
         local max_retries=3 retry=0
         local success=0
         while true; do
-            "$SCRIPT_DIR/enhance.sh" "https://www.youtube.com/watch?v=$vid" "$scale" \
-                --job-name "$vid" --gpu "$gpu" >> "$logfile" 2>&1
+            if [[ "$use_segment_split" -eq 1 ]]; then
+                # No --gpu flag → enhance.sh detects all GPUs and splits segments
+                "$SCRIPT_DIR/enhance.sh" "https://www.youtube.com/watch?v=$vid" "$scale" \
+                    --job-name "$vid" >> "$logfile" 2>&1
+            else
+                "$SCRIPT_DIR/enhance.sh" "https://www.youtube.com/watch?v=$vid" "$scale" \
+                    --job-name "$vid" --gpu "$gpu" >> "$logfile" 2>&1
+            fi
             local exit_code=$?
 
             if [[ $exit_code -eq 0 ]]; then
