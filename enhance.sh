@@ -821,11 +821,25 @@ fi
 main() {
     parse_args "$@"
     write_job_meta
-    preflight_checks
-    pre_download_disk_check
-    download_video
-    update_job_meta
-    extract_frames
+
+    # Fast resume: if frames already exist, skip download/extract entirely
+    local EXISTING_OUT EXISTING_IN
+    EXISTING_OUT=$(find "$FRAMES_OUT" -maxdepth 1 -name "frame_*.png" 2>/dev/null | wc -l)
+    EXISTING_IN=$(find "$FRAMES_IN" -maxdepth 1 -name "frame_*.png" 2>/dev/null | wc -l)
+    if [[ "$EXISTING_IN" -gt 0 || "$EXISTING_OUT" -gt 0 ]]; then
+        echo "Resuming: $EXISTING_IN input frames, $EXISTING_OUT output frames"
+        # Still need video info for reassembly (fps, resolution)
+        if [[ -f "$INPUT" ]]; then
+            update_job_meta
+        fi
+    else
+        preflight_checks
+        pre_download_disk_check
+        download_video
+        update_job_meta
+        extract_frames
+    fi
+
     upscale_frames
     reassemble_video
     write_timing
