@@ -987,14 +987,27 @@ if factor < 0.5: factor = max(0.2, factor * 0.8)  # below 2M, degradation is wor
 print(f'{factor:.2f}')
 " 2>/dev/null)
 echo "  CPU speed factor: ${CPU_FACTOR}x (1.0 = Ryzen 9950X baseline)"
+if [[ "$GPU_PREF" == "multi-one" ]]; then
+    echo "  Segment splitting: ${ACTUAL_GPUS} GPUs (÷${ACTUAL_GPUS} speedup)"
+fi
 echo ""
-printf "  %-45s %6s  %6s  %6s\n" "Video" "Est.h" "Adj.h" "fps"
-printf "  %-45s %6s  %6s  %6s\n" "-----" "-----" "-----" "---"
+if [[ "$GPU_PREF" == "multi-one" ]]; then
+    printf "  %-45s %6s  %6s  %8s  %6s\n" "Video" "1-GPU" "Adj/1" "Adj/${ACTUAL_GPUS}GPU" "fps/GPU"
+    printf "  %-45s %6s  %6s  %8s  %6s\n" "-----" "-----" "-----" "--------" "------"
+else
+    printf "  %-45s %6s  %6s  %6s\n" "Video" "Est.h" "Adj.h" "fps"
+    printf "  %-45s %6s  %6s  %6s\n" "-----" "-----" "-----" "---"
+fi
 for vinfo in "${VIDEOS[@]}"; do
     IFS='|' read -r vi_id vi_w vi_h vi_dur vi_mp vi_scale vi_gpu vi_disk vi_title vi_hours vi_fps <<< "$vinfo"
     adj_hours=$(python3 -c "print(f'{float(\"$vi_hours\") / float(\"$CPU_FACTOR\"):.1f}')" 2>/dev/null)
     adj_fps=$(python3 -c "print(f'{float(\"$vi_fps\") * float(\"$CPU_FACTOR\"):.2f}')" 2>/dev/null)
-    printf "  %-45s %5sh  %5sh  %5s\n" "$vi_title" "$vi_hours" "$adj_hours" "$adj_fps"
+    if [[ "$GPU_PREF" == "multi-one" ]]; then
+        split_hours=$(python3 -c "print(f'{float(\"$adj_hours\") / float(\"$ACTUAL_GPUS\"):.1f}')" 2>/dev/null)
+        printf "  %-45s %5sh  %5sh  %7sh  %5s\n" "$vi_title" "$vi_hours" "$adj_hours" "$split_hours" "$adj_fps"
+    else
+        printf "  %-45s %5sh  %5sh  %5s\n" "$vi_title" "$vi_hours" "$adj_hours" "$adj_fps"
+    fi
 done
 
 # Final confirmation before deploying
