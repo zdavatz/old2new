@@ -930,22 +930,19 @@ ACTUAL_HW=$($SSH '
     # Multi-core CPU benchmark: run N parallel hash loops (N = GPU count)
     # Simulates actual load: each GPU needs its own cv2 read/write thread
     bench_score=$(python3 -c "
-import time, hashlib, multiprocessing
+import time, hashlib, multiprocessing, os
 
 def bench_worker(_):
     h = b'bench'
     for _ in range(500000):
         h = hashlib.sha256(h).digest()
 
-gpu_count = int('$gpu_count') if '$gpu_count'.isdigit() else 1
-workers = max(gpu_count, 1)
+workers = max(int(os.popen('nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null | wc -l').read().strip() or '1'), 1)
 start = time.time()
 with multiprocessing.Pool(workers) as pool:
     pool.map(bench_worker, range(workers))
 elapsed = time.time() - start
-# Score = per-worker throughput under parallel load
 score = int(500000 / elapsed)
-# Reference under parallel load: Ryzen 9950X ~1.5M, EPYC 9474F@1.5GHz ~0.3M
 print(f'{score}')
 " 2>/dev/null)
     echo "$cpu_model|$gpu|$gpu_count|$ram_gb|$disk_free_gb|$bench_score"
