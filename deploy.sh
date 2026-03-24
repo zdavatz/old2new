@@ -1145,6 +1145,16 @@ for src in "/tmp/client_secret.json" "$HOME/client_secret.json"; do
     fi
 done
 
+# vast.ai API key (for auto-destroy when queue is empty)
+VAST_KEY="${VAST_API_KEY:-}"
+if [[ -z "$VAST_KEY" ]]; then
+    VAST_KEY=$(grep VAST_API_KEY ~/.zshrc ~/.bashrc 2>/dev/null | grep -oP "(?<==)['\"]?[a-f0-9]+['\"]?" | tr -d "'" | head -1)
+fi
+if [[ -n "$VAST_KEY" ]]; then
+    $SSH "echo '$VAST_KEY' > /root/.vast_api_key && chmod 600 /root/.vast_api_key" 2>/dev/null
+    echo "  API key deployed (auto-destroy enabled)"
+fi
+
 # JSON queue
 $SSH 'mkdir -p /root/json /root/json_done' 2>/dev/null
 for vid in "${VIDEO_IDS[@]}"; do

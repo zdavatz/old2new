@@ -156,6 +156,38 @@ gpu_worker() {
                 fi
             fi
 
+            # Check if ALL GPUs are idle — auto-destroy if queue completely empty
+            local all_processing
+            all_processing=$(ls "$QUEUE_DIR"/*.processing.* 2>/dev/null | wc -l)
+            local all_queued
+            all_queued=$(ls "$QUEUE_DIR"/*.json 2>/dev/null | wc -l)
+            if [[ "$all_processing" -eq 0 && "$all_queued" -eq 0 && -f "$HOME/instance_meta.json" ]]; then
+                # Queue completely empty, no GPUs working — auto-destroy after 10 min grace period
+                if [[ -z "${IDLE_SINCE:-}" ]]; then
+                    IDLE_SINCE=$(date +%s)
+                    echo "[GPU $gpu] Queue empty, all GPUs idle. Auto-destroy in 10 min (add videos to cancel)."
+                fi
+                local idle_secs=$(( $(date +%s) - IDLE_SINCE ))
+                if [[ "$idle_secs" -ge 600 ]]; then
+                    echo "[GPU $gpu] Auto-destroying instance after 10 min idle..."
+                    local inst_id
+                    inst_id=$(python3 -c "import json; print(json.load(open('$HOME/instance_meta.json')).get('instance_id',''))" 2>/dev/null)
+                    local api_key
+                    api_key=$(cat "$HOME/.vast_api_key" 2>/dev/null)
+                    if [[ -n "$inst_id" && -n "$api_key" ]]; then
+                        curl -s -X PUT "https://console.vast.ai/api/v0/instances/${inst_id}/" \
+                            -H "Authorization: Bearer ${api_key}" \
+                            -d '{"state": "stopped"}' >/dev/null 2>&1
+                        echo "[GPU $gpu] Instance $inst_id stopped via API."
+                    else
+                        echo "[GPU $gpu] Cannot auto-destroy: missing instance_id or API key."
+                    fi
+                    exit 0
+                fi
+            else
+                IDLE_SINCE=""  # Reset if new work appeared
+            fi
+
             # Normal polling — wait for new videos
             sleep 30
             continue
