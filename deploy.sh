@@ -503,7 +503,7 @@ fi
 search_vastai() {
     echo "=== vast.ai ==="
     local raw
-    raw=$(vastai search offers "num_gpus>=${NUM_GPUS} gpu_name=${GPU_NAME} disk_space>=${DISK_GB} cpu_ghz>=${SEARCH_CPU_GHZ} cpu_cores>=${MIN_VCPUS} driver_version>=570 verified=true" -o 'dph' --raw 2>/dev/null)
+    raw=$(vastai search offers "num_gpus>=${NUM_GPUS} gpu_name=${GPU_NAME} disk_space>=${DISK_GB} cpu_ghz>=${SEARCH_CPU_GHZ} cpu_cores>=${MIN_VCPUS} driver_version>=530 verified=true" -o 'dph' --raw 2>/dev/null)
     local formatted
     formatted=$(echo "$raw" | BLACKLISTED="$BLACKLISTED" CACHED="$CACHED" CACHED_BENCH="$CACHED_BENCH" python3 -c "
 import json, sys, os
@@ -763,7 +763,7 @@ fi
 echo ""
 
 # Get vast.ai offers (use --raw for cpu_name access)
-SEARCH_RAW=$(vastai search offers "num_gpus>=${NUM_GPUS} gpu_name=${GPU_NAME} disk_space>=${DISK_GB} cpu_ghz>=${SEARCH_CPU_GHZ} cpu_cores>=${MIN_VCPUS} driver_version>=570 verified=true" -o 'dph' --raw 2>/dev/null)
+SEARCH_RAW=$(vastai search offers "num_gpus>=${NUM_GPUS} gpu_name=${GPU_NAME} disk_space>=${DISK_GB} cpu_ghz>=${SEARCH_CPU_GHZ} cpu_cores>=${MIN_VCPUS} driver_version>=530 verified=true" -o 'dph' --raw 2>/dev/null)
 
 OFFER_LIST=$(echo "$SEARCH_RAW" | BLACKLISTED="$BLACKLISTED" CACHED="$CACHED" CACHED_BENCH="$CACHED_BENCH" python3 -c "
 import json, sys, os, re
