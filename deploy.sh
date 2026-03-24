@@ -949,6 +949,27 @@ for vinfo in "${VIDEOS[@]}"; do
     printf "  %-45s %5sh  %5sh  %5s\n" "$vi_title" "$vi_hours" "$adj_hours" "$adj_fps"
 done
 
+# Final confirmation before deploying
+echo ""
+read -p "Proceed with deployment? [Y/n/d=destroy] " final_choice
+if [[ "$final_choice" == "d" || "$final_choice" == "D" ]]; then
+    echo "  Destroying instance $INSTANCE_ID..."
+    # Save benchmark to cache even if not deploying
+    MACHINE_ID=$(vastai show instance "$INSTANCE_ID" --raw 2>/dev/null | python3 -c "import json,sys; print(json.load(sys.stdin).get('machine_id',''))" 2>/dev/null)
+    if [[ -n "$MACHINE_ID" && -n "$bench_score" ]]; then
+        sed -i "/^${MACHINE_ID} /d" "$CACHE_FILE" 2>/dev/null
+        echo "${MACHINE_ID}  ${bench_score}  # ${OFFER_LOCATION} — ${actual_cpu_model}" >> "$CACHE_FILE"
+    fi
+    vastai destroy instance "$INSTANCE_ID" 2>/dev/null
+    echo "  Instance destroyed."
+    INSTANCE_ID=""
+    exit 1
+elif [[ "$final_choice" == "n" || "$final_choice" == "N" ]]; then
+    echo "  Instance kept running but not deployed: ssh -p $SSH_PORT root@$SSH_HOST"
+    echo "  Destroy later: ./deploy.sh destroy $INSTANCE_ID"
+    exit 0
+fi
+
 # ============================================================
 # Phase 8: Deploy everything
 # ============================================================
