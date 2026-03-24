@@ -817,9 +817,11 @@ for i, d in enumerate(data):
     oid = str(d.get('id', '?'))
     mid = d.get('machine_id', 0)
     slow = '*' if disk_bw > 0 and disk_bw < 1000 else ''
+    driver = d.get('driver_version', '?')
+    driver_short = str(driver).split('.')[0] if driver else '?'
     bs = bench_scores.get(mid, 0)
     bench = f'{bs/1000000:.1f}M' if bs > 0 else ('  img' if mid in cached else '    -')
-    print(f'[{i+1:>1}] {loc:<18s} {num}x {gpu:<9s} {cpu_name:<26s} {yr:>4s} {cpu_ghz:>4.1f} {vcpu:>5d} {disk:>5d}G {disk_bw:>7d}{slow} {inet_down:>5d}/{inet_up:<4d} {price:>7.4f} {oid:>11s} {bench:>6s}')
+    print(f'[{i+1:>1}] {loc:<18s} {num}x {gpu:<9s} {cpu_name:<26s} {yr:>4s} {cpu_ghz:>4.1f} {vcpu:>5d} {disk:>5d}G {disk_bw:>7d}{slow} {inet_down:>5d}/{inet_up:<4d} {price:>7.4f} {oid:>11s} drv:{driver_short:>3s} {bench:>6s}')
 " 2>/dev/null)
 
 if [[ -z "$OFFER_LIST" ]]; then
@@ -893,8 +895,26 @@ trap cleanup_on_abort INT TERM
 
 echo ""
 echo "=== Creating instance ==="
+# Choose Docker image based on host driver version
+SELECTED_DRIVER=$(echo "$SEARCH_RAW" | BLACKLISTED="$BLACKLISTED" python3 -c "
+import json, sys, os
+blacklisted = set(int(x) for x in os.environ.get('BLACKLISTED','').split(',') if x.strip())
+data = [d for d in json.load(sys.stdin) if d.get('machine_id') not in blacklisted][:7]
+driver = str(data[$SELECTED_IDX].get('driver_version', '0'))
+major = int(driver.split('.')[0]) if driver.split('.')[0].isdigit() else 0
+print(major)
+" 2>/dev/null)
+
+if [[ "${SELECTED_DRIVER:-0}" -ge 570 ]]; then
+    DOCKER_IMAGE="ghcr.io/zdavatz/realesrgan-benchmark:latest"
+    echo "  Driver ${SELECTED_DRIVER} ≥ 570 → using CUDA 12.8 image"
+else
+    DOCKER_IMAGE="ghcr.io/zdavatz/realesrgan-benchmark-compat:latest"
+    echo "  Driver ${SELECTED_DRIVER} < 570 → using CUDA 12.1 compat image"
+fi
+
 CREATE_RESULT=$(vastai create instance "$OFFER_ID" \
-    --image ghcr.io/zdavatz/realesrgan-benchmark:latest \
+    --image "$DOCKER_IMAGE" \
     --disk "$DISK_GB" \
     --label "davaz-${GPU_NAME,,}-${VIDEO_COUNT}vid" \
     --ssh --direct 2>&1)
@@ -1001,33 +1021,9 @@ if [[ "$CUDA_OK" != "OK" ]]; then
     echo "    r = Redeploy with compat image (CUDA 12.1, works with driver >=530)"
     echo "    d = Destroy instance"
     read -p "  Choice [r/d]: " cuda_choice
-    if [[ "$cuda_choice" == "r" || "$cuda_choice" == "R" ]]; then
-        echo "  Redeploying with compat image..."
-        vastai change bid "$INSTANCE_ID" --image ghcr.io/zdavatz/realesrgan-benchmark-compat:latest 2>/dev/null
-        echo "  Image changed. Waiting for restart..."
-        sleep 30
-        # Re-check CUDA
-        CUDA_OK2=$($SSH "python3 -c \"
-import torch
-if not torch.cuda.is_available():
-    print('NO_CUDA')
-else:
-    try:
-        torch.cuda.get_device_name(0)
-        print('OK')
-    except Exception as e:
-        print(f'FAIL:{e}')
-\"" 2>/dev/null)
-        if [[ "$CUDA_OK2" == "OK" ]]; then
-            echo "  CUDA OK with compat image!"
-            CUDA_OK="OK"
-        else
-            echo "  Still failing: $CUDA_OK2"
-            echo "  Destroying instance..."
-            vastai destroy instance "$INSTANCE_ID" 2>/dev/null
-            INSTANCE_ID=""
-            exit 1
-        fi
+    if [[ "$cuda_choice" != "d" && "$cuda_choice" != "D" ]]; then
+        # Should not happen — image was chosen based on driver version
+        echo "  Unexpected CUDA failure. Try a different host."
     else
         echo "  Destroying instance $INSTANCE_ID..."
         vastai destroy instance "$INSTANCE_ID" 2>/dev/null
