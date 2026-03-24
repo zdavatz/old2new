@@ -942,11 +942,44 @@ else:
 if [[ "$CUDA_OK" != "OK" ]]; then
     echo ""
     echo "  *** CUDA FAILED: $CUDA_OK ***"
-    echo "  GPU driver incompatible with PyTorch/CUDA in Docker image."
-    echo "  This host cannot run Real-ESRGAN."
+    echo "  GPU driver incompatible with CUDA 12.8 Docker image."
     echo ""
-    read -p "  Destroy instance? [Y/n] " cuda_choice
-    if [[ "$cuda_choice" != "n" && "$cuda_choice" != "N" ]]; then
+    # Check driver version
+    HOST_DRIVER=$($SSH 'nvidia-smi --query-gpu=driver_version --format=csv,noheader 2>/dev/null | head -1' 2>/dev/null)
+    echo "  Host driver: $HOST_DRIVER (need >=570 for CUDA 12.8, >=530 for CUDA 12.1)"
+    echo ""
+    echo "  Options:"
+    echo "    r = Redeploy with compat image (CUDA 12.1, works with driver >=530)"
+    echo "    d = Destroy instance"
+    read -p "  Choice [r/d]: " cuda_choice
+    if [[ "$cuda_choice" == "r" || "$cuda_choice" == "R" ]]; then
+        echo "  Redeploying with compat image..."
+        vastai change bid "$INSTANCE_ID" --image ghcr.io/zdavatz/realesrgan-benchmark-compat:latest 2>/dev/null
+        echo "  Image changed. Waiting for restart..."
+        sleep 30
+        # Re-check CUDA
+        CUDA_OK2=$($SSH "python3 -c \"
+import torch
+if not torch.cuda.is_available():
+    print('NO_CUDA')
+else:
+    try:
+        torch.cuda.get_device_name(0)
+        print('OK')
+    except Exception as e:
+        print(f'FAIL:{e}')
+\"" 2>/dev/null)
+        if [[ "$CUDA_OK2" == "OK" ]]; then
+            echo "  CUDA OK with compat image!"
+            CUDA_OK="OK"
+        else
+            echo "  Still failing: $CUDA_OK2"
+            echo "  Destroying instance..."
+            vastai destroy instance "$INSTANCE_ID" 2>/dev/null
+            INSTANCE_ID=""
+            exit 1
+        fi
+    else
         echo "  Destroying instance $INSTANCE_ID..."
         vastai destroy instance "$INSTANCE_ID" 2>/dev/null
         echo "  Instance destroyed."
