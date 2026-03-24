@@ -289,7 +289,7 @@ After the pre-flight check, a **pre-download disk estimate** fetches video metad
 - **RTX 5090** (Blackwell): Needs PyTorch 2.6+ with CUDA 12.8. PyTorch 2.10 tested — no speedup over 2.7 for Real-ESRGAN.
 - **Pre-built Docker images** — **always use the slim image** for new setups on vast.ai, TensorDock, RunPod, Packet.ai. No pip install, no patching needed = 5-8 min faster per instance:
   - `ghcr.io/zdavatz/realesrgan-benchmark:latest` — **slim ~4.5GB (default, driver ≥570)**
-  - `ghcr.io/zdavatz/realesrgan-benchmark-compat:latest` — **compat ~4.5GB (CUDA 12.1, driver ≥530)** — auto-fallback when CUDA check fails
+  - `ghcr.io/zdavatz/realesrgan-benchmark-compat:latest` — **compat ~4.5GB (CUDA 12.1, driver ≥530)** — auto-selected by `deploy.sh` when host driver <570. Includes pre-built Rust binaries.
   - `ghcr.io/zdavatz/realesrgan-benchmark-full:latest` — full ~8GB (+ TensorRT, ONNX Runtime, for benchmarks only)
   - Built from `nvidia/cuda:12.8.0-runtime-ubuntu24.04` (important: `runtime` not `base` — base lacks CUDA libs)
 - **yt-dlp JS challenge**: Since ~March 2026, YouTube requires JS challenge solving. yt-dlp needs `--remote-components ejs:github` and `deno` installed, otherwise it falsely reports "This video is not available". The slim Docker image includes deno. `enhance_gpu.py` adds this flag automatically.
