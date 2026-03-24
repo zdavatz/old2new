@@ -240,7 +240,7 @@ jobs/JXir0H9XPzY/
 
 Job directories use YouTube video IDs (not titles — titles contain slashes, emojis, special chars that break paths). The dashboard reads the display title from `json/<video_id>.json` (lookup chain: `job_meta.json` → `json/{id}.json` → directory name).
 
-The process is resumable — if interrupted, re-run the same command and it will skip already-completed steps (download, frame extraction, upscaled frames).
+The process is resumable — if interrupted, re-run the same command and it will skip already-completed steps (download, frame extraction, upscaled frames). Before reassembly, a **frame gap check** detects missing frames (caused by `deploy.sh update` or `rebalance` killing processes mid-frame) and re-upscales them to prevent black flicker in the output video.
 
 #### Manual Cleanup
 
