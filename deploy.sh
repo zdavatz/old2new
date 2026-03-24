@@ -926,6 +926,29 @@ if [[ "$bench_rating" == "TOO SLOW" ]]; then
     echo "  Continuing with slow CPU..."
 fi
 
+# Show CPU-adjusted time estimates for all videos
+echo ""
+echo "=== Adjusted time estimates (CPU: ${bench_display} hashes/sec) ==="
+# Reference benchmark: 4.0M = fast Ryzen (baseline fps), scale linearly
+# Below 2M the GPU is increasingly starved for data
+CPU_FACTOR=$(python3 -c "
+bs = float('${bench_score:-4000000}')
+ref = 4000000.0  # Ryzen 9950X baseline
+factor = min(1.0, bs / ref)  # cap at 1.0 (faster CPU doesn't help beyond GPU limit)
+if factor < 0.5: factor = max(0.2, factor * 0.8)  # below 2M, degradation is worse than linear
+print(f'{factor:.2f}')
+" 2>/dev/null)
+echo "  CPU speed factor: ${CPU_FACTOR}x (1.0 = Ryzen 9950X baseline)"
+echo ""
+printf "  %-45s %6s  %6s  %6s\n" "Video" "Est.h" "Adj.h" "fps"
+printf "  %-45s %6s  %6s  %6s\n" "-----" "-----" "-----" "---"
+for vinfo in "${VIDEOS[@]}"; do
+    IFS='|' read -r vi_id vi_w vi_h vi_dur vi_mp vi_scale vi_gpu vi_disk vi_title vi_hours vi_fps <<< "$vinfo"
+    adj_hours=$(python3 -c "print(f'{float(\"$vi_hours\") / float(\"$CPU_FACTOR\"):.1f}')" 2>/dev/null)
+    adj_fps=$(python3 -c "print(f'{float(\"$vi_fps\") * float(\"$CPU_FACTOR\"):.2f}')" 2>/dev/null)
+    printf "  %-45s %5sh  %5sh  %5s\n" "$vi_title" "$vi_hours" "$adj_hours" "$adj_fps"
+done
+
 # ============================================================
 # Phase 8: Deploy everything
 # ============================================================
