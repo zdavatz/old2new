@@ -362,8 +362,8 @@ async fn main() {
         .clone()
         .unwrap_or_else(|| "22".to_string());
 
-    let desc_preview = if description.len() > 100 {
-        format!("{}...", &description[..100])
+    let desc_preview = if description.chars().count() > 100 {
+        format!("{}...", description.chars().take(100).collect::<String>())
     } else {
         description.clone()
     };
