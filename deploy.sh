@@ -918,17 +918,26 @@ ACTUAL_HW=$($SSH '
     gpu_count=$(nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null | wc -l)
     ram_gb=$(free -g | grep Mem | awk "{print \$2}")
     disk_free_gb=$(df -BG / | tail -1 | awk "{print \$4}" | tr -d "G")
-    # Single-core CPU benchmark (~2s): hash loop, correlates with cv2 imread/imwrite
+    # Multi-core CPU benchmark: run N parallel hash loops (N = GPU count)
+    # Simulates actual load: each GPU needs its own cv2 read/write thread
     bench_score=$(python3 -c "
-import time, hashlib
+import time, hashlib, multiprocessing
+
+def bench_worker(_):
+    h = b'bench'
+    for _ in range(500000):
+        h = hashlib.sha256(h).digest()
+
+gpu_count = int('$gpu_count') if '$gpu_count'.isdigit() else 1
+workers = max(gpu_count, 1)
 start = time.time()
-h = b\"bench\"
-for _ in range(500000):
-    h = hashlib.sha256(h).digest()
+with multiprocessing.Pool(workers) as pool:
+    pool.map(bench_worker, range(workers))
 elapsed = time.time() - start
-score = 500000 / elapsed  # hashes/sec, higher=faster
-# Reference: Ryzen 9950X ~1.8M, 7950X ~1.5M, Xeon 8481C@2.7GHz ~0.8M, throttled@1.5GHz ~0.4M
-print(f\"{score:.0f}\")
+# Score = per-worker throughput under parallel load
+score = int(500000 / elapsed)
+# Reference under parallel load: Ryzen 9950X ~1.5M, EPYC 9474F@1.5GHz ~0.3M
+print(f'{score}')
 " 2>/dev/null)
     echo "$cpu_model|$gpu|$gpu_count|$ram_gb|$disk_free_gb|$bench_score"
 ' 2>/dev/null)
