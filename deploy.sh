@@ -770,7 +770,7 @@ if [[ -z "$OFFER_LIST" ]]; then
 fi
 
 # Show numbered list of offers
-echo "=== Available instances (need ${DISK_GB} GB disk) ==="
+echo "=== Available instances for ${VIDEO_IDS[*]} (need ${DISK_GB} GB disk) ==="
 echo "$OFFER_LIST"
 echo ""
 
