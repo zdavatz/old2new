@@ -38,8 +38,8 @@ for job_dir in /root/jobs/*/; do
 
     [ -d "$fi_dir" ] || continue
 
-    count_in=$(ls "$fi_dir"/frame_*.png 2>/dev/null | wc -l)
-    count_out=$(ls "$fo_dir"/frame_*.png 2>/dev/null | wc -l)
+    count_in=$(find "$fi_dir" -maxdepth 1 -name "frame_*.png" 2>/dev/null | wc -l)
+    count_out=$(find "$fo_dir" -maxdepth 1 -name "frame_*.png" 2>/dev/null | wc -l)
     remaining=$((count_in))  # upscale.py skips done frames, so all frames_in are candidates
 
     # Skip if no input frames left
