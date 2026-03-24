@@ -35,6 +35,13 @@ echo "=== Restoring queue ==="
 for f in /root/json/*.processing.*; do
     [ -f "$f" ] || continue
     base=$(echo "$f" | sed 's/\.processing\.[0-9]*//')
+    vid=$(basename "$base" .json)
+    # Skip if already uploaded (json exists in json_done/)
+    if [ -f "/root/json_done/${vid}.json" ]; then
+        echo "  Skipping $vid (already uploaded)"
+        rm -f "$f"
+        continue
+    fi
     mv "$f" "$base"
 done
 echo "  Queue: $(ls /root/json/*.json 2>/dev/null | wc -l) JSON files"
