@@ -192,20 +192,56 @@ output_sz = w * scale * h * scale * 3 / 2.5 / 1024 / 1024
 all_in = frames * input_sz / 1024
 all_out = frames * output_sz / 1024
 disk_gb = max(all_in, all_out + 10 * input_sz / 1024) * 1.1 + 5
-# Estimated upscaling time based on resolution → fps benchmarks
+# Comprehensive time estimate: upscale + extraction + reassembly + upload
 mp_val = w * h / 1e6
+out_w, out_h = w * scale, h * scale
+out_mp = out_w * out_h / 1e6
+
+# Upscaling fps benchmarks (measured values from CLAUDE.md)
+# RTX 5090: SD 640x480=3.27, 960x720=1.47, 1280x720=1.15, 1920x1080=0.48, 1920x1200=0.44
+# RTX 4090: SD 640x480=7.0 (16 vCPUs), no-tile <=1.6MP=2.5-7.0, tiled=0.3
+# RTX 5090 benchmarks: SD 640x480=3.27, 960x720=1.47, 1280x720=1.15, 1920x1080=0.48, 1920x1200=0.44, 1920x1440=0.35
+# RTX 4090 benchmarks: SD 640x480=7.0 (16 vCPUs), <=1.6MP no-tile, >1.6MP tiled=0.3
 if gpu == 'RTX 5090':
-    if mp_val > 1.6: est_fps = 0.5   # HD tiled
-    elif mp_val > 0.6: est_fps = 1.5  # HD no-tile
-    else: est_fps = 3.0               # SD
+    if mp_val > 2.5: est_fps = 0.35    # 1920x1440+ (very large tiles)
+    elif mp_val > 2.0: est_fps = 0.44  # 1920x1200 tiled
+    elif mp_val > 1.6: est_fps = 0.48  # 1920x1080 tiled
+    elif mp_val > 0.9: est_fps = 1.15  # 1280x720 no-tile
+    elif mp_val > 0.6: est_fps = 1.47  # 960x720 no-tile
+    elif mp_val > 0.3: est_fps = 3.27  # SD 640x480
+    else: est_fps = 3.5                # very small SD
 else:  # RTX 4090
-    if mp_val > 1.6: est_fps = 0.3   # tiled (slow)
-    else: est_fps = 2.5              # SD no-tile
-est_hours = frames / est_fps / 3600 if est_fps > 0 else 0
-print(f'{video_id}|{w}|{h}|{dur}|{mp}|{scale}|{gpu}|{disk_gb:.0f}|{title}|{est_hours:.1f}')
+    if mp_val > 1.6: est_fps = 0.3     # tiled (very slow, not recommended)
+    elif mp_val > 0.6: est_fps = 2.9   # 960x720 no-tile (measured on BC Canada)
+    elif mp_val > 0.3: est_fps = 5.0   # SD 640x480 (measured with 16+ vCPUs)
+    else: est_fps = 7.0                # very small SD
+
+# Phase 1: Extraction (~200 fps on fast CPU, ~100 fps on slow)
+extract_secs = frames / 200
+
+# Phase 2: Upscaling (the bottleneck)
+upscale_secs = frames / est_fps if est_fps > 0 else 0
+
+# Phase 3: Reassembly (libx264 CRF 18 medium, ~40 fps for 4K, ~80 fps for 2K)
+if out_mp > 8: reassemble_fps = 20    # 4K+ (e.g. 3840x2880)
+elif out_mp > 4: reassemble_fps = 40  # ~4K
+elif out_mp > 2: reassemble_fps = 60  # ~2K
+else: reassemble_fps = 100
+reassemble_secs = frames / reassemble_fps
+
+# Phase 4: Upload (~200 Mbps avg, output file ~CRF18 bitrate)
+# Rough: output file size ≈ frames * out_sz / 2.5 (PNG compression) * 0.05 (x264 CRF18 ratio)
+output_file_mb = frames * (out_w * out_h * 3) / 1024 / 1024 / 2.5 * 0.05
+upload_secs = output_file_mb * 8 / 200  # 200 Mbps
+
+total_secs = extract_secs + upscale_secs + reassemble_secs + upload_secs
+est_hours = total_secs / 3600
+upscale_hours = upscale_secs / 3600
+
+print(f'{video_id}|{w}|{h}|{dur}|{mp}|{scale}|{gpu}|{disk_gb:.0f}|{title}|{est_hours:.1f}|{est_fps}')
 ")
 
-    IFS='|' read -r v_id v_w v_h v_dur v_mp v_scale v_gpu v_disk v_title v_hours <<< "$info"
+    IFS='|' read -r v_id v_w v_h v_dur v_mp v_scale v_gpu v_disk v_title v_hours v_fps <<< "$info"
     VIDEOS+=("$info")
     TOTAL_DISK_GB=$((TOTAL_DISK_GB + v_disk))
     TOTAL_DURATION=$((TOTAL_DURATION + v_dur))
@@ -217,7 +253,7 @@ print(f'{video_id}|{w}|{h}|{dur}|{mp}|{scale}|{gpu}|{disk_gb:.0f}|{title}|{est_h
         RTX4090_VIDS+=("$vid")
     fi
 
-    printf "  %-45s %sx%s  %4ss  %sx  %-9s ~%sGB  ~%sh\n" "$v_title" "$v_w" "$v_h" "$v_dur" "$v_scale" "$v_gpu" "$v_disk" "$v_hours"
+    printf "  %-45s %sx%s  %4ss  %sx  %-9s ~%sGB  ~%sh @%sfps\n" "$v_title" "$v_w" "$v_h" "$v_dur" "$v_scale" "$v_gpu" "$v_disk" "$v_hours" "$v_fps"
 done
 
 echo ""
