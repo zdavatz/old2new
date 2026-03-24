@@ -951,7 +951,29 @@ elif python3 -c "exit(0 if float('${bench_score:-0}') < 1200000 else 1)" 2>/dev/
 fi
 bench_display=$(python3 -c "print(f'{float(\"${bench_score:-0}\") / 1000000:.2f}M')" 2>/dev/null)
 
-echo "  CPU: $actual_cpu_model"
+# Look up CPU release year
+CPU_YEAR=$(python3 -c "
+cpu = '${actual_cpu_model:-}'.lower()
+years = {
+    '9950x': 2024, '9900x': 2024, '7950x': 2022, '7900x': 2022,
+    '9474f': 2023, '9354': 2023, '9554': 2023, '9654': 2023, '9174f': 2023, '9374f': 2023,
+    '7763': 2021, '7713': 2021, '7663': 2021, '7643': 2021, '7543': 2021, '7513': 2021,
+    '7b13': 2021, '7c13': 2021, '7v13': 2021, '74f3': 2021, '73f3': 2021, '75f3': 2021,
+    '7402': 2019, '7502': 2019, '7742': 2019, '7282': 2019,
+    '3955wx': 2020, '3975wx': 2020, '3995wx': 2020, '5955wx': 2022, '7975wx': 2023,
+    '8481c': 2023, '8469c': 2023, '8462y': 2023, '8480': 2023,
+    '6530': 2024, '6526y': 2024,
+    '6133': 2017, '6230': 2019, '6248': 2019, '6330': 2021,
+    '12700k': 2021, '13900k': 2022, '14900k': 2023,
+}
+for k, v in years.items():
+    if k in cpu:
+        print(v)
+        break
+else:
+    print('?')
+" 2>/dev/null)
+echo "  CPU: $actual_cpu_model ($CPU_YEAR)"
 echo "  Benchmark: ${bench_display} hashes/sec (${bench_rating}) — Ryzen 9950X=1.8M, 7950X=1.5M"
 echo "  GPU: ${actual_gpu_count}x $actual_gpu"
 echo "  RAM: ${actual_ram} GB"
