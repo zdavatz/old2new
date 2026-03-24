@@ -192,10 +192,20 @@ output_sz = w * scale * h * scale * 3 / 2.5 / 1024 / 1024
 all_in = frames * input_sz / 1024
 all_out = frames * output_sz / 1024
 disk_gb = max(all_in, all_out + 10 * input_sz / 1024) * 1.1 + 5
-print(f'{video_id}|{w}|{h}|{dur}|{mp}|{scale}|{gpu}|{disk_gb:.0f}|{title}')
+# Estimated upscaling time based on resolution → fps benchmarks
+mp_val = w * h / 1e6
+if gpu == 'RTX 5090':
+    if mp_val > 1.6: est_fps = 0.5   # HD tiled
+    elif mp_val > 0.6: est_fps = 1.5  # HD no-tile
+    else: est_fps = 3.0               # SD
+else:  # RTX 4090
+    if mp_val > 1.6: est_fps = 0.3   # tiled (slow)
+    else: est_fps = 2.5              # SD no-tile
+est_hours = frames / est_fps / 3600 if est_fps > 0 else 0
+print(f'{video_id}|{w}|{h}|{dur}|{mp}|{scale}|{gpu}|{disk_gb:.0f}|{title}|{est_hours:.1f}')
 ")
 
-    IFS='|' read -r v_id v_w v_h v_dur v_mp v_scale v_gpu v_disk v_title <<< "$info"
+    IFS='|' read -r v_id v_w v_h v_dur v_mp v_scale v_gpu v_disk v_title v_hours <<< "$info"
     VIDEOS+=("$info")
     TOTAL_DISK_GB=$((TOTAL_DISK_GB + v_disk))
     TOTAL_DURATION=$((TOTAL_DURATION + v_dur))
@@ -207,12 +217,30 @@ print(f'{video_id}|{w}|{h}|{dur}|{mp}|{scale}|{gpu}|{disk_gb:.0f}|{title}')
         RTX4090_VIDS+=("$vid")
     fi
 
-    printf "  %-50s %sx%s  %4ss  %sx  %-9s ~%sGB\n" "$v_title" "$v_w" "$v_h" "$v_dur" "$v_scale" "$v_gpu" "$v_disk"
+    printf "  %-45s %sx%s  %4ss  %sx  %-9s ~%sGB  ~%sh\n" "$v_title" "$v_w" "$v_h" "$v_dur" "$v_scale" "$v_gpu" "$v_disk" "$v_hours"
 done
 
 echo ""
 TOTAL_HOURS=$(python3 -c "print(f'{$TOTAL_DURATION/3600:.1f}')")
 echo "Total: $VIDEO_COUNT videos, ${TOTAL_HOURS}h duration, ~${TOTAL_DISK_GB}GB disk"
+
+# GPU balance warning: check if videos have very different runtimes
+if [[ $VIDEO_COUNT -gt 1 ]]; then
+    BALANCE=$(printf '%s\n' "${VIDEOS[@]}" | awk -F'|' '{print $10}' | python3 -c "
+import sys
+times = [float(l.strip()) for l in sys.stdin if l.strip()]
+if times:
+    mn, mx = min(times), max(times)
+    if mx > 0 and mn > 0 and mx / mn > 2:
+        print(f'WARNING: GPU imbalance! Shortest: {mn:.1f}h, longest: {mx:.1f}h ({mx/mn:.1f}x difference)')
+        print(f'  {int((mx - mn) * 60)}min of idle GPU time per finished video. Consider grouping similar-length videos.')
+    else:
+        print(f'GPU balance OK: {mn:.1f}h - {mx:.1f}h ({mx/mn:.1f}x)')
+")
+    if [[ -n "$BALANCE" ]]; then
+        echo "$BALANCE"
+    fi
+fi
 
 # ============================================================
 # Phase 2: Determine instance requirements
