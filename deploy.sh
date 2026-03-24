@@ -138,7 +138,14 @@ if pgrep -x status_server > /dev/null; then echo "status_server restarted"; else
         --multi)
             GPU_PREF="multi"; shift ;;
         --multi-one)
-            GPU_PREF="multi-one"; shift ;;
+            GPU_PREF="multi-one"
+            # Optional: --multi-one 8 for 8 GPUs (default 4)
+            if [[ "${2:-}" =~ ^[0-9]+$ ]]; then
+                MULTI_ONE_GPUS="$2"; shift 2
+            else
+                MULTI_ONE_GPUS=4; shift
+            fi
+            ;;
         --instance)
             MODE="instance"; INSTANCE_ID="$2"; shift 2 ;;
         -h|--help)
@@ -330,7 +337,7 @@ fi
 if [[ "$GPU_PREF" == "single" ]]; then
     NUM_GPUS=1
 elif [[ "$GPU_PREF" == "multi-one" ]]; then
-    NUM_GPUS=4
+    NUM_GPUS="${MULTI_ONE_GPUS:-4}"
     echo ""
     echo "=== Multi-One mode: $NUM_GPUS GPUs × 1 video (segment splitting) ==="
 elif [[ "$GPU_PREF" == "multi" ]]; then
