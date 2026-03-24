@@ -149,9 +149,9 @@ if pgrep -x status_server > /dev/null; then echo "status_server restarted"; else
             $RB_SSH 'chmod +x /root/rebalance.sh /root/restart.sh /root/enhance.sh /root/multi_gpu_queue.sh' 2>/dev/null
             echo "  Scripts uploaded"
 
-            # Run rebalance (nohup — may take hours)
+            # Run rebalance (nohup — may take hours, detach from SSH)
             echo "  Starting rebalance..."
-            $RB_SSH "sudo bash -c 'cd /root && nohup ./rebalance.sh >> /root/rebalance.log 2>&1 &'"
+            $RB_SSH "nohup bash -c 'cd /root && ./rebalance.sh >> /root/rebalance.log 2>&1' </dev/null >/dev/null 2>&1 &"
             echo ""
             echo "  Rebalance started in background."
             echo "  Monitor: ssh -p $RB_PORT root@$RB_HOST 'tail -f /root/rebalance.log'"
