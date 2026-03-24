@@ -921,34 +921,26 @@ echo "=== Verifying instance hardware ==="
 SSH="ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=10 root@$SSH_HOST -p $SSH_PORT"
 SCP="scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -P $SSH_PORT"
 
-ACTUAL_HW=$($SSH '
-    cpu_model=$(grep "model name" /proc/cpuinfo | head -1 | awk -F: "{print \$2}" | xargs)
-    gpu=$(nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null | head -1)
-    gpu_count=$(nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null | wc -l)
-    ram_gb=$(free -g | grep Mem | awk "{print \$2}")
-    disk_free_gb=$(df -BG / | tail -1 | awk "{print \$4}" | tr -d "G")
-    # Multi-core CPU benchmark: run N parallel hash loops (N = GPU count)
-    # Simulates actual load: each GPU needs its own cv2 read/write thread
-    bench_score=$(python3 -c "
-import time, hashlib, multiprocessing, os
+# Step 1: Get hardware info (simple commands, no quoting issues)
+ACTUAL_HW=$($SSH 'cpu_model=$(grep "model name" /proc/cpuinfo | head -1 | awk -F: "{print \$2}" | xargs); gpu=$(nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null | head -1); gpu_count=$(nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null | wc -l); ram_gb=$(free -g | grep Mem | awk "{print \$2}"); disk_free_gb=$(df -BG / | tail -1 | awk "{print \$4}" | tr -d "G"); echo "$cpu_model|$gpu|$gpu_count|$ram_gb|$disk_free_gb"' 2>/dev/null)
 
+IFS='|' read -r actual_cpu_model actual_gpu actual_gpu_count actual_ram actual_disk <<< "$ACTUAL_HW"
+
+# Step 2: Run parallel CPU benchmark (separate SSH to avoid quoting hell)
+ACTUAL_GPUS="${actual_gpu_count:-1}"
+bench_score=$($SSH "python3 -c \"
+import time, hashlib, multiprocessing
 def bench_worker(_):
     h = b'bench'
     for _ in range(500000):
         h = hashlib.sha256(h).digest()
-
-workers = max(int(os.popen('nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null | wc -l').read().strip() or '1'), 1)
+workers = max(int('${ACTUAL_GPUS}'), 1)
 start = time.time()
 with multiprocessing.Pool(workers) as pool:
     pool.map(bench_worker, range(workers))
 elapsed = time.time() - start
-score = int(500000 / elapsed)
-print(f'{score}')
-" 2>/dev/null)
-    echo "$cpu_model|$gpu|$gpu_count|$ram_gb|$disk_free_gb|$bench_score"
-' 2>/dev/null)
-
-IFS='|' read -r actual_cpu_model actual_gpu actual_gpu_count actual_ram actual_disk bench_score <<< "$ACTUAL_HW"
+print(int(500000 / elapsed))
+\"" 2>/dev/null)
 
 # Benchmark thresholds (hashes/sec): >=1.2M=good, 0.8-1.2M=ok, <0.8M=too slow
 bench_rating="GOOD"
