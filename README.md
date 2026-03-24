@@ -344,7 +344,7 @@ No code changes needed in `enhance_gpu.py` — just run multiple instances with 
 **Disk sizing for multi-GPU:** With 4 GPUs parallel, each GPU needs its own disk budget (total / 4). At 1920x1200 2x with 500GB: max ~5min per video. For short HD videos (<5min), 4x RTX 5090 at $1.35/hr on vast.ai Sichuan is ideal — processes 30 short videos in ~20min.
 
 **Queue design for multi-GPU:** See `multi_gpu_queue.sh` for the reference implementation. Key features:
-- **Shared work queue** (`~/json/*.json`) with `flock`-based atomic pop
+- **Shared work queue** (`~/json/*.json`) with `flock`-based atomic pop — workers poll every 30s when idle, so new videos are picked up automatically
 - **Resume priority** — after restart, picks videos with most existing `frames_out` first, so partially-completed videos resume before new ones start
 - **PID-file per GPU** (`gpu0.worker.pid`) — ensures exactly 1 video per GPU
 - **OOM-kill recovery** — detects killed processes (exit > 128) and retries the same video after 60s
