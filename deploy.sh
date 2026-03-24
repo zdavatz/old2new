@@ -94,6 +94,55 @@ if pgrep -x status_server > /dev/null; then echo "status_server restarted"; else
             echo "SSH: ssh -p $UPD_PORT root@$UPD_HOST"
             exit 0
             ;;
+        update-soft)
+            # Upload scripts + API key WITHOUT restarting processes
+            if [[ -z "${2:-}" ]]; then
+                echo "Usage: $0 update-soft <instance_id> [id2] ..."
+                echo "  Uploads new scripts without killing running processes."
+                echo "  New code takes effect when next video starts or queue cycles."
+                exit 1
+            fi
+            shift
+            for SOFT_ID in "$@"; do
+                echo "=== Soft-updating instance $SOFT_ID ==="
+                SOFT_URL=$(vastai ssh-url "$SOFT_ID" 2>/dev/null)
+                SOFT_HOST=$(echo "$SOFT_URL" | sed 's|ssh://root@||' | cut -d: -f1)
+                SOFT_PORT=$(echo "$SOFT_URL" | sed 's|ssh://root@||' | cut -d: -f2)
+                if [[ -z "$SOFT_HOST" ]]; then
+                    echo "  ERROR: Could not get SSH URL for instance $SOFT_ID"
+                    continue
+                fi
+                SOFT_SCP="scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -P $SOFT_PORT"
+                SOFT_SSH="ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=10 root@$SOFT_HOST -p $SOFT_PORT"
+
+                # Upload scripts (overwrite — takes effect on next queue cycle)
+                $SOFT_SCP "$SCRIPT_DIR/enhance.sh" "$SCRIPT_DIR/upscale.py" "$SCRIPT_DIR/multi_gpu_queue.sh" "$SCRIPT_DIR/restart.sh" root@"$SOFT_HOST":/root/ 2>/dev/null
+                echo "  Scripts uploaded"
+
+                # Upload Rust binaries as .new (won't replace running binary)
+                for bin in status_server_rs/target/release/status_server youtube_upload_rs/target/release/youtube_upload; do
+                    if [[ -f "$SCRIPT_DIR/$bin" ]]; then
+                        bname=$(basename "$bin")
+                        $SOFT_SCP "$SCRIPT_DIR/$bin" root@"$SOFT_HOST":/root/${bname}.new 2>/dev/null
+                        echo "  $bname uploaded (.new)"
+                    fi
+                done
+
+                # Deploy vast.ai API key for auto-destroy
+                VAST_KEY="${VAST_API_KEY:-}"
+                if [[ -z "$VAST_KEY" ]]; then
+                    VAST_KEY=$(grep VAST_API_KEY ~/.zshrc ~/.bashrc 2>/dev/null | grep -oP "(?<==)['\"]?[a-f0-9]+['\"]?" | tr -d "'" | head -1)
+                fi
+                if [[ -n "$VAST_KEY" ]]; then
+                    $SOFT_SSH "echo '$VAST_KEY' > /root/.vast_api_key && chmod 600 /root/.vast_api_key" 2>/dev/null
+                    echo "  API key deployed (auto-destroy enabled)"
+                fi
+
+                echo "  Done — no restart, processes keep running."
+                echo ""
+            done
+            exit 0
+            ;;
         update)
             if [[ -z "${2:-}" ]]; then
                 echo "Usage: $0 update <instance_id>"
