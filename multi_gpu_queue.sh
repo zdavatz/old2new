@@ -161,8 +161,16 @@ gpu_worker() {
             all_processing=$(ls "$QUEUE_DIR"/*.processing.* 2>/dev/null | wc -l)
             local all_queued
             all_queued=$(ls "$QUEUE_DIR"/*.json 2>/dev/null | wc -l)
-            if [[ "$all_processing" -eq 0 && "$all_queued" -eq 0 && -f "$HOME/instance_meta.json" ]]; then
-                # Queue completely empty, no GPUs working — auto-destroy after 10 min grace period
+            # Verify last upload had email sent (check all gpu logs)
+            local last_email_ok=0
+            if [[ -d "$DONE_DIR" ]] && ls "$DONE_DIR"/*.json >/dev/null 2>&1; then
+                local last_success
+                last_success=$(grep -l "Email sent" "$HOME"/gpu*.log 2>/dev/null | head -1)
+                [[ -n "$last_success" ]] && last_email_ok=1
+            fi
+
+            if [[ "$all_processing" -eq 0 && "$all_queued" -eq 0 && "$last_email_ok" -eq 1 && -f "$HOME/instance_meta.json" ]]; then
+                # Queue completely empty, no GPUs working, last email confirmed — auto-destroy after 10 min grace period
                 if [[ -z "${IDLE_SINCE:-}" ]]; then
                     IDLE_SINCE=$(date +%s)
                     echo "[GPU $gpu] Queue empty, all GPUs idle. Auto-destroy in 10 min (add videos to cancel)."
