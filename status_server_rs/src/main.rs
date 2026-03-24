@@ -1047,30 +1047,23 @@ async fn build_status() -> StatusResponse {
                 } else {
                     "queued"
                 };
-                // For extracting: use total_frames from job_meta, count_in as progress
-                let est_total = meta
-                    .as_ref()
-                    .map(|m| {
-                        if m.total_frames > 0 {
-                            m.total_frames
-                        } else if m.fps > 0.0 && m.duration_seconds > 0.0 {
-                            (m.fps * m.duration_seconds) as u64
-                        } else {
-                            0
-                        }
-                    })
-                    .or_else(|| {
-                        json_meta.as_ref().map(|m| {
-                            if m.total_frames > 0 {
-                                m.total_frames
-                            } else if m.fps > 0.0 && m.duration_seconds > 0.0 {
-                                (m.fps * m.duration_seconds) as u64
-                            } else {
-                                0
-                            }
-                        })
-                    })
-                    .unwrap_or(0);
+                // For extracting: use total_frames from job_meta, fallback to json_meta
+                // Note: job_meta may exist with total_frames=0 during download phase
+                let meta_frames = meta.as_ref().map(|m| {
+                    if m.total_frames > 0 { m.total_frames }
+                    else if m.fps > 0.0 && m.duration_seconds > 0.0 { (m.fps * m.duration_seconds) as u64 }
+                    else { 0 }
+                }).unwrap_or(0);
+                let est_total = if meta_frames > 0 {
+                    meta_frames
+                } else {
+                    // Fallback to json queue file (has video info from fetch_video_json.sh)
+                    json_meta.as_ref().map(|m| {
+                        if m.total_frames > 0 { m.total_frames }
+                        else if m.fps > 0.0 && m.duration_seconds > 0.0 { (m.fps * m.duration_seconds) as u64 }
+                        else { 0 }
+                    }).unwrap_or(0)
+                };
                 let ext_pct = if est_total > 0 && count_in > 0 {
                     (count_in as f64 / est_total as f64 * 1000.0).round() / 10.0
                 } else {
