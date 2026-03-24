@@ -123,7 +123,7 @@ The script automatically:
 - Shows numbered list of matching instances — user chooses (not auto-cheapest)
 - Deploys scripts, Rust binaries, credentials, and JSON queue
 - Starts `multi_gpu_queue.sh` with actual GPU count from machine (auto-detected via nvidia-smi, not from video count)
-- **Safety**: Ctrl+C auto-destroys created instance (no cost leak). Instance stuck loading > 10 min → asks to destroy.
+- **Safety**: Ctrl+C auto-destroys created instance (no cost leak). Instance stuck loading > 10 min → asks to destroy. Dashboard HTTP proxy test after deploy — option to destroy if not reachable (SSH tunnel fallback provided).
 
 #### Dashboard (Rust)
 
