@@ -86,7 +86,8 @@ def main():
         cv2.imwrite(tmp_path, output)
         os.rename(tmp_path, out_path)
         # Delete input frame to free disk, but keep last 10 for compare view
-        if i >= 10:
+        # Skip deletion in segment mode — other GPUs may need the same frames_in dir
+        if args.end == 0 and i >= 10:
             old_in_path = todo[i - 10][0]
             try:
                 os.remove(old_in_path)
