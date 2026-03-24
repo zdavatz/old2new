@@ -340,7 +340,7 @@ Multi-GPU scales **linearly** — each GPU runs its own process on a different v
 
 No code changes needed in `enhance_gpu.py` — just run multiple instances with `CUDA_VISIBLE_DEVICES`. The dashboard supports multi-GPU (per-GPU fps, temperature, utilization).
 
-**Important:** Multi-GPU does **NOT** help for splitting one large HD video — 4 GPUs writing 28MB PNGs simultaneously saturates disk I/O (~0.3 fps combined vs ~0.4 fps single GPU). Tested on both slow and fast NVMe. Always use **1 GPU per video**, multiple single-GPU instances for parallel processing.
+**Multi-GPU segment splitting for single videos:** Use `./deploy.sh --multi-one [N] <video_id>` to split one long video across 4 or 8 GPUs. Each GPU processes its own frame range (`--start/--end`), avoiding disk I/O contention. ~4x speedup on 4 GPUs (e.g. BLUEPRINTS of LIFE: 54h → 14h). `multi_gpu_queue.sh` auto-detects when only 1 video is in the queue and triggers segment splitting.
 
 **Disk sizing for multi-GPU:** With 4 GPUs parallel, each GPU needs its own disk budget (total / 4). At 1920x1200 2x with 500GB: max ~5min per video. For short HD videos (<5min), 4x RTX 5090 at $1.35/hr on vast.ai Sichuan is ideal — processes 30 short videos in ~20min.
 
