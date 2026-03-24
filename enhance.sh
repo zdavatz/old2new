@@ -784,6 +784,12 @@ check_black_frames() {
         return
     fi
 
+    # Skip if CHECK_BLACK=0 (default: enabled)
+    if [[ "${CHECK_BLACK:-1}" == "0" ]]; then
+        echo "Black frame check skipped (CHECK_BLACK=0)"
+        return
+    fi
+
     echo "Checking for black frames in output..."
 
     local BLACK_FRAMES
