@@ -585,10 +585,11 @@ upscale_frames() {
             [[ $END -gt $TOTAL_FRAMES ]] && END=$TOTAL_FRAMES
             [[ $START -ge $TOTAL_FRAMES ]] && continue
 
-            echo "  GPU $g: frames $START-$END ($(( END - START )) frames)"
+            local GPU_LOG="$HOME/gpu${g}.log"
+            echo "  GPU $g: frames $START-$END ($(( END - START )) frames) → $GPU_LOG"
             CUDA_VISIBLE_DEVICES=$g python3 "$SCRIPT_DIR/upscale.py" \
                 "$FRAMES_IN" "$FRAMES_OUT" "$SCALE" \
-                --start "$START" --end "$END" &
+                --start "$START" --end "$END" >> "$GPU_LOG" 2>&1 &
             PIDS+=($!)
         done
 
