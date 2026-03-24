@@ -93,6 +93,9 @@ vastai set api-key YOUR_KEY
 # Update scripts + binaries on a running instance (auto-restarts via restart.sh)
 ./deploy.sh update 33326865
 
+# Soft update — upload scripts without restarting (safe for running upscales)
+./deploy.sh update-soft 33326865 33379097 33459088
+
 # Destroy an instance
 ./deploy.sh destroy 33326865
 
