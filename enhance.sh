@@ -734,7 +734,7 @@ print(f'Fixed {fixed}/{len(gaps)} missing frames')
 }
 
 # ============================================================
-# Phase 9: Reassemble
+# Phase 9: Reassemble (with brightness matching)
 # ============================================================
 reassemble_video() {
     OUTPUT="$WORKDIR/${JOB_NAME}_${SCALE}x.mkv"
@@ -742,6 +742,76 @@ reassemble_video() {
     if [[ -f "$OUTPUT" ]]; then
         echo "Output already exists: $OUTPUT"
         return
+    fi
+
+    # Measure brightness of original vs enhanced to calculate gamma correction
+    local GAMMA_FILTER=""
+    if [[ -f "$INPUT" ]]; then
+        echo "Measuring brightness (original vs enhanced)..."
+        local BRIGHTNESS_INFO
+        BRIGHTNESS_INFO=$(python3 -c "
+import cv2, glob, os, numpy as np, random
+
+frames_out = sorted(glob.glob('$FRAMES_OUT/frame_*.png'))
+if not frames_out or not os.path.exists('$INPUT'):
+    print('1.0')
+    exit()
+
+# Sample 10 frames from enhanced
+sample_idx = [int(i * len(frames_out) / 10) for i in range(10)]
+enh_means = []
+for idx in sample_idx:
+    img = cv2.imread(frames_out[idx], cv2.IMREAD_UNCHANGED)
+    if img is not None:
+        enh_means.append(img.mean())
+
+# Sample 10 frames from original video at matching timestamps
+import subprocess
+duration = float('${DURATION:-0}')
+if duration <= 0:
+    print('1.0')
+    exit()
+
+orig_means = []
+for i in range(10):
+    ts = duration * i / 10
+    result = subprocess.run(
+        ['ffmpeg', '-ss', str(ts), '-i', '$INPUT', '-frames:v', '1', '-f', 'rawvideo', '-pix_fmt', 'bgr24', '-'],
+        capture_output=True, timeout=10
+    )
+    if result.returncode == 0 and len(result.stdout) > 0:
+        arr = np.frombuffer(result.stdout, dtype=np.uint8)
+        orig_means.append(arr.mean())
+
+if not orig_means or not enh_means:
+    print('1.0')
+    exit()
+
+orig_avg = np.mean(orig_means)
+enh_avg = np.mean(enh_means)
+
+# Calculate gamma to match original brightness
+# gamma < 1 darkens, gamma > 1 brightens
+if enh_avg > 0 and orig_avg > 0:
+    # target: enh_avg^gamma = orig_avg (in normalized 0-1 space)
+    import math
+    ratio = orig_avg / enh_avg
+    gamma = max(0.7, min(1.3, ratio))  # clamp to reasonable range
+    print(f'{gamma:.3f} {orig_avg:.1f} {enh_avg:.1f}')
+else:
+    print('1.0 0 0')
+" 2>/dev/null)
+
+        local GAMMA ORIG_BRIGHT ENH_BRIGHT
+        read -r GAMMA ORIG_BRIGHT ENH_BRIGHT <<< "$BRIGHTNESS_INFO"
+
+        if [[ "$GAMMA" != "1.0" && "$GAMMA" != "1.000" ]]; then
+            echo "  Original brightness: $ORIG_BRIGHT, Enhanced: $ENH_BRIGHT"
+            echo "  Applying gamma=$GAMMA to match original"
+            GAMMA_FILTER="-vf eq=gamma=$GAMMA"
+        else
+            echo "  Brightness matched — no correction needed"
+        fi
     fi
 
     echo "Reassembling video at ${FPS_INT}fps..."
@@ -754,13 +824,17 @@ reassemble_video() {
         -of csv=p=0 "$INPUT" 2>/dev/null || true)
 
     if [[ -n "$HAS_AUDIO" ]]; then
+        # shellcheck disable=SC2086
         ffmpeg -framerate "$FPS_INT" -i "$FRAMES_OUT/frame_%08d.png" \
             -i "$INPUT" -map 0:v -map 1:a \
+            $GAMMA_FILTER \
             -c:v libx264 -crf 18 -preset medium -pix_fmt yuv420p \
             -c:a copy -y "$OUTPUT" \
             -loglevel warning -stats
     else
+        # shellcheck disable=SC2086
         ffmpeg -framerate "$FPS_INT" -i "$FRAMES_OUT/frame_%08d.png" \
+            $GAMMA_FILTER \
             -c:v libx264 -crf 18 -preset medium -pix_fmt yuv420p \
             -y "$OUTPUT" \
             -loglevel warning -stats
