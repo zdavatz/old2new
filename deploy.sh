@@ -127,6 +127,37 @@ if pgrep -x status_server > /dev/null; then echo "status_server restarted"; else
             $UPD_SSH './restart.sh'
             exit 0
             ;;
+        rebalance)
+            if [[ -z "${2:-}" ]]; then
+                echo "Usage: $0 rebalance <instance_id>"
+                exit 1
+            fi
+            RB_ID="$2"
+            echo "=== Rebalancing instance $RB_ID ==="
+            RB_URL=$(vastai ssh-url "$RB_ID" 2>/dev/null)
+            RB_HOST=$(echo "$RB_URL" | sed 's|ssh://root@||' | cut -d: -f1)
+            RB_PORT=$(echo "$RB_URL" | sed 's|ssh://root@||' | cut -d: -f2)
+            if [[ -z "$RB_HOST" ]]; then
+                echo "ERROR: Could not get SSH URL for instance $RB_ID"
+                exit 1
+            fi
+            RB_SCP="scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -P $RB_PORT"
+            RB_SSH="ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=10 root@$RB_HOST -p $RB_PORT"
+
+            # Upload latest scripts + rebalance.sh
+            $RB_SCP "$SCRIPT_DIR/rebalance.sh" "$SCRIPT_DIR/upscale.py" "$SCRIPT_DIR/enhance.sh" "$SCRIPT_DIR/multi_gpu_queue.sh" "$SCRIPT_DIR/restart.sh" root@"$RB_HOST":/root/ 2>/dev/null
+            $RB_SSH 'chmod +x /root/rebalance.sh /root/restart.sh /root/enhance.sh /root/multi_gpu_queue.sh' 2>/dev/null
+            echo "  Scripts uploaded"
+
+            # Run rebalance (nohup — may take hours)
+            echo "  Starting rebalance..."
+            $RB_SSH "sudo bash -c 'cd /root && nohup ./rebalance.sh >> /root/rebalance.log 2>&1 &'"
+            echo ""
+            echo "  Rebalance started in background."
+            echo "  Monitor: ssh -p $RB_PORT root@$RB_HOST 'tail -f /root/rebalance.log'"
+            echo "  Dashboard: http://${RB_HOST}:$((RB_PORT + 1))/"
+            exit 0
+            ;;
         --plan)
             MODE="plan"; shift ;;
         --vastai)
