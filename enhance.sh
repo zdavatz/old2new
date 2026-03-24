@@ -774,6 +774,34 @@ reassemble_video() {
 }
 
 # ============================================================
+# ============================================================
+# Phase 9b: Check for black frames in reassembled video
+# ============================================================
+check_black_frames() {
+    local OUTPUT="$WORKDIR/${JOB_NAME}_${SCALE}x.mkv"
+
+    if [[ ! -f "$OUTPUT" ]]; then
+        return
+    fi
+
+    echo "Checking for black frames in output..."
+
+    local BLACK_FRAMES
+    BLACK_FRAMES=$(ffmpeg -i "$OUTPUT" -vf "blackdetect=d=0.02:pix_th=0.05" -f null - 2>&1 | grep -c "black_start" || true)
+
+    if [[ "$BLACK_FRAMES" -gt 0 ]]; then
+        echo "  WARNING: $BLACK_FRAMES black frame(s) detected in output video!"
+        echo "  This may be caused by frame gaps from process kills during upscaling."
+        echo "  Timestamps:"
+        ffmpeg -i "$OUTPUT" -vf "blackdetect=d=0.02:pix_th=0.05" -f null - 2>&1 | grep "black_start" | head -20
+        echo ""
+        echo "  Uploading anyway — check video manually after upload."
+    else
+        echo "  No black frames detected — video looks clean."
+    fi
+    echo
+}
+
 # Phase 10: Write timing.json
 # ============================================================
 write_timing() {
@@ -961,6 +989,7 @@ main() {
     upscale_frames
     check_frame_gaps
     reassemble_video
+    check_black_frames
     write_timing
     print_summary
     upload_video
