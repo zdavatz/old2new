@@ -156,11 +156,33 @@ for ((g=0; g<NUM_GPUS; g++)); do
 done
 
 echo ""
-echo "=== Waiting for all GPUs to finish ==="
-wait
-echo "=== All segments complete ==="
+echo "=== Phase D2: Starting queue (handles reassembly + dynamic joining) ==="
+# Don't wait for segments — start multi_gpu_queue.sh immediately.
+# Workers will: 1) find no queued JSON, 2) see processing files,
+# 3) dynamic-join the remaining video when their segment finishes.
+# When all upscaling done, workers pick up the video for reassembly + upload.
 
-# Phase E: Restart queue for reassembly + upload
+# Restore .processing files to .json so queue can manage them
+for f in /root/json/*.processing.*; do
+    [ -f "$f" ] || continue
+    base=$(echo "$f" | sed 's/\.processing\.[0-9]*//')
+    vid=$(basename "$base" .json)
+    if [ -f "/root/json_done/${vid}.json" ]; then
+        rm -f "$f"
+        continue
+    fi
+    mv "$f" "$base"
+done
+
+# Start status server if not running
+if ! pgrep -x status_server > /dev/null 2>&1; then
+    pkill -x status_server 2>/dev/null
+    nohup ./status_server >> /root/status_server.log 2>&1 &
+fi
+
+# Start queue — workers will wait for upscale segments to finish,
+# then pick up the video for reassembly
+nohup ./multi_gpu_queue.sh "$NUM_GPUS" >> /root/enhance.log 2>&1 &
+echo "  Queue started ($NUM_GPUS GPUs) — workers will dynamic-join when segments finish"
 echo ""
-echo "=== Phase E: Restarting queue for reassembly ==="
-./restart.sh "$NUM_GPUS"
+echo "=== Rebalance complete ==="
