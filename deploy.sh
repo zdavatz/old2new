@@ -156,7 +156,8 @@ if pgrep -x status_server > /dev/null; then echo "status_server restarted"; else
             echo "  Rebalance started in background."
             echo "  Monitor: ssh -p $RB_PORT root@$RB_HOST 'tail -f /root/rebalance.log'"
             # Use vast.ai proxy URL for dashboard
-            local RB_PROXY_HOST RB_PROXY_PORT
+            RB_PROXY_HOST=""
+            RB_PROXY_PORT=""
             RB_PROXY_HOST=$(vastai show instance "$RB_ID" 2>/dev/null | tail -1 | awk '{print $10}')
             RB_PROXY_PORT=$(vastai show instance "$RB_ID" 2>/dev/null | tail -1 | awk '{print $11}')
             if [[ "$RB_PROXY_HOST" == ssh*.vast.ai ]]; then
