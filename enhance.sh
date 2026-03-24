@@ -616,6 +616,124 @@ upscale_frames() {
 }
 
 # ============================================================
+# Phase 8b: Check for frame gaps (missing frames from kills/restarts)
+# ============================================================
+check_frame_gaps() {
+    echo "Checking for frame gaps..."
+
+    local GAPS
+    GAPS=$(python3 -c "
+import glob, os, sys
+
+frames_out = sorted(glob.glob('$FRAMES_OUT/frame_*.png'))
+if not frames_out:
+    print('0')
+    sys.exit(0)
+
+# Extract frame numbers
+nums = []
+for f in frames_out:
+    name = os.path.basename(f)
+    # frame_00000001.png → 1
+    num = int(name.replace('frame_', '').replace('.png', ''))
+    nums.append(num)
+
+nums.sort()
+# Check for gaps (should be consecutive: 1,2,3,...,N)
+gaps = []
+for i in range(len(nums) - 1):
+    if nums[i+1] - nums[i] > 1:
+        for g in range(nums[i] + 1, nums[i+1]):
+            gaps.append(g)
+
+print(len(gaps))
+if gaps:
+    # Print gap frame numbers for re-upscaling
+    for g in gaps[:50]:  # show max 50
+        print(g)
+" 2>/dev/null)
+
+    local GAP_COUNT
+    GAP_COUNT=$(echo "$GAPS" | head -1)
+
+    if [[ "$GAP_COUNT" -eq 0 ]]; then
+        echo "  No gaps — all frames consecutive."
+        echo
+        return
+    fi
+
+    echo "  WARNING: $GAP_COUNT missing frame(s) detected!"
+    echo "  Re-upscaling missing frames..."
+
+    # Re-upscale missing frames from frames_in (if they exist)
+    python3 -c "
+import glob, os, sys, cv2
+sys.path.insert(0, '$SCRIPT_DIR')
+
+frames_in = '$FRAMES_IN'
+frames_out = '$FRAMES_OUT'
+scale = $SCALE
+
+# Find gaps
+out_files = sorted(glob.glob(os.path.join(frames_out, 'frame_*.png')))
+out_nums = set()
+for f in out_files:
+    num = int(os.path.basename(f).replace('frame_', '').replace('.png', ''))
+    out_nums.add(num)
+
+if not out_nums:
+    sys.exit(0)
+
+max_num = max(out_nums)
+gaps = [n for n in range(1, max_num + 1) if n not in out_nums]
+
+if not gaps:
+    print('No gaps')
+    sys.exit(0)
+
+print(f'Re-upscaling {len(gaps)} missing frames...')
+
+# Load model
+import torch
+from basicsr.archs.rrdbnet_arch import RRDBNet
+from realesrgan import RealESRGANer
+import logging
+logging.getLogger('basicsr').setLevel(logging.WARNING)
+logging.getLogger('realesrgan').setLevel(logging.WARNING)
+
+model = RRDBNet(num_in_ch=3, num_out_ch=3, num_feat=64, num_block=23, num_grow_ch=32, scale=4)
+tile = 512 if torch.cuda.is_available() else 0
+upsampler = RealESRGANer(
+    scale=4, model_path='https://github.com/xinntao/Real-ESRGAN/releases/download/v0.1.0/RealESRGAN_x4plus.pth',
+    model=model, tile=tile, tile_pad=10, pre_pad=0, half=True,
+    gpu_id=0 if torch.cuda.is_available() else None)
+
+fixed = 0
+for num in gaps:
+    in_path = os.path.join(frames_in, f'frame_{num:08d}.png')
+    out_path = os.path.join(frames_out, f'frame_{num:08d}.png')
+    if not os.path.exists(in_path):
+        print(f'  Frame {num}: input missing, cannot fix')
+        continue
+    img = cv2.imread(in_path, cv2.IMREAD_UNCHANGED)
+    if img is None:
+        print(f'  Frame {num}: cannot read input')
+        continue
+    output, _ = upsampler.enhance(img, outscale=scale)
+    tmp = out_path.rsplit('.', 1)[0] + '.tmp.png'
+    cv2.imwrite(tmp, output)
+    os.rename(tmp, out_path)
+    fixed += 1
+    print(f'  Frame {num}: fixed')
+
+print(f'Fixed {fixed}/{len(gaps)} missing frames')
+" 2>/dev/null
+
+    echo "  Frame gap check complete."
+    echo
+}
+
+# ============================================================
 # Phase 9: Reassemble
 # ============================================================
 reassemble_video() {
@@ -841,6 +959,7 @@ main() {
     fi
 
     upscale_frames
+    check_frame_gaps
     reassemble_video
     write_timing
     print_summary
