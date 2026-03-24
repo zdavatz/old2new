@@ -398,8 +398,15 @@ if fo_count > 0:
     remain_out = max(0, frames - fo_count) * out_sz / 2.5 / 1024
     est_gb = max(remain_in + remain_out - reclaimable, 0) * 1.1 + 2
 else:
-    est_gb = (frames * in_sz / 2.5 + frames * out_sz / 2.5) / 1024
-    est_gb = est_gb * 1.1 + 5
+    # Peak disk = max of two phases:
+    # 1. Extraction: all input frames exist (frames * in_sz)
+    # 2. Upscaling: output frames grow while input frames are deleted (rolling 10 kept)
+    #    Peak during upscaling: all output frames + 10 input frames
+    # The larger of the two phases determines disk need
+    all_in_gb = frames * in_sz / 2.5 / 1024
+    all_out_gb = frames * out_sz / 2.5 / 1024
+    peak_gb = max(all_in_gb, all_out_gb + 10 * in_sz / 2.5 / 1024)
+    est_gb = peak_gb * 1.1 + 5  # 10% margin + 5 GB for MKV/overhead
 st = os.statvfs('$WORKDIR')
 avail = (st.f_frsize * st.f_bavail) / (1024**3)
 print(f'{est_gb:.0f} {avail:.0f} {frames}')
