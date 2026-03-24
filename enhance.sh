@@ -561,7 +561,51 @@ upscale_frames() {
     local UP_START
     UP_START=$(date +%s)
 
-    python3 "$SCRIPT_DIR/upscale.py" "$FRAMES_IN" "$FRAMES_OUT" "$SCALE"
+    # Detect available GPUs for segment splitting
+    local AVAIL_GPUS
+    if [[ -n "$GPU_ID" ]]; then
+        # Single GPU mode (called from multi_gpu_queue.sh)
+        AVAIL_GPUS=1
+    else
+        AVAIL_GPUS=$(nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null | wc -l)
+    fi
+
+    local TOTAL_FRAMES
+    TOTAL_FRAMES=$(ls "$FRAMES_IN"/frame_*.png 2>/dev/null | wc -l)
+
+    if [[ "$AVAIL_GPUS" -gt 1 && "$TOTAL_FRAMES" -gt 1000 ]]; then
+        # Multi-GPU segment splitting: divide frames across GPUs
+        echo "Segment splitting across $AVAIL_GPUS GPUs ($TOTAL_FRAMES frames)"
+        local PER_GPU=$(( (TOTAL_FRAMES + AVAIL_GPUS - 1) / AVAIL_GPUS ))
+        local PIDS=()
+
+        for ((g=0; g<AVAIL_GPUS; g++)); do
+            local START=$((g * PER_GPU))
+            local END=$(( (g + 1) * PER_GPU ))
+            [[ $END -gt $TOTAL_FRAMES ]] && END=$TOTAL_FRAMES
+            [[ $START -ge $TOTAL_FRAMES ]] && continue
+
+            echo "  GPU $g: frames $START-$END ($(( END - START )) frames)"
+            CUDA_VISIBLE_DEVICES=$g python3 "$SCRIPT_DIR/upscale.py" \
+                "$FRAMES_IN" "$FRAMES_OUT" "$SCALE" \
+                --start "$START" --end "$END" &
+            PIDS+=($!)
+        done
+
+        # Wait for all GPUs to finish
+        local FAILED=0
+        for pid in "${PIDS[@]}"; do
+            if ! wait "$pid"; then
+                FAILED=$((FAILED + 1))
+            fi
+        done
+        if [[ $FAILED -gt 0 ]]; then
+            echo "WARNING: $FAILED GPU segment(s) failed"
+        fi
+    else
+        # Single GPU mode
+        python3 "$SCRIPT_DIR/upscale.py" "$FRAMES_IN" "$FRAMES_OUT" "$SCALE"
+    fi
 
     local UP_END
     UP_END=$(date +%s)

@@ -13,6 +13,8 @@ def main():
     p.add_argument("frames_out", help="Directory for upscaled output frames")
     p.add_argument("scale", type=int, help="Output scale (2 or 4)")
     p.add_argument("--tile", type=int, default=0, help="Tile size (0 = auto based on VRAM)")
+    p.add_argument("--start", type=int, default=0, help="Start frame index (0-based, for segment splitting)")
+    p.add_argument("--end", type=int, default=0, help="End frame index (exclusive, 0 = all)")
     args = p.parse_args()
 
     os.makedirs(args.frames_out, exist_ok=True)
@@ -22,9 +24,16 @@ def main():
         os.remove(tmp)
 
     # Gather and sort input frames
-    inputs = sorted(glob.glob(os.path.join(args.frames_in, "frame_*.png")))
-    if not inputs:
+    all_inputs = sorted(glob.glob(os.path.join(args.frames_in, "frame_*.png")))
+    if not all_inputs:
         sys.exit(f"No PNG frames found in {args.frames_in}")
+
+    # Segment splitting: only process frames in [start, end) range
+    if args.end > 0:
+        inputs = all_inputs[args.start:args.end]
+        print(f"Segment: frames {args.start}-{args.end} of {len(all_inputs)} ({len(inputs)} frames)")
+    else:
+        inputs = all_inputs
     total = len(inputs)
 
     # Skip already-done frames (resume support)
