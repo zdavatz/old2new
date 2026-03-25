@@ -679,7 +679,7 @@ fn parse_ffmpeg_frame(job_name: &str, total_frames: u64) -> u64 {
     let mut last_frame: u64 = 0;
     for log_name in &["gpu0.log", "gpu1.log", "gpu2.log", "gpu3.log", "enhance.log"] {
         let path = home.join(log_name);
-        let tail = read_tail(&path, 8192);
+        let tail = read_tail(&path, 65536);
         if !tail.contains(job_name) && *log_name != "enhance.log" {
             continue;
         }
@@ -711,11 +711,12 @@ fn parse_ffmpeg_progress(job_name: &str, total_frames: u64) -> String {
     let home = home_dir();
 
     // Check GPU logs and enhance.log for ffmpeg output
+    // Use larger tail for assembling — logs can be huge after segment-split upscaling
     let mut last_frame: u64 = 0;
     let mut last_speed = String::new();
     for log_name in &["gpu0.log", "gpu1.log", "gpu2.log", "gpu3.log", "enhance.log"] {
         let path = home.join(log_name);
-        let tail = read_tail(&path, 8192);
+        let tail = read_tail(&path, 65536);
         // Only parse if this log mentions our job
         if !tail.contains(job_name) && *log_name != "enhance.log" {
             continue;
