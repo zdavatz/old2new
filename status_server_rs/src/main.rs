@@ -1058,7 +1058,8 @@ async fn build_status() -> StatusResponse {
                     }))
                     .unwrap_or(0);
                 let total = if meta_total > 0 {
-                    meta_total
+                    // Use max of estimate and actual count — avoids "39103/39106" rounding errors
+                    std::cmp::max(meta_total, count_out)
                 } else {
                     // Fallback: count_in + count_out (deleted in = created out)
                     count_in + count_out
