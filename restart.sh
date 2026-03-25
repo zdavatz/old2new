@@ -26,17 +26,25 @@ echo "Remaining: $REMAINING processes"
 
 echo ""
 echo "=== Replacing binaries ==="
-mv -f /root/status_server.new /root/status_server 2>/dev/null && echo "  status_server replaced" || echo "  status_server: no .new file"
-mv -f /root/youtube_upload.new /root/youtube_upload 2>/dev/null && echo "  youtube_upload replaced" || echo "  youtube_upload: no .new file"
-# Fallback to Docker image binaries if local ones fail (glibc mismatch)
-if ! /root/status_server --help >/dev/null 2>&1 && [ -f /usr/local/bin/status_server ]; then
-    cp /usr/local/bin/status_server /root/status_server
-    echo "  status_server: using Docker image binary (glibc compat)"
-fi
-if ! /root/youtube_upload --help >/dev/null 2>&1 && [ -f /usr/local/bin/youtube_upload ]; then
-    cp /usr/local/bin/youtube_upload /root/youtube_upload
-    echo "  youtube_upload: using Docker image binary (glibc compat)"
-fi
+# Test .new binaries before replacing — avoid overwriting working binary with glibc-incompatible one
+for bin in status_server youtube_upload; do
+    if [ -f "/root/${bin}.new" ]; then
+        if /root/${bin}.new --help >/dev/null 2>&1; then
+            mv -f "/root/${bin}.new" "/root/${bin}"
+            echo "  ${bin} replaced"
+        else
+            rm -f "/root/${bin}.new"
+            echo "  ${bin}: .new binary incompatible (glibc?), keeping current"
+        fi
+    else
+        echo "  ${bin}: no .new file"
+    fi
+    # Fallback to Docker image binary if current one doesn't work
+    if ! /root/${bin} --help >/dev/null 2>&1 && [ -f "/usr/local/bin/${bin}" ]; then
+        cp "/usr/local/bin/${bin}" "/root/${bin}"
+        echo "  ${bin}: using Docker image binary (glibc compat)"
+    fi
+done
 chmod +x /root/status_server /root/youtube_upload /root/enhance.sh /root/multi_gpu_queue.sh 2>/dev/null
 
 echo ""
