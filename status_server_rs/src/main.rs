@@ -768,7 +768,7 @@ fn parse_upload_progress(job_name: &str) -> (f64, String) {
 
     for log_name in &["gpu0.log", "gpu1.log", "gpu2.log", "gpu3.log", "enhance.log"] {
         let path = home.join(log_name);
-        let tail = read_tail(&path, 8192);
+        let tail = read_tail(&path, 65536);
         if !tail.contains(job_name) && *log_name != "enhance.log" {
             continue;
         }
@@ -1015,10 +1015,14 @@ async fn build_status() -> StatusResponse {
                     .unwrap_or(0.0);
                 let (upload_pct, upload_info) = parse_upload_progress(&title);
                 let pct = if upload_pct > 0.0 { upload_pct } else { 0.0 };
-                let eta_str = if upload_info.is_empty() {
-                    format!("{:.0} MB", size_mb)
-                } else {
+                let eta_str = if upload_pct > 0.0 && !upload_info.is_empty() {
+                    format!("{:.0}% of {}", upload_pct, upload_info)
+                } else if upload_pct > 0.0 {
+                    format!("{:.0}% of {:.0} MB", upload_pct, size_mb)
+                } else if !upload_info.is_empty() {
                     upload_info
+                } else {
+                    format!("{:.0} MB", size_mb)
                 };
                 (
                     "uploading".to_string(),
