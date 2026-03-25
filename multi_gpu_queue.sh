@@ -105,6 +105,14 @@ gpu_worker() {
 
         if [[ -z "$json_file" ]]; then
             # No video available — check if we can help another GPU via dynamic joining
+            # But first: check if any queued video only needs reassembly (no GPU needed)
+            local queued_ready
+            queued_ready=$(ls "$QUEUE_DIR"/*.json 2>/dev/null | wc -l)
+            if [[ "$queued_ready" -gt 0 ]]; then
+                # There's a video in the queue — go back to pick it up instead of joining
+                continue
+            fi
+
             # Only join if there are free GPUs (upscale processes < total GPUs)
             local upscale_count
             upscale_count=$(pgrep -f "upscale.py" 2>/dev/null | wc -l)
