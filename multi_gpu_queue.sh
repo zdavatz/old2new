@@ -257,6 +257,28 @@ gpu_worker() {
                 # Move JSON to done
                 mv "$processing_path" "$DONE_DIR/${video_id}.json"
                 success=1
+
+                # Auto-rebalance: if other videos still processing and free GPUs available
+                local other_processing_now
+                other_processing_now=$(ls "$QUEUE_DIR"/*.processing.* 2>/dev/null | wc -l)
+                local upscale_now
+                upscale_now=$(pgrep -f "upscale.py" 2>/dev/null | wc -l)
+                if [[ "$other_processing_now" -gt 0 && "$upscale_now" -gt 0 && "$upscale_now" -lt "$NUM_GPUS" ]]; then
+                    local free_now=$((NUM_GPUS - upscale_now))
+                    echo "[GPU $gpu] Auto-rebalance: $upscale_now GPUs busy, $free_now free — redistributing"
+                    # Kill current upscale processes (resumable)
+                    pkill -f "upscale.py" 2>/dev/null
+                    sleep 2
+                    # Run rebalance inline
+                    if [[ -x "$SCRIPT_DIR/rebalance.sh" ]]; then
+                        "$SCRIPT_DIR/rebalance.sh" "$NUM_GPUS" >> "$HOME/rebalance.log" 2>&1 &
+                        echo "[GPU $gpu] Rebalance started"
+                    elif [[ -x "$HOME/rebalance.sh" ]]; then
+                        "$HOME/rebalance.sh" "$NUM_GPUS" >> "$HOME/rebalance.log" 2>&1 &
+                        echo "[GPU $gpu] Rebalance started"
+                    fi
+                fi
+
                 break
             elif [[ $exit_code -gt 128 ]]; then
                 retry=$((retry + 1))
