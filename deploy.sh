@@ -1182,7 +1182,7 @@ for bin in status_server_rs/target/release/status_server youtube_upload_rs/targe
 done
 
 # OAuth credentials
-for src in "/tmp/client_secret.json" "$HOME/client_secret.json"; do
+for src in "/tmp/client_secret.json" "$HOME/client_secret.json" "$SCRIPT_DIR/client_secret.json"; do
     if [[ -f "$src" && -f "$(dirname "$src")/youtube_token.json" ]]; then
         $SCP "$src" "$(dirname "$src")/youtube_token.json" root@"$SSH_HOST":/root/ 2>/dev/null
         echo "  Credentials deployed"
