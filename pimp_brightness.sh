@@ -6,7 +6,8 @@
 #
 # Examples:
 #   ./pimp_brightness.sh "https://youtube.com/watch?v=J1VEC3Us21Q" 0:33 1:48 -25
-#   ./pimp_brightness.sh "https://youtube.com/watch?v=J1VEC3Us21Q" 0:33 1:48 -25 --title "My Video (Enhanced 4K v1)"
+#   ./pimp_brightness.sh "https://youtube.com/watch?v=J1VEC3Us21Q" 0:33 1:48 -25 --suffix v1
+#   ./pimp_brightness.sh "https://youtube.com/watch?v=J1VEC3Us21Q" 0:33 1:48 -25 --title "Full Custom Title"
 #   ./pimp_brightness.sh "https://youtube.com/watch?v=J1VEC3Us21Q" 5:00 8:30 +30
 #
 # Pipeline:
@@ -29,11 +30,13 @@ usage() {
     echo "  youtube-url: YouTube video URL"
     echo "  start/end:   timestamp like 0:33 or 1:48:05 or 90 (seconds)"
     echo "  percent:     -25 (darker) or +30 (brighter)"
-    echo "  --title:     custom YouTube upload title (optional)"
+    echo "  --suffix:    appended after 'Enhanced 4K' in title (e.g. v1 → 'Enhanced 4K v1')"
+    echo "  --title:     fully custom YouTube upload title (overrides --suffix)"
     echo ""
     echo "Examples:"
     echo "  $0 \"https://youtube.com/watch?v=ABC123\" 0:33 1:48 -25"
-    echo "  $0 \"https://youtube.com/watch?v=ABC123\" 0:33 1:48 -25 --title \"My Video (Enhanced 4K v1)\""
+    echo "  $0 \"https://youtube.com/watch?v=ABC123\" 0:33 1:48 -25 --suffix v1"
+    echo "  $0 \"https://youtube.com/watch?v=ABC123\" 0:33 1:48 -25 --title \"Full Custom Title\""
     exit 1
 }
 
@@ -46,9 +49,11 @@ PERCENT="$4"
 shift 4
 
 CUSTOM_TITLE=""
+SUFFIX=""
 while [ $# -gt 0 ]; do
     case "$1" in
         --title) CUSTOM_TITLE="$2"; shift 2 ;;
+        --suffix) SUFFIX="$2"; shift 2 ;;
         *) echo "Unknown option: $1"; usage ;;
     esac
 done
@@ -162,13 +167,29 @@ for p in "$HOME/youtube_token.json" "$SCRIPT_DIR/youtube_token.json"; do
 done
 [ -z "$TOKEN" ] && echo "Error: youtube_token.json not found" && exit 1
 
+# Build title: --title overrides everything, --suffix appends to original title
+UPLOAD_TITLE=""
+if [ -n "$CUSTOM_TITLE" ]; then
+    UPLOAD_TITLE="$CUSTOM_TITLE"
+elif [ -n "$SUFFIX" ]; then
+    # Fetch original title via yt-dlp (fast, no download)
+    ORIG_TITLE=$(yt-dlp --remote-components ejs:github --print title "$URL" 2>/dev/null)
+    # Replace "(Enhanced 4K)" with "(Enhanced 4K v1)" etc, or append if not present
+    if echo "$ORIG_TITLE" | grep -q "(Enhanced 4K)"; then
+        UPLOAD_TITLE=$(echo "$ORIG_TITLE" | sed "s/(Enhanced 4K)/(Enhanced 4K $SUFFIX)/")
+    else
+        UPLOAD_TITLE="$ORIG_TITLE (Enhanced 4K $SUFFIX)"
+    fi
+    echo "  Upload title: $UPLOAD_TITLE"
+fi
+
 UPLOAD_ARGS=(
     --video-id="$VIDEO_ID"
     --client-secret "$CLIENT_SECRET"
     --token "$TOKEN"
     --notify "juerg@davaz.com"
 )
-[ -n "$CUSTOM_TITLE" ] && UPLOAD_ARGS+=(--title "$CUSTOM_TITLE")
+[ -n "$UPLOAD_TITLE" ] && UPLOAD_ARGS+=(--title "$UPLOAD_TITLE")
 
 "$UPLOAD_BIN" "${UPLOAD_ARGS[@]}" "$OUTPUT"
 
