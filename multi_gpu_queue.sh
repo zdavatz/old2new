@@ -105,10 +105,10 @@ gpu_worker() {
 
         if [[ -z "$json_file" ]]; then
             # No video available — check if we can help another GPU via dynamic joining
-            # Skip if segment-split upscale.py processes are already running on multiple GPUs
+            # Only join if there are free GPUs (upscale processes < total GPUs)
             local upscale_count
             upscale_count=$(pgrep -f "upscale.py" 2>/dev/null | wc -l)
-            if [[ "$NUM_GPUS" -gt 1 && "$upscale_count" -le 1 ]]; then
+            if [[ "$NUM_GPUS" -gt 1 && "$upscale_count" -lt "$NUM_GPUS" ]]; then
                 local other_active
                 other_active=$(ls "$QUEUE_DIR"/*.processing.* 2>/dev/null | wc -l)
                 if [[ "$other_active" -ge 1 ]]; then
