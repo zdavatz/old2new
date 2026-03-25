@@ -858,9 +858,9 @@ check_black_frames() {
         return
     fi
 
-    # Skip if CHECK_BLACK=0 (default: enabled)
-    if [[ "${CHECK_BLACK:-1}" == "0" ]]; then
-        echo "Black frame check skipped (CHECK_BLACK=0)"
+    # Skip if CHECK_BLACK=0 (default: disabled — too slow for large 4K videos)
+    if [[ "${CHECK_BLACK:-0}" != "1" ]]; then
+        echo "Black frame check skipped (set CHECK_BLACK=1 to enable)"
         return
     fi
 
