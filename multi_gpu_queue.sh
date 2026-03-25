@@ -105,7 +105,10 @@ gpu_worker() {
 
         if [[ -z "$json_file" ]]; then
             # No video available — check if we can help another GPU via dynamic joining
-            if [[ "$NUM_GPUS" -gt 1 ]]; then
+            # Skip if segment-split upscale.py processes are already running on multiple GPUs
+            local upscale_count
+            upscale_count=$(pgrep -f "upscale.py" 2>/dev/null | wc -l)
+            if [[ "$NUM_GPUS" -gt 1 && "$upscale_count" -le 1 ]]; then
                 local other_active
                 other_active=$(ls "$QUEUE_DIR"/*.processing.* 2>/dev/null | wc -l)
                 if [[ "$other_active" -ge 1 ]]; then
@@ -117,8 +120,8 @@ gpu_worker() {
                         job_dir="$HOME/jobs/$active_vid"
                         frames_in="$job_dir/frames_in"
                         frames_out="$job_dir/frames_out"
-                        local total_in=$(ls "$frames_in"/frame_*.png 2>/dev/null | wc -l)
-                        local total_out=$(ls "$frames_out"/frame_*.png 2>/dev/null | wc -l)
+                        local total_in=$(find "$frames_in" -maxdepth 1 -name "frame_*.png" 2>/dev/null | wc -l)
+                        local total_out=$(find "$frames_out" -maxdepth 1 -name "frame_*.png" 2>/dev/null | wc -l)
                         remaining=$((total_in - total_out))
                         if [[ "$remaining" -gt 500 ]]; then
                             active_file="$af"
@@ -137,9 +140,8 @@ gpu_worker() {
                         [[ "$free_gpus" -lt 1 ]] && free_gpus=1
 
                         # Calculate our segment from the remaining frames
-                        # We take the LAST portion — the original GPU continues from the front
                         local total_in
-                        total_in=$(ls "$frames_in"/frame_*.png 2>/dev/null | wc -l)
+                        total_in=$(find "$frames_in" -maxdepth 1 -name "frame_*.png" 2>/dev/null | wc -l)
                         local seg_size=$(( remaining / (free_gpus + 1) ))  # +1 for the original GPU
                         local our_start=$(( total_in - seg_size ))
                         [[ "$our_start" -lt 0 ]] && our_start=0
