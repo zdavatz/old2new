@@ -118,7 +118,6 @@ for work_item in "${SORTED[@]}"; do
     else
         # Large video — split remaining (todo) frames across GPUs
         # Find the first and last undone frame indices to avoid assigning already-done ranges
-        local todo_range
         todo_range=$(python3 -c "
 import glob, os
 fi = sorted(glob.glob('$fi_dir/frame_*.png'))
@@ -129,11 +128,11 @@ if todo_idx:
 else:
     print('0 0 0')
 " 2>/dev/null)
-        local todo_start todo_end todo_count
+        todo_start=0; todo_end=0; todo_count=0
         read -r todo_start todo_end todo_count <<< "$todo_range"
 
         if [[ "$todo_count" -gt 0 ]]; then
-            local todo_per_gpu=$(( (todo_end - todo_start + NUM_GPUS - 1) / NUM_GPUS ))
+            todo_per_gpu=$(( (todo_end - todo_start + NUM_GPUS - 1) / NUM_GPUS ))
             for ((g=0; g<NUM_GPUS; g++)); do
                 start=$(( todo_start + g * todo_per_gpu ))
                 end=$(( todo_start + (g + 1) * todo_per_gpu ))
