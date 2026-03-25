@@ -40,6 +40,10 @@ struct Cli {
     /// Email to notify after upload (empty string to skip)
     #[arg(long = "notify", default_value = "juerg@davaz.com")]
     notify: Option<String>,
+
+    /// Custom upload title (overrides auto-generated "... (Enhanced 4K)" title)
+    #[arg(long = "title")]
+    title: Option<String>,
 }
 
 /// Token format compatible with Python google-auth
@@ -372,7 +376,9 @@ async fn main() {
     println!();
 
     // Build upload title
-    let upload_title = if original_title.contains("(Enhanced") {
+    let upload_title = if let Some(ref custom_title) = cli.title {
+        custom_title.clone()
+    } else if original_title.contains("(Enhanced") {
         original_title.clone()
     } else {
         format!("{} (Enhanced 4K)", original_title)
