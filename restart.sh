@@ -29,18 +29,18 @@ echo "=== Replacing binaries ==="
 # Test .new binaries before replacing — avoid overwriting working binary with glibc-incompatible one
 for bin in status_server youtube_upload; do
     if [ -f "/root/${bin}.new" ]; then
-        if /root/${bin}.new --help >/dev/null 2>&1; then
+        if ldd "/root/${bin}.new" 2>&1 | grep -q "not found"; then
+            rm -f "/root/${bin}.new"
+            echo "  ${bin}: .new binary incompatible (glibc), keeping current"
+        else
             mv -f "/root/${bin}.new" "/root/${bin}"
             echo "  ${bin} replaced"
-        else
-            rm -f "/root/${bin}.new"
-            echo "  ${bin}: .new binary incompatible (glibc?), keeping current"
         fi
     else
         echo "  ${bin}: no .new file"
     fi
-    # Fallback to Docker image binary if current one doesn't work
-    if ! /root/${bin} --help >/dev/null 2>&1 && [ -f "/usr/local/bin/${bin}" ]; then
+    # Fallback to Docker image binary if current one has glibc issues
+    if ldd "/root/${bin}" 2>&1 | grep -q "not found" && [ -f "/usr/local/bin/${bin}" ]; then
         cp "/usr/local/bin/${bin}" "/root/${bin}"
         echo "  ${bin}: using Docker image binary (glibc compat)"
     fi
