@@ -45,13 +45,13 @@ for bin in status_server youtube_upload enhance frame_gap_check rebalance_calc; 
         echo "  ${bin}: using Docker image binary (glibc compat)"
     fi
 done
-chmod +x /root/status_server /root/youtube_upload /root/enhance /root/enhance.sh /root/frame_gap_check /root/rebalance_calc /root/multi_gpu_queue.sh 2>/dev/null
+chmod +x /root/status_server /root/youtube_upload /root/enhance /root/enhance.sh /root/frame_gap_check /root/rebalance_calc /root/gpu_scheduler /root/multi_gpu_queue.sh 2>/dev/null
 
 echo ""
 echo "=== Restoring queue ==="
-for f in /root/json/*.processing.*; do
+for f in /root/json/*.processing*; do
     [ -f "$f" ] || continue
-    base=$(echo "$f" | sed 's/\.processing\.[0-9]*//')
+    base=$(echo "$f" | sed 's/\.processing.*//')
     vid=$(basename "$base" .json)
     # Skip if already uploaded (json exists in json_done/)
     if [ -f "/root/json_done/${vid}.json" ]; then
