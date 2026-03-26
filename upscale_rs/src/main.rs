@@ -213,14 +213,18 @@ fn main() {
 
     // Create ONNX session with CUDA
     eprintln!("Loading ONNX model: {}...", model_path);
+    // Prefer TensorRT (fastest), fallback to CUDA, then CPU
+    eprintln!("Registering execution providers: TensorRT > CUDA > CPU...");
     let mut session = Session::builder()
         .expect("Failed to create session builder")
         .with_execution_providers([
-            ort::execution_providers::CUDAExecutionProvider::default().build()
+            ort::execution_providers::TensorRTExecutionProvider::default().build(),
+            ort::execution_providers::CUDAExecutionProvider::default().build(),
         ])
         .expect("Failed to set execution providers")
         .commit_from_file(&model_path)
         .expect("Failed to load model");
+    eprintln!("Session created. First inference may be slow (TensorRT engine compilation).");
 
     let tile_size = if args.tile > 0 { args.tile } else { 512 };
     let tile_pad = 10u32;
