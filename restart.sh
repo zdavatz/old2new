@@ -13,7 +13,7 @@ NUM_GPUS="${1:-}"
 
 echo "=== Killing all processes ==="
 # Get ALL PIDs in one shot, kill them all
-PIDS=$(pgrep -f 'status_server|multi_gpu_queue|enhance.sh|/root/enhance|enhance_gpu.py|upscale.py|korea_single' 2>/dev/null | grep -v "^$$\$" || true)
+PIDS=$(pgrep -f 'status_server|gpu_scheduler|multi_gpu_queue|enhance.sh|/root/enhance|enhance_gpu.py|upscale.py|korea_single' 2>/dev/null | grep -v "^$$\$" || true)
 if [[ -n "$PIDS" ]]; then
     echo "$PIDS" | xargs kill -9 2>/dev/null
     echo "Killed: $PIDS"
@@ -78,12 +78,26 @@ echo "=== Starting queue ==="
 if [[ -z "$NUM_GPUS" ]]; then
     NUM_GPUS=$(nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null | wc -l)
 fi
-nohup ./multi_gpu_queue.sh "$NUM_GPUS" >> /root/enhance.log 2>&1 &
-sleep 2
-if pgrep -f multi_gpu_queue > /dev/null; then
-    echo "  OK — $NUM_GPUS GPUs (PID $(pgrep -f multi_gpu_queue | head -1))"
+# Use Rust gpu_scheduler if available, fallback to Bash multi_gpu_queue.sh
+if [[ -x /root/gpu_scheduler ]]; then
+    nohup ./gpu_scheduler "$NUM_GPUS" >> /root/enhance.log 2>&1 &
+    sleep 2
+    if pgrep -x gpu_scheduler > /dev/null; then
+        echo "  OK — $NUM_GPUS GPUs via gpu_scheduler (PID $(pgrep -x gpu_scheduler | head -1))"
+    else
+        echo "  gpu_scheduler FAILED, falling back to multi_gpu_queue.sh"
+        nohup ./multi_gpu_queue.sh "$NUM_GPUS" >> /root/enhance.log 2>&1 &
+        sleep 2
+        echo "  Fallback OK (PID $(pgrep -f multi_gpu_queue | head -1))"
+    fi
 else
-    echo "  FAILED — check /root/enhance.log"
+    nohup ./multi_gpu_queue.sh "$NUM_GPUS" >> /root/enhance.log 2>&1 &
+    sleep 2
+    if pgrep -f multi_gpu_queue > /dev/null; then
+        echo "  OK — $NUM_GPUS GPUs (PID $(pgrep -f multi_gpu_queue | head -1))"
+    else
+        echo "  FAILED — check /root/enhance.log"
+    fi
 fi
 
 echo ""

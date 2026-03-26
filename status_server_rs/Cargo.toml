@@ -29,6 +29,10 @@ path = "src/frame_gap_check.rs"
 name = "enhance"
 path = "src/enhance.rs"
 
+[[bin]]
+name = "gpu_scheduler"
+path = "src/gpu_scheduler.rs"
+
 [profile.release]
 strip = true
 lto = true
