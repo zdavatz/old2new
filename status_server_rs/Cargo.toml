@@ -21,6 +21,14 @@ path = "src/main.rs"
 name = "rebalance_calc"
 path = "src/rebalance_calc.rs"
 
+[[bin]]
+name = "frame_gap_check"
+path = "src/frame_gap_check.rs"
+
+[[bin]]
+name = "enhance"
+path = "src/enhance.rs"
+
 [profile.release]
 strip = true
 lto = true
