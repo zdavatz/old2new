@@ -48,7 +48,7 @@ RUN curl -sL https://johnvansickle.com/ffmpeg/releases/ffmpeg-release-amd64-stat
 # Deno (needed by yt-dlp for YouTube JS challenge solving)
 RUN curl -fsSL https://deno.land/install.sh | DENO_INSTALL=/usr/local sh
 
-# Build Rust binaries (status_server, gpu_scheduler, enhance, frame_gap_check, rebalance_calc, youtube_upload)
+# Build Rust binaries (v2 — 2026-03-26)
 RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
 ENV PATH="/root/.cargo/bin:$PATH"
 RUN git clone --depth 1 https://github.com/zdavatz/old2new.git /tmp/old2new && \
