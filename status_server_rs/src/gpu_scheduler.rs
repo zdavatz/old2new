@@ -204,7 +204,30 @@ fn run_upscale_segments(cfg: &SchedulerConfig, job: &VideoJob, gpus: &[u32]) -> 
     let fo_dir = cfg.jobs_dir.join(&job.video_id).join("frames_out");
     let _ = fs::create_dir_all(&fo_dir);
 
+    let count_in = count_frames(&fi_dir);
+    let count_out = count_frames(&fo_dir);
+
+    // Don't trust fi-fo diff when inputs were deleted (rolling deletion)
+    // Instead: if frames_in is empty but frames_out < expected, NOT done
+    // If frames_in exists, use fi-fo; otherwise video is truly done
     let (total, done, remaining) = count_todo_frames(&fi_dir, &fo_dir);
+    if remaining == 0 && count_in == 0 {
+        // All inputs deleted — check if we have enough outputs
+        // Read expected total from job_meta.json
+        let meta_path = cfg.jobs_dir.join(&job.video_id).join("job_meta.json");
+        let expected = fs::read_to_string(&meta_path).ok()
+            .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
+            .and_then(|v| v.get("total_frames").and_then(|t| t.as_u64()))
+            .unwrap_or(0);
+        if expected > 0 && count_out < expected {
+            eprintln!("[{}] WARNING: frames_in deleted but only {}/{} output frames — NOT done!",
+                job.video_id, count_out, expected);
+            eprintln!("[{}] Need to re-extract frames first", job.video_id);
+            return false; // Caller should re-extract
+        }
+        eprintln!("[{}] All {} frames done", job.video_id, count_out);
+        return true;
+    }
     if remaining == 0 {
         eprintln!("[{}] All {} frames done", job.video_id, done);
         return true;
