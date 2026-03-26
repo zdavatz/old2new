@@ -318,6 +318,8 @@ fn main() {
         let first_expected = videos[0].expected_frames;
         let first_remaining = if first_expected > first_out { first_expected - first_out } else { 0 };
         let nearly_done = first_remaining > 0 && (first_remaining < 2000 || (first_expected > 0 && first_remaining * 100 / first_expected < 5));
+        eprintln!("[scheduler] First video: {} out={} expected={} remaining={} nearly_done={}",
+            videos[0].id, first_out, first_expected, first_remaining, nearly_done);
 
         if nearly_done && videos.len() > 1 {
             // Finish first video on ALL GPUs, then handle rest
