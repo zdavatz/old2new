@@ -51,10 +51,12 @@ RUN git clone --depth 1 https://github.com/zdavatz/old2new.git /tmp/old2new && \
     cd /tmp/old2new/status_server_rs && cargo build --release && \
     cp target/release/status_server /usr/local/bin/status_server && \
     cp target/release/status_server /root/status_server && \
+    cp target/release/rebalance_calc /usr/local/bin/rebalance_calc && \
+    cp target/release/rebalance_calc /root/rebalance_calc && \
     cd /tmp/old2new/youtube_upload_rs && cargo build --release && \
     cp target/release/youtube_upload /usr/local/bin/youtube_upload && \
     cp target/release/youtube_upload /root/youtube_upload && \
-    chmod +x /root/status_server /root/youtube_upload && \
+    chmod +x /root/status_server /root/youtube_upload /root/rebalance_calc && \
     rm -rf /tmp/old2new /root/.cargo/registry /root/.cargo/git && \
     rustup self uninstall -y 2>/dev/null || true
 

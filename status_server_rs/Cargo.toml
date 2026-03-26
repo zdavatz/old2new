@@ -13,6 +13,14 @@ tower-http = { version = "0.5", features = ["fs"] }
 chrono = "0.4"
 libc = "0.2"
 
+[[bin]]
+name = "status_server"
+path = "src/main.rs"
+
+[[bin]]
+name = "rebalance_calc"
+path = "src/rebalance_calc.rs"
+
 [profile.release]
 strip = true
 lto = true

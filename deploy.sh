@@ -67,7 +67,7 @@ while [[ $# -gt 0 ]]; do
             UPD_SSH="ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=10 root@$UPD_HOST -p $UPD_PORT"
 
             # Upload binaries
-            for bin in status_server_rs/target/release/status_server youtube_upload_rs/target/release/youtube_upload; do
+            for bin in status_server_rs/target/release/status_server status_server_rs/target/release/rebalance_calc youtube_upload_rs/target/release/youtube_upload; do
                 if [[ -f "$SCRIPT_DIR/$bin" ]]; then
                     bname=$(basename "$bin")
                     $UPD_SCP "$SCRIPT_DIR/$bin" root@"$UPD_HOST":/root/${bname}.new 2>/dev/null
@@ -120,7 +120,7 @@ if pgrep -x status_server > /dev/null; then echo "status_server restarted"; else
                 echo "  Scripts uploaded"
 
                 # Upload Rust binaries as .new (won't replace running binary)
-                for bin in status_server_rs/target/release/status_server youtube_upload_rs/target/release/youtube_upload; do
+                for bin in status_server_rs/target/release/status_server status_server_rs/target/release/rebalance_calc youtube_upload_rs/target/release/youtube_upload; do
                     if [[ -f "$SCRIPT_DIR/$bin" ]]; then
                         bname=$(basename "$bin")
                         $SOFT_SCP "$SCRIPT_DIR/$bin" root@"$SOFT_HOST":/root/${bname}.new 2>/dev/null
@@ -163,7 +163,7 @@ if pgrep -x status_server > /dev/null; then echo "status_server restarted"; else
             # Step 1: Upload everything first (while old processes still run)
             $UPD_SCP "$SCRIPT_DIR/enhance.sh" "$SCRIPT_DIR/upscale.py" "$SCRIPT_DIR/multi_gpu_queue.sh" "$SCRIPT_DIR/restart.sh" root@"$UPD_HOST":/root/ 2>/dev/null
             echo "  Scripts uploaded"
-            for bin in status_server_rs/target/release/status_server youtube_upload_rs/target/release/youtube_upload; do
+            for bin in status_server_rs/target/release/status_server status_server_rs/target/release/rebalance_calc youtube_upload_rs/target/release/youtube_upload; do
                 if [[ -f "$SCRIPT_DIR/$bin" ]]; then
                     bname=$(basename "$bin")
                     $UPD_SCP "$SCRIPT_DIR/$bin" root@"$UPD_HOST":/root/${bname}.new
@@ -1174,7 +1174,7 @@ $SCP "$SCRIPT_DIR/enhance.sh" "$SCRIPT_DIR/upscale.py" "$SCRIPT_DIR/multi_gpu_qu
 echo "  Scripts deployed"
 
 # Rust binaries
-for bin in status_server_rs/target/release/status_server youtube_upload_rs/target/release/youtube_upload; do
+for bin in status_server_rs/target/release/status_server status_server_rs/target/release/rebalance_calc youtube_upload_rs/target/release/youtube_upload; do
     if [[ -f "$SCRIPT_DIR/$bin" ]]; then
         $SCP "$SCRIPT_DIR/$bin" root@"$SSH_HOST":/root/ 2>/dev/null
         echo "  $(basename $bin) deployed"
