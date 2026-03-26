@@ -29,11 +29,11 @@ RUN pip install --no-cache-dir \
     pip install --no-cache-dir "opencv-python-headless==4.10.0.84" && \
     pip install --no-cache-dir "numpy==1.26.4"
 
-# Patch basicsr for newer torchvision
-RUN DEGRADATIONS_FILE=$(python3 -c "import importlib.util; print(importlib.util.find_spec('basicsr').submodule_search_locations[0])")/data/degradations.py && \
+# Patch basicsr for newer torchvision (may already be patched in newer versions)
+RUN DEGRADATIONS_FILE=$(python3 -c "import importlib.util; spec=importlib.util.find_spec('basicsr'); print(spec.submodule_search_locations[0] if spec else '/dev/null')")/data/degradations.py && \
     if [ -f "$DEGRADATIONS_FILE" ] && grep -q "functional_tensor" "$DEGRADATIONS_FILE"; then \
         sed -i 's/from torchvision.transforms.functional_tensor import rgb_to_grayscale/from torchvision.transforms.functional import rgb_to_grayscale/' "$DEGRADATIONS_FILE"; \
-    fi
+    fi || true
 
 # Pre-download model weights
 RUN WEIGHTS_DIR=$(python3 -c "import site; print(site.getsitepackages()[0])")/weights && \
