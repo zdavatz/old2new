@@ -438,11 +438,11 @@ async fn get_system_specs() -> SystemSpecs {
 // Running process detection
 // ---------------------------------------------------------------------------
 
-/// Process detection: returns (enhance_jobs, ffmpeg_jobs, upload_jobs)
+/// Process detection: returns (enhance_jobs, ffmpeg_jobs, upload_jobs, scheduler_running)
 /// - enhance_jobs: job names with running enhance_gpu.py or upscale.py
 /// - ffmpeg_jobs: job names with running ffmpeg (assembling or extracting)
 /// - upload_jobs: job names with running youtube_upload
-async fn get_running_processes() -> (HashSet<String>, HashSet<String>, HashSet<String>) {
+async fn get_running_processes() -> (HashSet<String>, HashSet<String>, HashSet<String>, bool) {
     let output = Command::new("bash")
         .args(["-c", "ps aux | grep -v grep"])
         .output()
@@ -451,12 +451,17 @@ async fn get_running_processes() -> (HashSet<String>, HashSet<String>, HashSet<S
     let mut enhance_jobs = HashSet::new();
     let mut ffmpeg_jobs = HashSet::new();
     let mut upload_jobs = HashSet::new();
+    let mut scheduler_running = false;
 
     if let Ok(output) = output {
         let stdout = String::from_utf8_lossy(&output.stdout);
         for line in stdout.lines() {
-            // enhance_gpu.py, upscale.py, or enhance.sh
-            if line.contains("enhance_gpu.py") || line.contains("upscale.py") || line.contains("enhance.sh") {
+            // gpu_scheduler detection
+            if line.contains("gpu_scheduler") && !line.contains("grep") {
+                scheduler_running = true;
+            }
+            // enhance_gpu.py, upscale.py, enhance.sh, or Rust enhance
+            if line.contains("enhance_gpu.py") || line.contains("upscale.py") || line.contains("enhance.sh") || line.contains("/root/enhance ") {
                 // Try --job-name first (legacy enhance_gpu.py)
                 if line.contains("--job-name") {
                     if let Some(rest) = line.split("--job-name").nth(1) {
@@ -492,7 +497,7 @@ async fn get_running_processes() -> (HashSet<String>, HashSet<String>, HashSet<S
             }
         }
     }
-    (enhance_jobs, ffmpeg_jobs, upload_jobs)
+    (enhance_jobs, ffmpeg_jobs, upload_jobs, scheduler_running)
 }
 
 // ---------------------------------------------------------------------------
@@ -895,7 +900,7 @@ fn read_upload_log() -> Vec<UploadEntry> {
 
 async fn build_status() -> StatusResponse {
     let jobs = jobs_dir();
-    let (enhance_jobs, ffmpeg_jobs, upload_jobs) = get_running_processes().await;
+    let (enhance_jobs, ffmpeg_jobs, upload_jobs, scheduler_running) = get_running_processes().await;
     let system = get_system_specs().await;
     let instance: InstanceMeta =
         read_json(&home_dir().join("instance_meta.json")).unwrap_or_default();
@@ -1082,6 +1087,8 @@ async fn build_status() -> StatusResponse {
                     "assembling"
                 } else if is_enhancing {
                     "upscaling"
+                } else if (total > 0 || count_out > 0) && scheduler_running {
+                    "waiting"
                 } else if total > 0 || count_out > 0 {
                     "paused"
                 } else {
@@ -1104,6 +1111,8 @@ async fn build_status() -> StatusResponse {
             } else if frames_in_dir.exists() {
                 let st = if is_enhancing || is_ffmpeg {
                     "extracting"
+                } else if count_in > 0 && scheduler_running {
+                    "waiting"
                 } else if count_in > 0 {
                     "paused"
                 } else {
@@ -1578,6 +1587,7 @@ const DASHBOARD_HTML: &str = r##"<!DOCTYPE html>
   .status-extracting { background: #713f12; color: #fbbf24; }
   .status-downloaded { background: #3b0764; color: #c084fc; }
   .status-paused { background: #78350f; color: #fdba74; }
+  .status-waiting { background: #1e3a5f; color: #93c5fd; }
   .status-queued { background: #334155; color: #94a3b8; }
   .log { background: #0f172a; border: 1px solid #334155; border-radius: 8px; padding: 12px;
          font-family: monospace; font-size: 0.75rem; max-height: 300px; overflow-y: auto;
