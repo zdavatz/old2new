@@ -776,9 +776,61 @@ fn main() {
         // Wait for background download+extract to finish
         let _ = prep_handle.join();
 
-        // Phase 4: Gap check + reassemble + upload (sequential per video)
+        // Phase 4: Gap check + reassemble + upload (ONLY if upscaling succeeded)
         for (i, job) in jobs.iter().enumerate() {
             let proc_path = cfg.json_dir.join(format!("{}.json.processing", job.video_id));
+
+            // CRITICAL: verify upscaling actually completed before reassembly
+            let fo_dir = cfg.jobs_dir.join(&job.video_id).join("frames_out");
+            let fi_dir = cfg.jobs_dir.join(&job.video_id).join("frames_in");
+            let count_out = count_frames(&fo_dir);
+            let count_in = count_frames(&fi_dir);
+
+            // Read expected total from queue JSON
+            let expected = {
+                let mut t = 0u64;
+                if let Ok(entries) = fs::read_dir(&cfg.json_dir) {
+                    for entry in entries.filter_map(|e| e.ok()) {
+                        let name = entry.file_name().to_string_lossy().to_string();
+                        if name.starts_with(&job.video_id) {
+                            if let Some(v) = fs::read_to_string(entry.path()).ok()
+                                .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok()) {
+                                let dur = v.get("duration_seconds").and_then(|d| d.as_f64()).unwrap_or(0.0);
+                                let fps = v.get("fps").and_then(|f| f.as_f64()).unwrap_or(25.0);
+                                if dur > 0.0 { t = (dur * fps) as u64; break; }
+                            }
+                        }
+                    }
+                }
+                // Also check job_meta.json
+                if t == 0 {
+                    let meta = cfg.jobs_dir.join(&job.video_id).join("job_meta.json");
+                    t = fs::read_to_string(&meta).ok()
+                        .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
+                        .and_then(|v| {
+                            let tf = v.get("total_frames").and_then(|t| t.as_u64()).unwrap_or(0);
+                            if tf > 0 { Some(tf) } else {
+                                let dur = v.get("duration_seconds").and_then(|d| d.as_f64()).unwrap_or(0.0);
+                                let fps = v.get("fps").and_then(|f| f.as_f64()).unwrap_or(25.0);
+                                if dur > 0.0 { Some((dur * fps) as u64) } else { None }
+                            }
+                        })
+                        .unwrap_or(0);
+                }
+                t
+            };
+
+            // GATE: only proceed if we have enough output frames
+            let threshold = if expected > 0 { expected.saturating_sub(5) } else { count_in };
+            if count_out < threshold {
+                eprintln!("[{}] SKIPPING reassembly: only {}/{} frames done (need {})",
+                    job.video_id, count_out, expected, threshold);
+                let _ = fs::rename(&proc_path, &job.json_path);
+                continue;
+            }
+
+            eprintln!("[{}] Upscaling verified: {}/{} frames — proceeding to reassembly",
+                job.video_id, count_out, expected);
 
             run_frame_gap_check(&cfg, job);
 
