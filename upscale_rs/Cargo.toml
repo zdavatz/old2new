@@ -4,10 +4,10 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-tch = "0.17"
+ort = { version = "2", features = ["cuda"] }
 image = "0.25"
 clap = { version = "4", features = ["derive"] }
-rayon = "1.10"
+ndarray = "0.16"
 
 [profile.release]
 strip = true
