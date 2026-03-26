@@ -429,6 +429,19 @@ Comprehensive testing of all PyTorch/CUDA optimizations on RTX 5090:
 
 **Key findings:** (1) Real-ESRGAN is framework-limited, not GPU-limited. The RTX 5090 only draws 208W of its 575W TDP at 1920x1200 — the GPU is idle 64% of the time waiting for PyTorch/CPU overhead. (2) **GPU L2 cache is the bottleneck for tile size**, not VRAM capacity. tile=512 (6.5GB) fits in cache → fast. tile=768+ (22-30GB) overflows cache → slower despite using more VRAM. More VRAM usage ≠ more performance.
 
+### Alternative Approaches Tested (all slower than baseline)
+
+| Approach | fps | vs baseline | Why it failed |
+|---|---|---|---|
+| **Sequential Python tile=512 (baseline)** | **0.6** | — | **Best approach** |
+| Python 3-thread prefetch pipeline | 0.3 | -50% | `upsampler.enhance()` holds GIL, threading adds overhead. On fast CPUs (Ryzen 9950X), I/O is not the bottleneck — GPU is. |
+| ONNX Runtime CUDA EP (Rust `upscale_rs`) | 0.0 | — | CUDA EP silently fails on RTX 5090 (Blackwell/sm_120), falls back to CPU. ORT 1.24 lacks Blackwell support. cuDNN installed, libs present — still no GPU. |
+| ONNX Runtime TensorRT EP (Rust) | 0.01 | -98% | TensorRT compiles a separate engine for each unique tensor shape. With tile=512 + padding, edge tiles vary in size → 6-12 engine compilations per frame (each 30-60s). |
+| tile=768 (more VRAM) | 0.3 | -50% | 22GB VRAM — exceeds GPU L2 cache |
+| tile=1024 (even more VRAM) | 0.2 | -67% | 29.7GB VRAM — cache thrashing |
+
+**Conclusion: Sequential Python with tile=512 is optimal.** The GPU is the bottleneck at 0.6 fps/GPU on RTX 5090 (Ryzen 9950X). Neither Rust, ONNX Runtime, TensorRT, threading, nor larger tiles improve performance. Multi-GPU scaling (gpu_scheduler with segment splitting) is the only way to increase total throughput.
+
 Per-resolution performance on RTX 5090 (tile=512, FP16):
 
 | Resolution | MP | fps | GPU Power Draw |
