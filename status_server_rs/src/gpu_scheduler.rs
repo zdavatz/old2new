@@ -251,27 +251,20 @@ fn run_upscale_segments(cfg: &SchedulerConfig, job: &VideoJob, gpus: &[u32]) -> 
         std::cmp::max(count_in, count_out)
     };
 
-    if total == 0 {
-        eprintln!("[{}] No frames found", job.video_id);
-        return false;
-    }
-
-    // Done = count_out >= total (with small tolerance for rounding)
-    if count_out >= total || (total > 0 && count_out + 3 >= total) {
-        eprintln!("[{}] All {} frames done (out={}, expected={})", job.video_id, count_out, count_out, total);
+    if count_in == 0 {
+        if expected_total > 0 && count_out < expected_total {
+            eprintln!("[{}] WARNING: frames_in deleted but only {}/{} output — need re-extract!",
+                job.video_id, count_out, expected_total);
+            return false;
+        }
+        eprintln!("[{}] No frames_in, {} frames_out — assuming done", job.video_id, count_out);
         return true;
     }
 
-    // Need more frames — check if frames_in available
-    if count_in == 0 {
-        eprintln!("[{}] WARNING: frames_in deleted but only {}/{} output — need re-extract!",
-            job.video_id, count_out, total);
-        return false;
-    }
-
-    let remaining = total - count_out;
-    eprintln!("[{}] Upscaling: {} remaining ({}/{} done) on {} GPUs",
-        job.video_id, remaining, count_out, total, gpus.len());
+    // Always start upscale.py — let IT decide if frames are done
+    // Don't use count_out vs expected_total here (unreliable with deleted frames)
+    eprintln!("[{}] Upscaling: in={} out={} expected={} on {} GPUs",
+        job.video_id, count_in, count_out, total, gpus.len());
 
     let total_in = count_in;
     let per_gpu = ((total_in as u32) + gpus.len() as u32 - 1) / gpus.len() as u32;
