@@ -573,23 +573,47 @@ fn main() {
 
         eprintln!("[scheduler] {} videos, {} GPUs", jobs.len(), num_gpus);
 
-        // Phase 1: Download + extract all videos (sequential, CPU-only)
-        for job in &jobs {
-            // Mark as processing
-            let proc_path = cfg.json_dir.join(format!("{}.json.processing", job.video_id));
-            let _ = fs::rename(&job.json_path, &proc_path);
+        // Phase 1: Download + extract all videos in background (CPU-only, parallel to GPU work)
+        // Start a background thread that downloads+extracts ALL videos
+        // The upscaling phase will wait for frames_in to appear before starting
+        let prep_jobs = jobs.clone();
+        let prep_json_dir = cfg.json_dir.clone();
+        let prep_jobs_dir = cfg.jobs_dir.clone();
+        let prep_home = cfg.home.clone();
+        let prep_handle = thread::spawn(move || {
+            for job in &prep_jobs {
+                let proc_path = prep_json_dir.join(format!("{}.json.processing", job.video_id));
+                let _ = fs::rename(&job.json_path, &proc_path);
 
-            if !download_video(&cfg, job) {
-                eprintln!("[{}] Download failed, skipping", job.video_id);
-                let _ = fs::rename(&proc_path, &job.json_path);
-                continue;
+                let local_cfg = SchedulerConfig {
+                    home: prep_home.clone(),
+                    json_dir: prep_json_dir.clone(),
+                    done_dir: PathBuf::new(),
+                    jobs_dir: prep_jobs_dir.clone(),
+                    num_gpus: 0,
+                };
+
+                if !download_video(&local_cfg, job) {
+                    eprintln!("[{}] Download failed, skipping", job.video_id);
+                    let _ = fs::rename(&proc_path, &job.json_path);
+                    continue;
+                }
+                if !extract_frames(&local_cfg, job) {
+                    eprintln!("[{}] Extraction failed, skipping", job.video_id);
+                    let _ = fs::rename(&proc_path, &job.json_path);
+                    continue;
+                }
+                eprintln!("[{}] Pre-download+extract complete", job.video_id);
             }
-            if !extract_frames(&cfg, job) {
-                eprintln!("[{}] Extraction failed, skipping", job.video_id);
-                let _ = fs::rename(&proc_path, &job.json_path);
-                continue;
-            }
+        });
+
+        // Wait for at least the first video to be ready (has frames_in)
+        let first_vid = &jobs[0].video_id;
+        let first_fi = cfg.jobs_dir.join(first_vid).join("frames_in");
+        while count_frames(&first_fi) == 0 {
+            thread::sleep(Duration::from_secs(5));
         }
+        eprintln!("[{}] Frames ready, starting upscaling", first_vid);
 
         // Phase 2: Distribute GPUs proportionally
         let all_gpus: Vec<u32> = (0..num_gpus).collect();
@@ -748,6 +772,9 @@ fn main() {
         for (i, handle) in handles {
             results[i] = handle.join().unwrap_or(false);
         }
+
+        // Wait for background download+extract to finish
+        let _ = prep_handle.join();
 
         // Phase 4: Gap check + reassemble + upload (sequential per video)
         for (i, job) in jobs.iter().enumerate() {
