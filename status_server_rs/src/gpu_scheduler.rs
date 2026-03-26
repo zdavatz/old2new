@@ -540,34 +540,140 @@ fn main() {
             gpu_assignments.push(assigned);
         }
 
-        // Phase 3: Upscale all videos in parallel (each on its assigned GPUs)
-        let mut handles: Vec<thread::JoinHandle<(usize, bool)>> = Vec::new();
+        // Phase 3: Upscale all videos in parallel with dynamic GPU reallocation
+        // When a video finishes, its GPUs are redistributed to remaining videos
+        use std::sync::mpsc;
+        let (tx, rx) = mpsc::channel::<(usize, Vec<u32>)>(); // (job_index, freed_gpus)
+
+        let mut active_jobs: Vec<usize> = (0..jobs.len()).collect();
+        let mut current_assignments = gpu_assignments.clone();
+
+        // Start initial upscaling
+        let mut handles: Vec<(usize, thread::JoinHandle<bool>)> = Vec::new();
         for (i, job) in jobs.iter().enumerate() {
-            let gpus = gpu_assignments[i].clone();
+            let gpus = current_assignments[i].clone();
+            if gpus.is_empty() { continue; }
             let cfg_home = cfg.home.clone();
             let cfg_jobs = cfg.jobs_dir.clone();
             let job_clone = job.clone();
+            let tx_clone = tx.clone();
+            let idx = i;
 
             let handle = thread::spawn(move || {
                 let local_cfg = SchedulerConfig {
                     home: cfg_home,
-                    json_dir: PathBuf::new(), // not used in upscale
+                    json_dir: PathBuf::new(),
                     done_dir: PathBuf::new(),
                     jobs_dir: cfg_jobs,
                     num_gpus: gpus.len() as u32,
                 };
                 let ok = run_upscale_segments(&local_cfg, &job_clone, &gpus);
-                (i, ok)
+                let _ = tx_clone.send((idx, gpus));
+                ok
             });
-            handles.push(handle);
+            handles.push((i, handle));
+        }
+        drop(tx); // Drop sender so rx iterator ends when all threads done
+
+        // Monitor: when a video finishes, redistribute its GPUs
+        let mut results = vec![false; jobs.len()];
+        let mut remaining_handles: Vec<(usize, thread::JoinHandle<bool>)> = Vec::new();
+
+        for (finished_idx, freed_gpus) in rx {
+            eprintln!("[scheduler] Video {} finished, freeing GPUs {:?}", jobs[finished_idx].video_id, freed_gpus);
+
+            // Collect the handle result
+            let pos = handles.iter().position(|(i, _)| *i == finished_idx);
+            if let Some(p) = pos {
+                let (_, handle) = handles.remove(p);
+                results[finished_idx] = handle.join().unwrap_or(false);
+            }
+
+            // Find still-running videos
+            let still_running: Vec<usize> = handles.iter().map(|(i, _)| *i).collect();
+
+            if still_running.is_empty() || freed_gpus.is_empty() {
+                continue;
+            }
+
+            // Redistribute freed GPUs to remaining videos
+            // Kill current upscale.py for remaining videos, restart with more GPUs
+            eprintln!("[scheduler] Redistributing {} freed GPUs to {} remaining videos",
+                freed_gpus.len(), still_running.len());
+
+            // Kill all running upscale.py
+            let _ = Command::new("pkill").args(&["-9", "-f", "upscale.py"]).status();
+            thread::sleep(Duration::from_secs(2));
+
+            // Collect all available GPUs
+            let mut all_free_gpus = freed_gpus.clone();
+            for &idx in &still_running {
+                all_free_gpus.extend(&current_assignments[idx]);
+            }
+            all_free_gpus.sort();
+            all_free_gpus.dedup();
+
+            // Redistribute proportionally
+            let per_video = std::cmp::max(1, all_free_gpus.len() / still_running.len());
+            let mut gpu_pos = 0;
+
+            // Wait for old handles (they were killed)
+            let old_handles: Vec<_> = handles.drain(..).collect();
+            for (_, h) in old_handles {
+                let _ = h.join();
+            }
+
+            // Restart with new GPU assignments
+            let (tx2, rx2) = mpsc::channel::<(usize, Vec<u32>)>();
+            for (vi, &job_idx) in still_running.iter().enumerate() {
+                let count = if vi == still_running.len() - 1 {
+                    all_free_gpus.len() - gpu_pos
+                } else {
+                    per_video
+                };
+                let assigned: Vec<u32> = all_free_gpus[gpu_pos..gpu_pos + count].to_vec();
+                gpu_pos += count;
+
+                eprintln!("[{}] Reassigned GPUs: {:?}", jobs[job_idx].video_id, assigned);
+                current_assignments[job_idx] = assigned.clone();
+
+                let cfg_home = cfg.home.clone();
+                let cfg_jobs = cfg.jobs_dir.clone();
+                let job_clone = jobs[job_idx].clone();
+                let tx_clone = tx2.clone();
+                let idx = job_idx;
+
+                let handle = thread::spawn(move || {
+                    let local_cfg = SchedulerConfig {
+                        home: cfg_home,
+                        json_dir: PathBuf::new(),
+                        done_dir: PathBuf::new(),
+                        jobs_dir: cfg_jobs,
+                        num_gpus: assigned.len() as u32,
+                    };
+                    let ok = run_upscale_segments(&local_cfg, &job_clone, &assigned);
+                    let _ = tx_clone.send((idx, assigned));
+                    ok
+                });
+                handles.push((job_idx, handle));
+            }
+            drop(tx2);
+
+            // Continue monitoring with new receiver
+            for (idx2, gpus2) in rx2 {
+                eprintln!("[scheduler] Video {} finished (redistributed)", jobs[idx2].video_id);
+                let pos = handles.iter().position(|(i, _)| *i == idx2);
+                if let Some(p) = pos {
+                    let (_, handle) = handles.remove(p);
+                    results[idx2] = handle.join().unwrap_or(false);
+                }
+            }
+            break; // All done after redistribution
         }
 
-        // Wait for all upscaling to finish
-        let mut results = vec![false; jobs.len()];
-        for handle in handles {
-            if let Ok((i, ok)) = handle.join() {
-                results[i] = ok;
-            }
+        // Collect any remaining handles
+        for (i, handle) in handles {
+            results[i] = handle.join().unwrap_or(false);
         }
 
         // Phase 4: Gap check + reassemble + upload (sequential per video)
