@@ -44,23 +44,23 @@ RUN curl -sL https://johnvansickle.com/ffmpeg/releases/ffmpeg-release-amd64-stat
 # Deno (needed by yt-dlp for YouTube JS challenge solving)
 RUN curl -fsSL https://deno.land/install.sh | DENO_INSTALL=/usr/local sh
 
-# Build Rust binaries (status_server + youtube_upload) against this glibc
+# Build ALL Rust binaries against this glibc
 RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
 ENV PATH="/root/.cargo/bin:$PATH"
 RUN git clone --depth 1 https://github.com/zdavatz/old2new.git /tmp/old2new && \
     cd /tmp/old2new/status_server_rs && cargo build --release && \
-    cp target/release/status_server /usr/local/bin/status_server && \
-    cp target/release/status_server /root/status_server && \
-    cp target/release/rebalance_calc /usr/local/bin/rebalance_calc && \
-    cp target/release/rebalance_calc /root/rebalance_calc && \
+    cp target/release/status_server /usr/local/bin/ && cp target/release/status_server /root/ && \
+    cp target/release/gpu_scheduler /usr/local/bin/ && cp target/release/gpu_scheduler /root/ && \
+    cp target/release/enhance /usr/local/bin/ && cp target/release/enhance /root/ && \
+    cp target/release/frame_gap_check /usr/local/bin/ && cp target/release/frame_gap_check /root/ && \
+    cp target/release/rebalance_calc /usr/local/bin/ && cp target/release/rebalance_calc /root/ && \
     cd /tmp/old2new/youtube_upload_rs && cargo build --release && \
-    cp target/release/youtube_upload /usr/local/bin/youtube_upload && \
-    cp target/release/youtube_upload /root/youtube_upload && \
-    chmod +x /root/status_server /root/youtube_upload /root/rebalance_calc && \
+    cp target/release/youtube_upload /usr/local/bin/ && cp target/release/youtube_upload /root/ && \
+    chmod +x /root/status_server /root/gpu_scheduler /root/enhance /root/frame_gap_check /root/rebalance_calc /root/youtube_upload && \
     rm -rf /tmp/old2new /root/.cargo/registry /root/.cargo/git && \
     rustup self uninstall -y 2>/dev/null || true
 
-# Verify (each import separate so we see which one fails)
+# Verify
 RUN python3 -c "import torch; print(f'PyTorch: {torch.__version__}')"
 RUN python3 -c "import cv2; print(f'OpenCV: {cv2.__version__}')"
 RUN python3 -c "import numpy as np; print(f'NumPy: {np.__version__}')"
