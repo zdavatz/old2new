@@ -505,12 +505,32 @@ fn main() {
     eprintln!("=== GPU Scheduler started: {} GPUs ===", num_gpus);
 
     loop {
+        // Restore any .processing files back to .json first
+        // (leftover from previous interrupted runs)
+        if let Ok(entries) = fs::read_dir(&cfg.json_dir) {
+            for entry in entries.filter_map(|e| e.ok()) {
+                let name = entry.file_name().to_string_lossy().to_string();
+                if name.contains(".processing") {
+                    // vid.json.processing or vid.json.processing.N → vid.json
+                    let base = name.split(".processing").next().unwrap_or(&name);
+                    let new_path = cfg.json_dir.join(base);
+                    // Skip if already uploaded
+                    let vid = base.strip_suffix(".json").unwrap_or(base);
+                    if cfg.done_dir.join(format!("{}.json", vid)).exists() {
+                        let _ = fs::remove_file(entry.path());
+                        continue;
+                    }
+                    let _ = fs::rename(entry.path(), &new_path);
+                }
+            }
+        }
+
         // Scan queue
         let mut jobs: Vec<VideoJob> = Vec::new();
         if let Ok(entries) = fs::read_dir(&cfg.json_dir) {
             for entry in entries.filter_map(|e| e.ok()) {
                 let name = entry.file_name().to_string_lossy().to_string();
-                if name.ends_with(".json") && !name.contains(".processing") {
+                if name.ends_with(".json") {
                     if let Some(job) = read_video_job(&entry.path()) {
                         jobs.push(job);
                     }
