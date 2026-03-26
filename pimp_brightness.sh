@@ -89,7 +89,8 @@ if (( $(echo "$DURATION <= 0" | bc -l) )); then
 fi
 
 # Calculate gamma from percent: -25 -> 0.75, +30 -> 1.30
-GAMMA=$(echo "1 + ($PERCENT / 100)" | bc -l)
+PERCENT_NUM="${PERCENT#+}"  # strip leading + for bc
+GAMMA=$(echo "1 + ($PERCENT_NUM / 100)" | bc -l)
 if (( $(echo "$GAMMA <= 0" | bc -l) )); then
     echo "Error: percent $PERCENT would result in gamma $GAMMA (must be > 0)"
     exit 1
@@ -174,9 +175,9 @@ if [ -n "$CUSTOM_TITLE" ]; then
 elif [ -n "$SUFFIX" ]; then
     # Fetch original title via yt-dlp (fast, no download)
     ORIG_TITLE=$(yt-dlp --remote-components ejs:github --print title "$URL" 2>/dev/null)
-    # Replace "(Enhanced 4K)" with "(Enhanced 4K v1)" etc, or append if not present
-    if echo "$ORIG_TITLE" | grep -q "(Enhanced 4K)"; then
-        UPLOAD_TITLE=$(echo "$ORIG_TITLE" | sed "s/(Enhanced 4K)/(Enhanced 4K $SUFFIX)/")
+    # Replace any existing "(Enhanced 4K ...)" suffix, or append if not present
+    if echo "$ORIG_TITLE" | grep -qE '\(Enhanced 4K[^)]*\)'; then
+        UPLOAD_TITLE=$(echo "$ORIG_TITLE" | sed -E "s/\(Enhanced 4K[^)]*\)/(Enhanced 4K $SUFFIX)/")
     else
         UPLOAD_TITLE="$ORIG_TITLE (Enhanced 4K $SUFFIX)"
     fi
