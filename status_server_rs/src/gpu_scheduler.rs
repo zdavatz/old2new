@@ -299,7 +299,51 @@ fn main() {
             thread::sleep(Duration::from_secs(3));
         }
 
-        // Phase 2: Distribute GPUs proportionally
+        // Phase 2+3: Smart scheduling
+        // If a video is almost done (<5% remaining), give it ALL GPUs and finish it first
+        // Otherwise distribute proportionally
+        let all_gpus: Vec<u32> = (0..num_gpus).collect();
+
+        // Sort: nearly-done videos first
+        videos.sort_by(|a, b| {
+            let a_fi = cfg.jobs_dir.join(&a.id).join("frames_in");
+            let a_fo = cfg.jobs_dir.join(&a.id).join("frames_out");
+            let a_rem = count_frames(&a_fi).saturating_sub(count_frames(&a_fo));
+            let b_fi = cfg.jobs_dir.join(&b.id).join("frames_in");
+            let b_fo = cfg.jobs_dir.join(&b.id).join("frames_out");
+            let b_rem = count_frames(&b_fi).saturating_sub(count_frames(&b_fo));
+            a_rem.cmp(&b_rem)
+        });
+
+        // Check if first video is nearly done (<5% or <2000 frames)
+        let first_fi = cfg.jobs_dir.join(&videos[0].id).join("frames_in");
+        let first_fo = cfg.jobs_dir.join(&videos[0].id).join("frames_out");
+        let first_remaining = count_frames(&first_fi).saturating_sub(count_frames(&first_fo));
+        let first_total = std::cmp::max(count_frames(&first_fi), count_frames(&first_fo));
+        let nearly_done = first_remaining < 2000 || (first_total > 0 && first_remaining * 100 / first_total < 5);
+
+        if nearly_done && videos.len() > 1 {
+            // Finish first video on ALL GPUs, then handle rest
+            eprintln!("[{}] Nearly done ({} remaining) — finishing on all {} GPUs first",
+                videos[0].id, first_remaining, num_gpus);
+            upscale_on_gpus(&cfg, &videos[0], &all_gpus);
+
+            // Verify + reassemble + upload immediately
+            let proc = cfg.json_dir.join(format!("{}.json.processing", videos[0].id));
+            if verify_and_reassemble(&cfg, &videos[0]) {
+                eprintln!("[{}] SUCCESS!", videos[0].id);
+                let _ = fs::rename(&proc, cfg.done_dir.join(format!("{}.json", videos[0].id)));
+                let _ = fs::remove_dir_all(cfg.jobs_dir.join(&videos[0].id));
+            } else {
+                eprintln!("[{}] NOT READY — back to queue", videos[0].id);
+                let _ = fs::rename(&proc, cfg.json_dir.join(format!("{}.json", videos[0].id)));
+            }
+
+            // Now handle remaining videos — loop back to scan
+            continue;
+        }
+
+        // Normal: distribute GPUs proportionally
         let gpus_per = std::cmp::max(1, num_gpus / videos.len() as u32);
         let mut assignments: Vec<Vec<u32>> = Vec::new();
         let mut idx = 0u32;
@@ -311,7 +355,7 @@ fn main() {
             assignments.push(a);
         }
 
-        // Phase 3: Upscale ALL videos in parallel
+        // Upscale ALL videos in parallel
         let mut handles: Vec<thread::JoinHandle<()>> = Vec::new();
         for (i, vid) in videos.iter().enumerate() {
             let gpus = assignments[i].clone();
