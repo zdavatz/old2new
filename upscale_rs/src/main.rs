@@ -12,7 +12,7 @@
 use clap::Parser;
 use image::{ImageBuffer, Rgb};
 use ndarray::{Array4, ArrayView4, s};
-use ort::{GraphOptimizationLevel, Session};
+use ort::{GraphOptimizationLevel, Session, SessionBuilder, CUDAExecutionProvider};
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc;
@@ -85,13 +85,13 @@ fn write_frame(arr: &ArrayView4<f32>, path: &Path) {
 
 /// Run ONNX inference on a tile
 fn run_inference(session: &Session, input: &Array4<f32>) -> Array4<f32> {
-    let input_value = ort::value::Value::from_array(input.view())
-        .expect("Failed to create input value");
-    let outputs = session.run(ort::inputs![input_value].unwrap())
+    let input_cow = ort::Value::from_array(session.allocator(), input)
+        .expect("Failed to create input");
+    let outputs = session.run(vec![input_cow])
         .expect("Inference failed");
-    let output = outputs[0].try_extract_tensor::<f32>()
+    let output = outputs[0].try_extract::<f32>()
         .expect("Failed to extract output");
-    output.to_owned().into_dimensionality::<ndarray::Ix4>()
+    output.view().to_owned().into_dimensionality::<ndarray::Ix4>()
         .expect("Wrong output shape")
 }
 
@@ -197,13 +197,15 @@ fn main() {
 
     // Create ONNX session with CUDA
     eprintln!("Loading ONNX model: {}...", model_path);
-    let session = Session::builder()
+    ort::init()
+        .with_execution_providers([CUDAExecutionProvider::default().build()])
+        .commit()
+        .expect("Failed to init ORT");
+    let session = SessionBuilder::new()
         .expect("Failed to create session builder")
         .with_optimization_level(GraphOptimizationLevel::Level3)
         .expect("Failed to set optimization level")
-        .with_execution_providers([ort::CUDAExecutionProvider::default().build()])
-        .expect("Failed to set CUDA provider")
-        .commit_from_file(&model_path)
+        .with_model_from_file(&model_path)
         .expect("Failed to load model");
 
     let tile_size = if args.tile > 0 { args.tile } else { 512 };
