@@ -13,6 +13,8 @@ use std::io::Read;
 use std::path::{Path as StdPath, PathBuf};
 use tokio::process::Command;
 
+mod rebalance;
+
 // ---------------------------------------------------------------------------
 // Data types
 // ---------------------------------------------------------------------------
@@ -1834,6 +1836,10 @@ async fn main() {
         .route("/compare/:title", get(compare_page))
         .route("/frames/:title/:dir/:filename", get(serve_frame))
         .route("/download/:title", get(download_video));
+
+    // Start GPU monitor for auto-rebalance
+    let rebalancing = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    rebalance::start_monitor(rebalancing);
 
     let addr = "0.0.0.0:8080";
     let listener = match tokio::net::TcpListener::bind(addr).await {
