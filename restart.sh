@@ -27,7 +27,7 @@ echo "Remaining: $REMAINING processes"
 echo ""
 echo "=== Replacing binaries ==="
 # Test .new binaries before replacing — avoid overwriting working binary with glibc-incompatible one
-for bin in status_server youtube_upload; do
+for bin in status_server youtube_upload enhance frame_gap_check rebalance_calc; do
     if [ -f "/root/${bin}.new" ]; then
         if ldd "/root/${bin}.new" 2>&1 | grep -q "not found"; then
             rm -f "/root/${bin}.new"
@@ -45,7 +45,7 @@ for bin in status_server youtube_upload; do
         echo "  ${bin}: using Docker image binary (glibc compat)"
     fi
 done
-chmod +x /root/status_server /root/youtube_upload /root/enhance.sh /root/multi_gpu_queue.sh 2>/dev/null
+chmod +x /root/status_server /root/youtube_upload /root/enhance /root/enhance.sh /root/frame_gap_check /root/rebalance_calc /root/multi_gpu_queue.sh 2>/dev/null
 
 echo ""
 echo "=== Restoring queue ==="

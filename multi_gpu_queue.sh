@@ -244,10 +244,10 @@ gpu_worker() {
         while true; do
             if [[ "$use_segment_split" -eq 1 ]]; then
                 # No --gpu flag → enhance.sh detects all GPUs and splits segments
-                "$SCRIPT_DIR/enhance.sh" "https://www.youtube.com/watch?v=$vid" "$scale" \
+                "$SCRIPT_DIR/enhance" "https://www.youtube.com/watch?v=$vid" "$scale" \
                     --job-name "$vid" >> "$logfile" 2>&1
             else
-                "$SCRIPT_DIR/enhance.sh" "https://www.youtube.com/watch?v=$vid" "$scale" \
+                "$SCRIPT_DIR/enhance" "https://www.youtube.com/watch?v=$vid" "$scale" \
                     --job-name "$vid" --gpu "$gpu" >> "$logfile" 2>&1
             fi
             local exit_code=$?
