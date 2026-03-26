@@ -304,23 +304,20 @@ fn main() {
         // Otherwise distribute proportionally
         let all_gpus: Vec<u32> = (0..num_gpus).collect();
 
-        // Sort: nearly-done videos first
+        // Sort: nearly-done videos first (use expected_frames, not fi-fo diff)
         videos.sort_by(|a, b| {
-            let a_fi = cfg.jobs_dir.join(&a.id).join("frames_in");
-            let a_fo = cfg.jobs_dir.join(&a.id).join("frames_out");
-            let a_rem = count_frames(&a_fi).saturating_sub(count_frames(&a_fo));
-            let b_fi = cfg.jobs_dir.join(&b.id).join("frames_in");
-            let b_fo = cfg.jobs_dir.join(&b.id).join("frames_out");
-            let b_rem = count_frames(&b_fi).saturating_sub(count_frames(&b_fo));
+            let a_out = count_frames(&cfg.jobs_dir.join(&a.id).join("frames_out"));
+            let a_rem = if a.expected_frames > a_out { a.expected_frames - a_out } else { 0 };
+            let b_out = count_frames(&cfg.jobs_dir.join(&b.id).join("frames_out"));
+            let b_rem = if b.expected_frames > b_out { b.expected_frames - b_out } else { 0 };
             a_rem.cmp(&b_rem)
         });
 
-        // Check if first video is nearly done (<5% or <2000 frames)
-        let first_fi = cfg.jobs_dir.join(&videos[0].id).join("frames_in");
-        let first_fo = cfg.jobs_dir.join(&videos[0].id).join("frames_out");
-        let first_remaining = count_frames(&first_fi).saturating_sub(count_frames(&first_fo));
-        let first_total = std::cmp::max(count_frames(&first_fi), count_frames(&first_fo));
-        let nearly_done = first_remaining < 2000 || (first_total > 0 && first_remaining * 100 / first_total < 5);
+        // Check if first video is nearly done (<2000 frames or <5% remaining)
+        let first_out = count_frames(&cfg.jobs_dir.join(&videos[0].id).join("frames_out"));
+        let first_expected = videos[0].expected_frames;
+        let first_remaining = if first_expected > first_out { first_expected - first_out } else { 0 };
+        let nearly_done = first_remaining > 0 && (first_remaining < 2000 || (first_expected > 0 && first_remaining * 100 / first_expected < 5));
 
         if nearly_done && videos.len() > 1 {
             // Finish first video on ALL GPUs, then handle rest
