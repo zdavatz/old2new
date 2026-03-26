@@ -350,7 +350,7 @@ No code changes needed in `enhance_gpu.py` — just run multiple instances with 
 
 **Disk sizing for multi-GPU:** With 4 GPUs parallel, each GPU needs its own disk budget (total / 4). At 1920x1200 2x with 500GB: max ~5min per video. For short HD videos (<5min), 4x RTX 5090 at $1.35/hr on vast.ai Sichuan is ideal — processes 30 short videos in ~20min.
 
-**GPU Scheduler (Rust):** The `gpu_scheduler` binary replaces `multi_gpu_queue.sh`. It distributes GPUs **proportionally** across videos (2 videos + 4 GPUs = 2 GPUs per video, with segment splitting). Single binary manages the full pipeline: queue scan → download → extract → upscale → gap-check → reassemble → upload → auto-destroy. No more race conditions between Bash scripts.
+**GPU Scheduler (Rust):** The `gpu_scheduler` binary replaces `multi_gpu_queue.sh`. It distributes GPUs **proportionally** across videos (2 videos + 4 GPUs = 2 GPUs per video, with segment splitting via `--start/--end` + `--gpu-id`). **Nearly-done detection**: videos with <2000 frames remaining get GPU 0 to finish while other GPUs start the next video. Frame count verification gate before reassembly prevents corrupt uploads. Built-in ffmpeg reassembly with brightness matching, YouTube upload, and auto-destroy (with `.processing` file safety check). Single binary manages the full pipeline: queue scan → download → extract → upscale → gap-check → reassemble → upload → auto-destroy.
 - **OOM-kill recovery** — detects killed processes (exit > 128) and retries the same video after 60s
 - **Auto YouTube upload + email** after each video (via Rust `youtube_upload` binary)
 
@@ -420,13 +420,14 @@ Comprehensive testing of all PyTorch/CUDA optimizations on RTX 5090:
 | **tile=512 FP16 (baseline)** | **0.45** | — | Our current config |
 | tile=256 FP16 | 0.43 | -4% | More tiles = more overhead |
 | tile=384 FP16 | 0.44 | -2% | |
-| tile=768 FP16 | 0.43 | -4% | Fewer tiles but larger compute per tile |
+| tile=768 FP16 | 0.3 | -33% | 22GB VRAM — exceeds GPU L2 cache, slower |
+| tile=1024 FP16 | 0.2 | -56% | 29.7GB VRAM — even slower despite fewer tiles |
 | tile=512 FP32 | 0.27 | -40% | FP16 is much faster |
 | tile=512 pad=0 | 0.47 | **+5%** | Slightly faster but may cause tile artifacts |
 | cudnn.benchmark + TF32 | 0.44 | 0% | No effect on Real-ESRGAN |
 | torch.compile() | — | — | Not compatible with Real-ESRGAN tiling |
 
-**Key finding: Real-ESRGAN is framework-limited, not GPU-limited.** The RTX 5090 only draws 208W of its 575W TDP at 1920x1200 — the GPU is idle 64% of the time waiting for PyTorch/CPU overhead.
+**Key findings:** (1) Real-ESRGAN is framework-limited, not GPU-limited. The RTX 5090 only draws 208W of its 575W TDP at 1920x1200 — the GPU is idle 64% of the time waiting for PyTorch/CPU overhead. (2) **GPU L2 cache is the bottleneck for tile size**, not VRAM capacity. tile=512 (6.5GB) fits in cache → fast. tile=768+ (22-30GB) overflows cache → slower despite using more VRAM. More VRAM usage ≠ more performance.
 
 Per-resolution performance on RTX 5090 (tile=512, FP16):
 

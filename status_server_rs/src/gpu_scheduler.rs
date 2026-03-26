@@ -39,9 +39,22 @@ fn count_frames(dir: &Path) -> u64 {
         .filter_map(|e| e.ok())
         .filter(|e| {
             let n = e.file_name(); let s = n.to_string_lossy();
-            s.starts_with("frame_") && s.ends_with(".png")
+            s.starts_with("frame_") && s.ends_with(".png") && !s.contains(".tmp")
         })
         .count() as u64
+}
+
+/// Find highest frame number in dir (frame_00067516.png → 67516)
+fn max_frame_number(dir: &Path) -> u64 {
+    fs::read_dir(dir).into_iter().flatten()
+        .filter_map(|e| e.ok())
+        .filter_map(|e| {
+            let n = e.file_name().to_string_lossy().to_string();
+            if n.starts_with("frame_") && n.ends_with(".png") && !n.contains(".tmp") {
+                n.strip_prefix("frame_")?.strip_suffix(".png")?.parse::<u64>().ok()
+            } else { None }
+        })
+        .max().unwrap_or(0)
 }
 
 fn read_video(path: &Path) -> Option<Video> {
@@ -111,31 +124,58 @@ fn upscale_on_gpus(cfg: &Cfg, vid: &Video, gpus: &[u32]) -> bool {
     let count_in = count_frames(&fi_dir);
     let count_out = count_frames(&fo_dir);
 
-    if count_in == 0 {
-        eprintln!("[{}] No frames_in!", vid.id);
+    // Use actual max frame number as ground truth (not duration*fps estimate)
+    let max_fi = max_frame_number(&fi_dir) as u32;
+    let max_fo = max_frame_number(&fo_dir) as u32;
+    let total = std::cmp::max(max_fi, max_fo).max(if vid.expected_frames > 0 { vid.expected_frames as u32 } else { count_in as u32 });
+    if total == 0 {
+        eprintln!("[{}] No frames to upscale! (in={}, expected={})", vid.id, count_in, vid.expected_frames);
         return false;
     }
 
-    eprintln!("[{}] Upscaling on GPUs {:?} (in={}, out={})", vid.id, gpus, count_in, count_out);
+    let remaining = if total as u64 > count_out { total as u64 - count_out } else { 0 };
+    if remaining == 0 {
+        eprintln!("[{}] All {} frames already done!", vid.id, total);
+        return true;
+    }
+
+    eprintln!("[{}] Upscaling on GPUs {:?} (in={}, out={}, expected={}, remaining={})",
+        vid.id, gpus, count_in, count_out, total, remaining);
 
     let upscale_py = format!("{}/upscale.py", cfg.home.display());
     let fi_str = fi_dir.to_string_lossy().to_string();
     let fo_str = fo_dir.to_string_lossy().to_string();
     let scale_str = vid.scale.to_string();
-    let per_gpu = ((count_in as u32) + gpus.len() as u32 - 1) / gpus.len() as u32;
+
+    // --start/--end in upscale.py are LIST INDICES into sorted frames_in, NOT frame numbers
+    // Split count_in (actual file count) proportionally across GPUs
+    // Single GPU: no --start/--end, process all, skip done frames
+    let per_gpu = if gpus.len() > 1 { (count_in as u32 + gpus.len() as u32 - 1) / gpus.len() as u32 } else { 0 };
 
     let mut children = Vec::new();
     for (i, &gpu) in gpus.iter().enumerate() {
-        let s = i as u32 * per_gpu;
-        let e = std::cmp::min((i as u32 + 1) * per_gpu, count_in as u32);
-        if s >= count_in as u32 { continue; }
-        let s_str = s.to_string();
-        let e_str = e.to_string();
         let gpu_log = format!("{}/gpu{}.log", cfg.home.display(), gpu);
         let log_file = fs::OpenOptions::new().create(true).append(true).open(&gpu_log).ok();
-        eprintln!("[{}] GPU {}: frames {}-{}", vid.id, gpu, s, e);
+
+        let mut args: Vec<String> = vec![
+            upscale_py.clone(), fi_str.clone(), fo_str.clone(), scale_str.clone(),
+            "--gpu-id".into(), gpu.to_string(),  // unique tmp files per GPU
+        ];
+
+        if gpus.len() > 1 {
+            // Multi-GPU: split by list index into sorted frames_in
+            let s = i as u32 * per_gpu;
+            let e = std::cmp::min((i as u32 + 1) * per_gpu, count_in as u32);
+            if s >= count_in as u32 { continue; }
+            eprintln!("[{}] GPU {}: list indices {}-{}", vid.id, gpu, s, e);
+            args.extend_from_slice(&["--start".into(), s.to_string(), "--end".into(), e.to_string()]);
+        } else {
+            // Single GPU: no --start/--end, process all frames, skip done
+            eprintln!("[{}] GPU {}: all frames (skip done)", vid.id, gpu);
+        }
+
         if let Ok(c) = Command::new("python3")
-            .args(&[&upscale_py as &str, &fi_str, &fo_str, &scale_str, "--start", &s_str, "--end", &e_str])
+            .args(&args.iter().map(|s| s.as_str()).collect::<Vec<_>>())
             .env("CUDA_VISIBLE_DEVICES", gpu.to_string())
             .stdout(log_file.as_ref().map(|f| Stdio::from(f.try_clone().unwrap())).unwrap_or(Stdio::inherit()))
             .stderr(Stdio::inherit())
@@ -154,13 +194,20 @@ fn upscale_on_gpus(cfg: &Cfg, vid: &Video, gpus: &[u32]) -> bool {
 }
 
 fn verify_and_reassemble(cfg: &Cfg, vid: &Video) -> bool {
-    let fo_dir = cfg.jobs_dir.join(&vid.id).join("frames_out");
+    let work_dir = cfg.jobs_dir.join(&vid.id);
+    let fo_dir = work_dir.join("frames_out");
     let count_out = count_frames(&fo_dir);
 
     // CRITICAL: verify frame count
-    let expected = if vid.expected_frames > 0 { vid.expected_frames } else {
+    // Use actual max frame number from frames_in (or frames_out) as ground truth
+    let fi_dir_check = work_dir.join("frames_in");
+    let max_fi = max_frame_number(&fi_dir_check);
+    let max_fo = max_frame_number(&fo_dir);
+    let actual_total = std::cmp::max(max_fi, max_fo); // highest frame number = total frames
+
+    let expected = if actual_total > 0 { actual_total } else if vid.expected_frames > 0 { vid.expected_frames } else {
         // Fallback: read from job_meta
-        let meta = cfg.jobs_dir.join(&vid.id).join("job_meta.json");
+        let meta = work_dir.join("job_meta.json");
         fs::read_to_string(&meta).ok()
             .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
             .and_then(|v| {
@@ -175,7 +222,8 @@ fn verify_and_reassemble(cfg: &Cfg, vid: &Video) -> bool {
 
     let threshold = if expected > 5 { expected - 5 } else { expected };
     if count_out < threshold {
-        eprintln!("[{}] *** NOT ENOUGH FRAMES: {} out of {} expected — SKIPPING REASSEMBLY ***", vid.id, count_out, expected);
+        eprintln!("[{}] *** NOT ENOUGH FRAMES: {} out of {} expected (max_fi={}, max_fo={}) — SKIPPING REASSEMBLY ***",
+            vid.id, count_out, expected, max_fi, max_fo);
         return false;
     }
     eprintln!("[{}] Verified: {}/{} frames — reassembling", vid.id, count_out, expected);
@@ -184,23 +232,122 @@ fn verify_and_reassemble(cfg: &Cfg, vid: &Video) -> bool {
     let gap_bin = ["/root/frame_gap_check", "/usr/local/bin/frame_gap_check"]
         .iter().find(|p| Path::new(p).exists()).map(|s| *s);
     if let Some(bin) = gap_bin {
-        let fi_str = cfg.jobs_dir.join(&vid.id).join("frames_in").to_string_lossy().to_string();
+        let fi_str = work_dir.join("frames_in").to_string_lossy().to_string();
         let fo_str = fo_dir.to_string_lossy().to_string();
         let _ = Command::new(bin).args(&[&fi_str, &fo_str]).status();
     }
 
-    // Brightness + reassemble via enhance binary
-    let output = cfg.jobs_dir.join(&vid.id).join(format!("{}_{}{}.mkv", vid.id, vid.scale, "x"));
-    if output.exists() { let _ = fs::remove_file(&output); } // Remove any corrupt MKV
+    // Find original MKV for audio/brightness reference
+    let input_mkv = work_dir.join(format!("{}.mkv", vid.id));
+    let output_mkv = work_dir.join(format!("{}_{}{}.mkv", vid.id, vid.scale, "x"));
+    if output_mkv.exists() { let _ = fs::remove_file(&output_mkv); }
 
-    let url = format!("https://www.youtube.com/watch?v={}", vid.id);
-    let enhance_bin = if Path::new("/root/enhance").exists() { "/root/enhance" } else { "/root/enhance.sh" };
-    let s = Command::new(enhance_bin)
-        .args(&[&url, &vid.scale.to_string(), "--job-name", &vid.id])
+    // Auto brightness matching (sample 10 frames, compare, compute gamma)
+    let fi_dir = work_dir.join("frames_in");
+    let vf_filter = get_brightness_filter(&fi_dir, &fo_dir);
+
+    // Reassemble with ffmpeg
+    let fo_pattern = format!("{}/frame_%08d.png", fo_dir.display());
+    let fps_str = get_video_fps(&input_mkv);
+    eprintln!("[{}] Reassembling with ffmpeg (fps={})...", vid.id, fps_str);
+
+    let mut ffmpeg_args = vec![
+        "-y", "-framerate", &fps_str, "-i", &fo_pattern,
+    ];
+    // Add audio from original if it exists
+    let input_str = input_mkv.to_string_lossy().to_string();
+    if input_mkv.exists() {
+        ffmpeg_args.extend_from_slice(&["-i", &input_str, "-map", "0:v", "-map", "1:a?"]);
+    }
+    let output_str = output_mkv.to_string_lossy().to_string();
+    let vf_owned;
+    if !vf_filter.is_empty() {
+        vf_owned = vf_filter.clone();
+        ffmpeg_args.extend_from_slice(&["-vf", &vf_owned]);
+    }
+    ffmpeg_args.extend_from_slice(&[
+        "-c:v", "libx264", "-crf", "18", "-preset", "medium",
+        "-c:a", "copy", "-movflags", "+faststart",
+        &output_str, "-loglevel", "warning", "-stats",
+    ]);
+    let _ = Command::new("ffmpeg").args(&ffmpeg_args)
+        .stdout(Stdio::inherit()).stderr(Stdio::inherit()).status();
+
+    if !output_mkv.exists() {
+        eprintln!("[{}] Reassembly FAILED — no output MKV", vid.id);
+        return false;
+    }
+
+    // Upload
+    eprintln!("[{}] Uploading...", vid.id);
+    let upload_bin = if Path::new("/root/youtube_upload").exists() {
+        "/root/youtube_upload"
+    } else { "youtube_upload" };
+    let _ = Command::new(upload_bin)
+        .args(&[&output_str, &format!("--video-id={}", vid.id)])
         .stdout(Stdio::inherit()).stderr(Stdio::inherit())
         .status();
 
-    output.exists()
+    true
+}
+
+/// Get fps from video file using ffprobe
+fn get_video_fps(path: &Path) -> String {
+    if !path.exists() { return "25".to_string(); }
+    let out = Command::new("ffprobe")
+        .args(&["-v", "quiet", "-select_streams", "v:0",
+            "-show_entries", "stream=r_frame_rate",
+            "-of", "csv=p=0", &path.to_string_lossy().to_string()])
+        .output().ok();
+    if let Some(o) = out {
+        let s = String::from_utf8_lossy(&o.stdout).trim().to_string();
+        if s.contains('/') {
+            let parts: Vec<&str> = s.split('/').collect();
+            if parts.len() == 2 {
+                if let (Ok(n), Ok(d)) = (parts[0].parse::<f64>(), parts[1].parse::<f64>()) {
+                    if d > 0.0 { return format!("{:.3}", n / d); }
+                }
+            }
+        }
+        if !s.is_empty() { return s; }
+    }
+    "25".to_string()
+}
+
+/// Compute brightness correction filter by sampling original vs enhanced frames
+fn get_brightness_filter(fi_dir: &Path, fo_dir: &Path) -> String {
+    // Sample up to 10 frames from both dirs, compute average brightness
+    let script = r#"
+import cv2, os, sys, glob, numpy as np
+fi = sorted(glob.glob(os.path.join(sys.argv[1], 'frame_*.png')))
+fo = sorted(glob.glob(os.path.join(sys.argv[2], 'frame_*.png')))
+if not fi or not fo:
+    sys.exit(0)
+step_i = max(1, len(fi) // 10)
+step_o = max(1, len(fo) // 10)
+samples_i = fi[::step_i][:10]
+samples_o = fo[::step_o][:10]
+avg_i = np.mean([cv2.cvtColor(cv2.imread(f), cv2.COLOR_BGR2GRAY).mean() for f in samples_i])
+avg_o = np.mean([cv2.cvtColor(cv2.imread(f), cv2.COLOR_BGR2GRAY).mean() for f in samples_o])
+if avg_o > 0 and abs(avg_i - avg_o) > 2:
+    gamma = np.log(avg_i / 255.0) / np.log(avg_o / 255.0)
+    gamma = max(0.5, min(2.0, gamma))
+    if abs(gamma - 1.0) > 0.01:
+        print("eq=gamma=%.4f" % gamma)
+"#;
+    let out = Command::new("python3")
+        .args(&["-c", &script,
+            &fi_dir.to_string_lossy().to_string(),
+            &fo_dir.to_string_lossy().to_string()])
+        .output().ok();
+    if let Some(o) = out {
+        let s = String::from_utf8_lossy(&o.stdout).trim().to_string();
+        if !s.is_empty() {
+            eprintln!("[brightness] Applying filter: {}", s);
+            return s;
+        }
+    }
+    String::new()
 }
 
 fn auto_destroy(cfg: &Cfg) {
@@ -263,12 +410,25 @@ fn main() {
         }
 
         if videos.is_empty() {
+            // Check for .processing files — don't destroy if work is in progress
+            let has_processing = fs::read_dir(&cfg.json_dir)
+                .map(|e| e.filter_map(|e| e.ok())
+                    .any(|e| e.file_name().to_string_lossy().contains(".processing")))
+                .unwrap_or(false);
+            if has_processing {
+                eprintln!("[scheduler] Queue empty but .processing files exist — waiting 30s");
+                thread::sleep(Duration::from_secs(30));
+                continue;
+            }
             eprintln!("[scheduler] Queue empty. Auto-destroy in 10 min.");
             thread::sleep(Duration::from_secs(600));
-            // Re-check
+            // Re-check: both .json and .processing files
             let still_empty = fs::read_dir(&cfg.json_dir)
                 .map(|e| e.filter_map(|e| e.ok())
-                    .filter(|e| e.file_name().to_string_lossy().ends_with(".json")).count() == 0)
+                    .filter(|e| {
+                        let n = e.file_name().to_string_lossy().to_string();
+                        n.ends_with(".json") || n.contains(".processing")
+                    }).count() == 0)
                 .unwrap_or(true);
             if still_empty { auto_destroy(&cfg); return; }
             continue;
@@ -304,30 +464,58 @@ fn main() {
         // Otherwise distribute proportionally
         let all_gpus: Vec<u32> = (0..num_gpus).collect();
 
-        // Sort: nearly-done videos first (use expected_frames, not fi-fo diff)
+        // Sort: nearly-done videos first (use actual max frame number as ground truth)
         videos.sort_by(|a, b| {
             let a_out = count_frames(&cfg.jobs_dir.join(&a.id).join("frames_out"));
-            let a_rem = if a.expected_frames > a_out { a.expected_frames - a_out } else { 0 };
+            let a_max = max_frame_number(&cfg.jobs_dir.join(&a.id).join("frames_in"))
+                .max(max_frame_number(&cfg.jobs_dir.join(&a.id).join("frames_out")));
+            let a_expected = a_max.max(a.expected_frames);
+            let a_rem = if a_expected > a_out { a_expected - a_out } else { 0 };
             let b_out = count_frames(&cfg.jobs_dir.join(&b.id).join("frames_out"));
-            let b_rem = if b.expected_frames > b_out { b.expected_frames - b_out } else { 0 };
+            let b_max = max_frame_number(&cfg.jobs_dir.join(&b.id).join("frames_in"))
+                .max(max_frame_number(&cfg.jobs_dir.join(&b.id).join("frames_out")));
+            let b_expected = b_max.max(b.expected_frames);
+            let b_rem = if b_expected > b_out { b_expected - b_out } else { 0 };
             a_rem.cmp(&b_rem)
         });
 
         // Check if first video is nearly done (<2000 frames or <5% remaining)
         let first_out = count_frames(&cfg.jobs_dir.join(&videos[0].id).join("frames_out"));
-        let first_expected = videos[0].expected_frames;
+        let first_max = max_frame_number(&cfg.jobs_dir.join(&videos[0].id).join("frames_in"))
+            .max(max_frame_number(&cfg.jobs_dir.join(&videos[0].id).join("frames_out")));
+        let first_expected = first_max.max(videos[0].expected_frames);
         let first_remaining = if first_expected > first_out { first_expected - first_out } else { 0 };
         let nearly_done = first_remaining > 0 && (first_remaining < 2000 || (first_expected > 0 && first_remaining * 100 / first_expected < 5));
         eprintln!("[scheduler] First video: {} out={} expected={} remaining={} nearly_done={}",
             videos[0].id, first_out, first_expected, first_remaining, nearly_done);
 
         if nearly_done && videos.len() > 1 {
-            // Finish first video on ALL GPUs, then handle rest
-            eprintln!("[{}] Nearly done ({} remaining) — finishing on all {} GPUs first",
-                videos[0].id, first_remaining, num_gpus);
-            upscale_on_gpus(&cfg, &videos[0], &all_gpus);
+            // Nearly done: 1 GPU finishes it (no --start/--end = processes all gaps),
+            // remaining GPUs start on next video in parallel
+            eprintln!("[{}] Nearly done ({} remaining) — GPU 0 finishes, GPUs 1-{} start next video",
+                videos[0].id, first_remaining, num_gpus - 1);
 
-            // Verify + reassemble + upload immediately
+            let finish_vid = videos[0].clone();
+            let next_vid = videos[1].clone();
+            let cfg_home1 = cfg.home.clone();
+            let cfg_jobs1 = cfg.jobs_dir.clone();
+            let cfg_home2 = cfg.home.clone();
+            let cfg_jobs2 = cfg.jobs_dir.clone();
+            let other_gpus: Vec<u32> = (1..num_gpus).collect();
+
+            // GPU 0 finishes nearly-done video (no --start/--end, skips done frames)
+            let h1 = thread::spawn(move || {
+                let c = Cfg { home: cfg_home1, json_dir: PathBuf::new(), done_dir: PathBuf::new(), jobs_dir: cfg_jobs1, num_gpus: 1 };
+                upscale_on_gpus(&c, &finish_vid, &[0]);
+            });
+            // Other GPUs start next video
+            let h2 = thread::spawn(move || {
+                let c = Cfg { home: cfg_home2, json_dir: PathBuf::new(), done_dir: PathBuf::new(), jobs_dir: cfg_jobs2, num_gpus: other_gpus.len() as u32 };
+                upscale_on_gpus(&c, &next_vid, &other_gpus);
+            });
+
+            let _ = h1.join();
+            // Verify + reassemble + upload the finished video
             let proc = cfg.json_dir.join(format!("{}.json.processing", videos[0].id));
             if verify_and_reassemble(&cfg, &videos[0]) {
                 eprintln!("[{}] SUCCESS!", videos[0].id);
@@ -338,7 +526,8 @@ fn main() {
                 let _ = fs::rename(&proc, cfg.json_dir.join(format!("{}.json", videos[0].id)));
             }
 
-            // Now handle remaining videos — loop back to scan
+            let _ = h2.join();
+            // Loop back to rescan — next video continues from where it left off
             continue;
         }
 

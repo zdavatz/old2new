@@ -15,12 +15,17 @@ def main():
     p.add_argument("--tile", type=int, default=0, help="Tile size (0 = auto based on VRAM)")
     p.add_argument("--start", type=int, default=0, help="Start frame index (0-based, for segment splitting)")
     p.add_argument("--end", type=int, default=0, help="End frame index (exclusive, 0 = all)")
+    p.add_argument("--gpu-id", type=int, default=-1, help="GPU ID for unique tmp files (avoids collisions)")
     args = p.parse_args()
+
+    # GPU-specific tmp suffix to avoid collisions between parallel processes
+    gpu_tag = f".gpu{args.gpu_id}" if args.gpu_id >= 0 else ""
 
     os.makedirs(args.frames_out, exist_ok=True)
 
-    # Clean up partial writes from interrupted runs
-    for tmp in glob.glob(os.path.join(args.frames_out, "*.tmp*")):
+    # Clean up only OUR partial writes from interrupted runs (not other GPUs')
+    pattern = f"*.tmp{gpu_tag}.png" if gpu_tag else "*.tmp.png"
+    for tmp in glob.glob(os.path.join(args.frames_out, pattern)):
         os.remove(tmp)
 
     # Gather and sort input frames
@@ -49,17 +54,17 @@ def main():
     print(f"{done}/{total} already done, {len(todo)} remaining")
 
     # Auto-detect tile size
+    # Benchmarked on RTX 5090: tile=512 fastest (0.4fps), tile=768 (0.3fps), tile=1024 (0.2fps)
+    # Larger tiles use more VRAM but are slower due to 4x internal processing overhead
     tile = args.tile
     if tile == 0 and torch.cuda.is_available():
         vram_gb = torch.cuda.get_device_properties(0).total_memory / 1024**3
         first = cv2.imread(inputs[0], cv2.IMREAD_UNCHANGED)
         mp = (first.shape[1] * first.shape[0]) / 1e6
-        if vram_gb <= 24:
+        if mp > 1.6:
             tile = 512
-        elif vram_gb <= 32:
-            tile = 512 if mp > 1.6 else 0
         else:
-            tile = 512 if mp > 2.0 else 0
+            tile = 0
         print(f"VRAM: {vram_gb:.0f}GB, resolution: {first.shape[1]}x{first.shape[0]} ({mp:.1f} MP), tile={tile or 'none'}")
 
     # Load model
@@ -81,8 +86,8 @@ def main():
             print(f"  WARNING: Could not read {in_path}, skipping")
             continue
         output, _ = upsampler.enhance(img, outscale=args.scale)
-        # Atomic write: tmp then rename
-        tmp_path = out_path.rsplit(".", 1)[0] + ".tmp.png"
+        # Atomic write: GPU-specific tmp then rename (no collisions between GPUs)
+        tmp_path = out_path.rsplit(".", 1)[0] + f".tmp{gpu_tag}.png"
         cv2.imwrite(tmp_path, output)
         os.rename(tmp_path, out_path)
         # Delete input frame to free disk, but keep last 10 for compare view
