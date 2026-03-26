@@ -222,19 +222,20 @@ fn run_upscale_segments(cfg: &SchedulerConfig, job: &VideoJob, gpus: &[u32]) -> 
             }
         }
         // 2. Queue JSON (from fetch_video_json.sh — has duration + fps)
+        // Also check .processing and .processing.N variants
         if total == 0 {
             for dir in &[&cfg.json_dir, &cfg.done_dir] {
-                let patterns = [
-                    format!("{}.json", job.video_id),
-                    format!("{}.json.processing", job.video_id),
-                ];
-                for pat in &patterns {
-                    let p = dir.join(pat);
-                    if let Some(v) = fs::read_to_string(&p).ok()
-                        .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok()) {
-                        let dur = v.get("duration_seconds").and_then(|d| d.as_f64()).unwrap_or(0.0);
-                        let fps = v.get("fps").and_then(|f| f.as_f64()).unwrap_or(25.0);
-                        if dur > 0.0 { total = (dur * fps) as u64; break; }
+                if let Ok(entries) = fs::read_dir(dir) {
+                    for entry in entries.filter_map(|e| e.ok()) {
+                        let name = entry.file_name().to_string_lossy().to_string();
+                        if name.starts_with(&job.video_id) && (name.ends_with(".json") || name.contains(".json.processing")) {
+                            if let Some(v) = fs::read_to_string(entry.path()).ok()
+                                .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok()) {
+                                let dur = v.get("duration_seconds").and_then(|d| d.as_f64()).unwrap_or(0.0);
+                                let fps = v.get("fps").and_then(|f| f.as_f64()).unwrap_or(25.0);
+                                if dur > 0.0 { total = (dur * fps) as u64; break; }
+                            }
+                        }
                     }
                 }
                 if total > 0 { break; }
