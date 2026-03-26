@@ -207,36 +207,44 @@ fn run_upscale_segments(cfg: &SchedulerConfig, job: &VideoJob, gpus: &[u32]) -> 
     let count_in = count_frames(&fi_dir);
     let count_out = count_frames(&fo_dir);
 
-    // Don't trust fi-fo diff when inputs were deleted (rolling deletion)
-    // Instead: if frames_in is empty but frames_out < expected, NOT done
-    // If frames_in exists, use fi-fo; otherwise video is truly done
-    let (total, done, remaining) = count_todo_frames(&fi_dir, &fo_dir);
-    if remaining == 0 && count_in == 0 {
-        // All inputs deleted — check if we have enough outputs
-        // Read expected total from job_meta.json
-        let meta_path = cfg.jobs_dir.join(&job.video_id).join("job_meta.json");
-        let expected = fs::read_to_string(&meta_path).ok()
-            .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
-            .and_then(|v| v.get("total_frames").and_then(|t| t.as_u64()))
-            .unwrap_or(0);
-        if expected > 0 && count_out < expected {
-            eprintln!("[{}] WARNING: frames_in deleted but only {}/{} output frames — NOT done!",
-                job.video_id, count_out, expected);
-            eprintln!("[{}] Need to re-extract frames first", job.video_id);
-            return false; // Caller should re-extract
-        }
-        eprintln!("[{}] All {} frames done", job.video_id, count_out);
-        return true;
+    // Read expected total from job_meta.json — the ONLY reliable source
+    // fi-fo diff is unreliable when inputs were deleted by rolling deletion
+    let meta_path = cfg.jobs_dir.join(&job.video_id).join("job_meta.json");
+    let expected_total = fs::read_to_string(&meta_path).ok()
+        .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
+        .and_then(|v| v.get("total_frames").and_then(|t| t.as_u64()))
+        .unwrap_or(0);
+
+    // Use expected_total if available, else max(count_in, count_out)
+    let total = if expected_total > 0 {
+        expected_total
+    } else {
+        std::cmp::max(count_in, count_out)
+    };
+
+    if total == 0 {
+        eprintln!("[{}] No frames found", job.video_id);
+        return false;
     }
-    if remaining == 0 {
-        eprintln!("[{}] All {} frames done", job.video_id, done);
+
+    // Done = count_out >= total (with small tolerance for rounding)
+    if count_out >= total || (total > 0 && count_out + 3 >= total) {
+        eprintln!("[{}] All {} frames done (out={}, expected={})", job.video_id, count_out, count_out, total);
         return true;
     }
 
+    // Need more frames — check if frames_in available
+    if count_in == 0 {
+        eprintln!("[{}] WARNING: frames_in deleted but only {}/{} output — need re-extract!",
+            job.video_id, count_out, total);
+        return false;
+    }
+
+    let remaining = total - count_out;
     eprintln!("[{}] Upscaling: {} remaining ({}/{} done) on {} GPUs",
-        job.video_id, remaining, done, total, gpus.len());
+        job.video_id, remaining, count_out, total, gpus.len());
 
-    let total_in = count_frames(&fi_dir);
+    let total_in = count_in;
     let per_gpu = ((total_in as u32) + gpus.len() as u32 - 1) / gpus.len() as u32;
 
     let upscale_py = format!("{}/upscale.py", cfg.home.display());
