@@ -175,12 +175,9 @@ if [ -n "$CUSTOM_TITLE" ]; then
 elif [ -n "$SUFFIX" ]; then
     # Fetch original title via yt-dlp (fast, no download)
     ORIG_TITLE=$(yt-dlp --remote-components ejs:github --print title "$URL" 2>/dev/null)
-    # Replace any existing "(Enhanced 4K ...)" suffix, or append if not present
-    if echo "$ORIG_TITLE" | grep -qE '\(Enhanced 4K[^)]*\)'; then
-        UPLOAD_TITLE=$(echo "$ORIG_TITLE" | sed -E "s/\(Enhanced 4K[^)]*\)/(Enhanced 4K $SUFFIX)/")
-    else
-        UPLOAD_TITLE="$ORIG_TITLE (Enhanced 4K $SUFFIX)"
-    fi
+    # Strip all existing "(Enhanced 4K ...)" suffixes, then append the new one
+    STRIPPED=$(echo "$ORIG_TITLE" | sed -E 's/ *\(Enhanced 4K[^)]*\)//g' | sed 's/ *$//')
+    UPLOAD_TITLE="$STRIPPED (Enhanced 4K $SUFFIX)"
     echo "  Upload title: $UPLOAD_TITLE"
 fi
 
