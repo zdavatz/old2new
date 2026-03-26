@@ -207,13 +207,41 @@ fn run_upscale_segments(cfg: &SchedulerConfig, job: &VideoJob, gpus: &[u32]) -> 
     let count_in = count_frames(&fi_dir);
     let count_out = count_frames(&fo_dir);
 
-    // Read expected total from job_meta.json — the ONLY reliable source
-    // fi-fo diff is unreliable when inputs were deleted by rolling deletion
-    let meta_path = cfg.jobs_dir.join(&job.video_id).join("job_meta.json");
-    let expected_total = fs::read_to_string(&meta_path).ok()
-        .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
-        .and_then(|v| v.get("total_frames").and_then(|t| t.as_u64()))
-        .unwrap_or(0);
+    // Read expected total — check multiple sources (queue JSON has duration×fps)
+    let expected_total = {
+        let mut total = 0u64;
+        // 1. job_meta.json (written by enhance after ffprobe)
+        let meta_path = cfg.jobs_dir.join(&job.video_id).join("job_meta.json");
+        if let Some(v) = fs::read_to_string(&meta_path).ok()
+            .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok()) {
+            total = v.get("total_frames").and_then(|t| t.as_u64()).unwrap_or(0);
+            if total == 0 {
+                let dur = v.get("duration_seconds").and_then(|d| d.as_f64()).unwrap_or(0.0);
+                let fps = v.get("fps").and_then(|f| f.as_f64()).unwrap_or(25.0);
+                if dur > 0.0 { total = (dur * fps) as u64; }
+            }
+        }
+        // 2. Queue JSON (from fetch_video_json.sh — has duration + fps)
+        if total == 0 {
+            for dir in &[&cfg.json_dir, &cfg.done_dir] {
+                let patterns = [
+                    format!("{}.json", job.video_id),
+                    format!("{}.json.processing", job.video_id),
+                ];
+                for pat in &patterns {
+                    let p = dir.join(pat);
+                    if let Some(v) = fs::read_to_string(&p).ok()
+                        .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok()) {
+                        let dur = v.get("duration_seconds").and_then(|d| d.as_f64()).unwrap_or(0.0);
+                        let fps = v.get("fps").and_then(|f| f.as_f64()).unwrap_or(25.0);
+                        if dur > 0.0 { total = (dur * fps) as u64; break; }
+                    }
+                }
+                if total > 0 { break; }
+            }
+        }
+        total
+    };
 
     // Use expected_total if available, else max(count_in, count_out)
     let total = if expected_total > 0 {
