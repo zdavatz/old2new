@@ -64,7 +64,8 @@ RUN git clone --depth 1 https://github.com/zdavatz/old2new.git /tmp/old2new && \
     rm -rf /tmp/old2new /root/.cargo/registry /root/.cargo/git && \
     rustup self uninstall -y 2>/dev/null || true
 
-# Export TorchScript model for future Rust upscaler
+# Export TorchScript + ONNX models for Rust upscaler
+RUN pip install --no-cache-dir onnx onnxscript 2>/dev/null || true
 COPY export_model.py /tmp/export_model.py
 RUN python3 /tmp/export_model.py && rm /tmp/export_model.py
 
