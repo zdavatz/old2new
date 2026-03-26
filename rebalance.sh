@@ -17,7 +17,7 @@ echo "=== Rebalance: $NUM_GPUS GPUs ==="
 # Phase A: Kill all upscaling processes (resumable — max 1 frame lost per GPU)
 echo ""
 echo "=== Phase A: Stopping current processes ==="
-pkill -9 -f 'upscale.py|enhance.sh|multi_gpu_queue' 2>/dev/null
+pkill -9 -f 'upscale.py|enhance.sh|/root/enhance|multi_gpu_queue' 2>/dev/null
 sleep 2
 echo "  Killed all upscale/enhance/queue processes"
 

@@ -13,7 +13,7 @@ NUM_GPUS="${1:-}"
 
 echo "=== Killing all processes ==="
 # Get ALL PIDs in one shot, kill them all
-PIDS=$(pgrep -f 'status_server|multi_gpu_queue|enhance.sh|enhance_gpu.py|upscale.py|korea_single' 2>/dev/null | grep -v "^$$\$" || true)
+PIDS=$(pgrep -f 'status_server|multi_gpu_queue|enhance.sh|/root/enhance|enhance_gpu.py|upscale.py|korea_single' 2>/dev/null | grep -v "^$$\$" || true)
 if [[ -n "$PIDS" ]]; then
     echo "$PIDS" | xargs kill -9 2>/dev/null
     echo "Killed: $PIDS"
