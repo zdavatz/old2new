@@ -515,28 +515,19 @@ fn main() {
             });
 
             let _ = h1.join();
-            // Reassemble + upload in BACKGROUND thread (CPU only, no GPU needed)
-            // GPUs continue working on next video without waiting
-            let reassemble_vid = videos[0].clone();
-            let reassemble_home = cfg.home.clone();
-            let reassemble_json = cfg.json_dir.clone();
-            let reassemble_done = cfg.done_dir.clone();
-            let reassemble_jobs = cfg.jobs_dir.clone();
-            thread::spawn(move || {
-                let c = Cfg { home: reassemble_home, json_dir: reassemble_json.clone(), done_dir: reassemble_done.clone(), jobs_dir: reassemble_jobs.clone(), num_gpus: 0 };
-                let proc = reassemble_json.join(format!("{}.json.processing", reassemble_vid.id));
-                if verify_and_reassemble(&c, &reassemble_vid) {
-                    eprintln!("[{}] SUCCESS!", reassemble_vid.id);
-                    let _ = fs::rename(&proc, reassemble_done.join(format!("{}.json", reassemble_vid.id)));
-                    let _ = fs::remove_dir_all(reassemble_jobs.join(&reassemble_vid.id));
-                } else {
-                    eprintln!("[{}] NOT READY — back to queue", reassemble_vid.id);
-                    let _ = fs::rename(&proc, reassemble_json.join(format!("{}.json", reassemble_vid.id)));
-                }
-            });
+            // Verify + reassemble + upload (BLOCKING — no background threads)
+            let proc = cfg.json_dir.join(format!("{}.json.processing", videos[0].id));
+            if verify_and_reassemble(&cfg, &videos[0]) {
+                eprintln!("[{}] SUCCESS!", videos[0].id);
+                let _ = fs::rename(&proc, cfg.done_dir.join(format!("{}.json", videos[0].id)));
+                let _ = fs::remove_dir_all(cfg.jobs_dir.join(&videos[0].id));
+            } else {
+                eprintln!("[{}] NOT READY — back to queue", videos[0].id);
+                let _ = fs::rename(&proc, cfg.json_dir.join(format!("{}.json", videos[0].id)));
+            }
 
             let _ = h2.join();
-            // Loop back to rescan — reassembly continues in background
+            // Loop back to rescan
             continue;
         }
 
@@ -570,25 +561,17 @@ fn main() {
         // Wait for background prep to finish
         let _ = prep_handle.join();
 
-        // Phase 4: Verify + reassemble + upload in BACKGROUND (CPU only, don't block GPUs)
+        // Phase 4: Verify + reassemble + upload (BLOCKING — safer than background threads)
         for vid in &videos {
-            let v = vid.clone();
-            let r_home = cfg.home.clone();
-            let r_json = cfg.json_dir.clone();
-            let r_done = cfg.done_dir.clone();
-            let r_jobs = cfg.jobs_dir.clone();
-            thread::spawn(move || {
-                let c = Cfg { home: r_home, json_dir: r_json.clone(), done_dir: r_done.clone(), jobs_dir: r_jobs.clone(), num_gpus: 0 };
-                let proc = r_json.join(format!("{}.json.processing", v.id));
-                if verify_and_reassemble(&c, &v) {
-                    eprintln!("[{}] SUCCESS!", v.id);
-                    let _ = fs::rename(&proc, r_done.join(format!("{}.json", v.id)));
-                    let _ = fs::remove_dir_all(r_jobs.join(&v.id));
-                } else {
-                    eprintln!("[{}] NOT READY — back to queue", v.id);
-                    let _ = fs::rename(&proc, r_json.join(format!("{}.json", v.id)));
-                }
-            });
+            let proc = cfg.json_dir.join(format!("{}.json.processing", vid.id));
+            if verify_and_reassemble(&cfg, vid) {
+                eprintln!("[{}] SUCCESS!", vid.id);
+                let _ = fs::rename(&proc, cfg.done_dir.join(format!("{}.json", vid.id)));
+                let _ = fs::remove_dir_all(cfg.jobs_dir.join(&vid.id));
+            } else {
+                eprintln!("[{}] NOT READY — back to queue", vid.id);
+                let _ = fs::rename(&proc, cfg.json_dir.join(format!("{}.json", vid.id)));
+            }
         }
     }
 }
