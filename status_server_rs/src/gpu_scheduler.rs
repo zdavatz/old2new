@@ -518,9 +518,8 @@ fn main() {
             // Verify + reassemble + upload (BLOCKING — no background threads)
             let proc = cfg.json_dir.join(format!("{}.json.processing", videos[0].id));
             if verify_and_reassemble(&cfg, &videos[0]) {
-                eprintln!("[{}] SUCCESS!", videos[0].id);
+                eprintln!("[{}] SUCCESS! Keeping frames for manual verification.", videos[0].id);
                 let _ = fs::rename(&proc, cfg.done_dir.join(format!("{}.json", videos[0].id)));
-                let _ = fs::remove_dir_all(cfg.jobs_dir.join(&videos[0].id));
             } else {
                 eprintln!("[{}] NOT READY — back to queue", videos[0].id);
                 let _ = fs::rename(&proc, cfg.json_dir.join(format!("{}.json", videos[0].id)));
@@ -565,9 +564,8 @@ fn main() {
         for vid in &videos {
             let proc = cfg.json_dir.join(format!("{}.json.processing", vid.id));
             if verify_and_reassemble(&cfg, vid) {
-                eprintln!("[{}] SUCCESS!", vid.id);
+                eprintln!("[{}] SUCCESS! Keeping frames for manual verification.", vid.id);
                 let _ = fs::rename(&proc, cfg.done_dir.join(format!("{}.json", vid.id)));
-                let _ = fs::remove_dir_all(cfg.jobs_dir.join(&vid.id));
             } else {
                 eprintln!("[{}] NOT READY — back to queue", vid.id);
                 let _ = fs::rename(&proc, cfg.json_dir.join(format!("{}.json", vid.id)));
