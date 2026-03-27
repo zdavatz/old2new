@@ -282,8 +282,12 @@ After the pre-flight check, a **pre-download disk estimate** fetches video metad
   |-----|-----|-----|-----------|-------|
   | Xeon Gold 6530 | 0.9 | ~0.1 | ~60W | GPU idle, useless |
   | Xeon Platinum 8481C | 2.0 | 0.3-0.4 | ~400W | Minimum viable |
-  | AMD Ryzen 9 7950X | 5.9 | **0.5** | 340W | Sweet spot |
+  | AMD Ryzen 9 7950X | 5.9 | **0.5** | 340W | Good |
   | AMD Threadripper PRO 7975WX | 8.2 | **0.5** | 384W | No gain over 5 GHz |
+  | **AMD Ryzen 9 9950X** | 5.7 | **0.5** | 575W | **Best — low memory latency (2 CCDs)** |
+  | AMD Threadripper PRO 9975WX | 5.3 | **0.5** | 450W | Slower than 9950X (4 CCDs, higher Infinity Fabric latency) |
+
+  Core count doesn't matter for Real-ESRGAN (16 cores sufficient). **Memory latency** is the key differentiator: Ryzen 9950X (2 CCDs, compact) beats Threadripper PRO 9975WX (4 CCDs, more inter-chiplet hops) despite fewer cores.
 
   Above ~5 GHz, the bottleneck shifts from CPU to disk I/O — no further fps gain. **Minimum 3 GHz for RTX 5090 HD, ideal 5+ GHz.** Below 2 GHz the GPU is essentially idle.
 - **RTX 5090** (Blackwell): Needs PyTorch 2.6+ with CUDA 12.8. PyTorch 2.10 tested — no speedup over 2.7 for Real-ESRGAN.
@@ -350,7 +354,7 @@ No code changes needed in `enhance_gpu.py` — just run multiple instances with 
 
 **Disk sizing for multi-GPU:** With 4 GPUs parallel, each GPU needs its own disk budget (total / 4). At 1920x1200 2x with 500GB: max ~5min per video. For short HD videos (<5min), 4x RTX 5090 at $1.35/hr on vast.ai Sichuan is ideal — processes 30 short videos in ~20min.
 
-**GPU Scheduler (Rust):** The `gpu_scheduler` binary replaces `multi_gpu_queue.sh`. It distributes GPUs **proportionally** across videos (2 videos + 4 GPUs = 2 GPUs per video, with segment splitting via `--start/--end` + `--gpu-id`). **Nearly-done detection**: videos with <2000 frames remaining get GPU 0 to finish while other GPUs start the next video. Frame count verification gate before reassembly prevents corrupt uploads. Built-in ffmpeg reassembly with brightness matching, YouTube upload, and auto-destroy (with `.processing` file safety check). Single binary manages the full pipeline: queue scan → download → extract → upscale → gap-check → reassemble → upload → auto-destroy.
+**GPU Scheduler (Rust):** The `gpu_scheduler` binary replaces `multi_gpu_queue.sh`. It distributes GPUs **proportionally** across videos (2 videos + 4 GPUs = 2 GPUs per video, with segment splitting via `--start/--end` + `--gpu-id`). **Nearly-done detection**: videos with <2000 frames remaining get GPU 0 to finish while other GPUs start the next video. Frame count verification gate before reassembly prevents corrupt uploads. Built-in ffmpeg reassembly with brightness matching, YouTube upload. **Safety features**: upload lock file (`.uploaded`) prevents duplicate uploads; frames only deleted when more videos in queue (last video kept for manual YouTube verification); auto-destroy checks for running uploads/ffmpeg and unuploaded MKVs. **IMPORTANT**: always use `deploy.sh update` to deploy — never manually start processes.
 - **OOM-kill recovery** — detects killed processes (exit > 128) and retries the same video after 60s
 - **Auto YouTube upload + email** after each video (via Rust `youtube_upload` binary)
 
