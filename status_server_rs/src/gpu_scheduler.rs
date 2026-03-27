@@ -292,9 +292,13 @@ fn verify_and_reassemble(cfg: &Cfg, vid: &Video) -> bool {
         .args(&[&output_str, &format!("--video-id={}", vid.id)])
         .stdout(Stdio::inherit()).stderr(Stdio::inherit())
         .status();
-    // Mark as uploaded (even on failure — manual retry preferred over auto-retry)
-    let _ = fs::write(&upload_lock, format!("uploaded_at={}\n", chrono_now()));
-    eprintln!("[{}] Upload done, lock file written", vid.id);
+    // Only write lock on successful upload (exit code 0)
+    if status.map(|s| s.success()).unwrap_or(false) {
+        let _ = fs::write(&upload_lock, format!("uploaded_at={}\n", chrono_now()));
+        eprintln!("[{}] Upload SUCCESS, lock file written", vid.id);
+    } else {
+        eprintln!("[{}] Upload FAILED — no lock file, will retry next cycle", vid.id);
+    }
 
     true
 }
@@ -433,7 +437,28 @@ fn main() {
                 thread::sleep(Duration::from_secs(30));
                 continue;
             }
-            eprintln!("[scheduler] Queue empty. Auto-destroy in 10 min.");
+            // Check if upload or ffmpeg is still running — don't destroy
+            let upload_running = Command::new("pgrep").args(&["-f", "youtube_upload|ffmpeg"])
+                .output().map(|o| !o.stdout.is_empty()).unwrap_or(false);
+            if upload_running {
+                eprintln!("[scheduler] Queue empty but upload/ffmpeg still running — waiting 60s");
+                thread::sleep(Duration::from_secs(60));
+                continue;
+            }
+            // Check for unuploaded jobs (MKV exists but no .uploaded lock)
+            let has_unuploaded = fs::read_dir(&cfg.jobs_dir).into_iter().flatten()
+                .filter_map(|e| e.ok())
+                .any(|e| {
+                    let p = e.path();
+                    p.is_dir() && !p.join(".uploaded").exists() &&
+                    fs::read_dir(&p).into_iter().flatten().any(|f| f.ok().map(|f| f.file_name().to_string_lossy().ends_with("x.mkv")).unwrap_or(false))
+                });
+            if has_unuploaded {
+                eprintln!("[scheduler] Queue empty but unuploaded MKVs exist — waiting 60s");
+                thread::sleep(Duration::from_secs(60));
+                continue;
+            }
+            eprintln!("[scheduler] Queue empty, all uploaded. Auto-destroy in 10 min.");
             thread::sleep(Duration::from_secs(600));
             // Re-check: both .json and .processing files
             let still_empty = fs::read_dir(&cfg.json_dir)
