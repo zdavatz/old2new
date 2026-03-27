@@ -929,7 +929,8 @@ async fn build_status() -> StatusResponse {
             let video_id = meta
                 .as_ref()
                 .map(|m| m.video_id.clone())
-                .unwrap_or_default();
+                .filter(|id| !id.is_empty())
+                .unwrap_or_else(|| title.clone()); // fallback: dir name IS the video_id
             let scale = meta
                 .as_ref()
                 .map(|m| {
