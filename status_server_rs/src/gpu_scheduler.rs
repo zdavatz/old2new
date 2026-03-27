@@ -278,17 +278,30 @@ fn verify_and_reassemble(cfg: &Cfg, vid: &Video) -> bool {
         return false;
     }
 
-    // Upload
+    // Upload — ONCE only (lock file prevents duplicate uploads)
+    let upload_lock = work_dir.join(".uploaded");
+    if upload_lock.exists() {
+        eprintln!("[{}] Already uploaded (lock file exists) — skipping upload", vid.id);
+        return true;
+    }
     eprintln!("[{}] Uploading...", vid.id);
     let upload_bin = if Path::new("/root/youtube_upload").exists() {
         "/root/youtube_upload"
     } else { "youtube_upload" };
-    let _ = Command::new(upload_bin)
+    let status = Command::new(upload_bin)
         .args(&[&output_str, &format!("--video-id={}", vid.id)])
         .stdout(Stdio::inherit()).stderr(Stdio::inherit())
         .status();
+    // Mark as uploaded (even on failure — manual retry preferred over auto-retry)
+    let _ = fs::write(&upload_lock, format!("uploaded_at={}\n", chrono_now()));
+    eprintln!("[{}] Upload done, lock file written", vid.id);
 
     true
+}
+
+fn chrono_now() -> String {
+    let d = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default();
+    format!("{}", d.as_secs())
 }
 
 /// Get fps from video file using ffprobe
