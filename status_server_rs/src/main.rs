@@ -684,10 +684,10 @@ fn parse_ffmpeg_frame(job_name: &str, total_frames: u64) -> u64 {
     }
     let home = home_dir();
     let mut last_frame: u64 = 0;
-    for log_name in &["gpu0.log", "gpu1.log", "gpu2.log", "gpu3.log", "enhance.log"] {
+    for log_name in &["gpu0.log", "gpu1.log", "gpu2.log", "gpu3.log", "enhance.log", "scheduler.log"] {
         let path = home.join(log_name);
         let tail = read_tail(&path, 65536);
-        if !tail.contains(job_name) && *log_name != "enhance.log" {
+        if !tail.contains(job_name) && *log_name != "enhance.log" && *log_name != "scheduler.log" {
             continue;
         }
         for line in tail.lines() {
@@ -773,10 +773,10 @@ fn parse_upload_progress(job_name: &str) -> (f64, String) {
     let mut last_pct: f64 = 0.0;
     let mut file_info = String::new();
 
-    for log_name in &["gpu0.log", "gpu1.log", "gpu2.log", "gpu3.log", "enhance.log"] {
+    for log_name in &["gpu0.log", "gpu1.log", "gpu2.log", "gpu3.log", "enhance.log", "scheduler.log"] {
         let path = home.join(log_name);
         let tail = read_tail(&path, 65536);
-        if !tail.contains(job_name) && *log_name != "enhance.log" {
+        if !tail.contains(job_name) && *log_name != "enhance.log" && *log_name != "scheduler.log" {
             continue;
         }
         for line in tail.lines() {
