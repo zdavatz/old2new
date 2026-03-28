@@ -331,28 +331,8 @@ fn verify_and_reassemble(cfg: &Cfg, vid: &Video) -> bool {
         return false;
     }
 
-    // Upload — ONCE only (lock file prevents duplicate uploads)
-    let upload_lock = work_dir.join(".uploaded");
-    if upload_lock.exists() {
-        eprintln!("[{}] Already uploaded (lock file exists) — skipping upload", vid.id);
-        return true;
-    }
-    eprintln!("[{}] Uploading...", vid.id);
-    let upload_bin = if Path::new("/root/youtube_upload").exists() {
-        "/root/youtube_upload"
-    } else { "youtube_upload" };
-    let status = Command::new(upload_bin)
-        .args(&[&output_str, &format!("--video-id={}", vid.id)])
-        .stdout(Stdio::inherit()).stderr(Stdio::inherit())
-        .status();
-    // Only write lock on successful upload (exit code 0)
-    if status.map(|s| s.success()).unwrap_or(false) {
-        let _ = fs::write(&upload_lock, format!("uploaded_at={}\n", chrono_now()));
-        eprintln!("[{}] Upload SUCCESS, lock file written", vid.id);
-    } else {
-        eprintln!("[{}] Upload FAILED — no lock file, will retry next cycle", vid.id);
-    }
-
+    // Reassembly done — youtube_upload daemon handles upload separately
+    eprintln!("[{}] Reassembly complete. MKV ready for upload.", vid.id);
     true
 }
 

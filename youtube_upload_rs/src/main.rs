@@ -20,15 +20,19 @@ use yup_oauth2::authenticator::Authenticator;
 use yup_oauth2::authenticator_delegate::InstalledFlowDelegate;
 
 /// Upload enhanced video to YouTube, copying title/description from original.
+///
+/// Two modes:
+///   Single: youtube_upload <file> --video-id=<id>
+///   Watch:  youtube_upload --watch [--jobs-dir ~/jobs] [--poll-interval 30]
 #[derive(Parser)]
 #[command(name = "youtube_upload")]
 struct Cli {
-    /// Path to the enhanced video file
-    enhanced_file: String,
+    /// Path to the enhanced video file (single mode)
+    enhanced_file: Option<String>,
 
     /// Original YouTube video ID (use --video-id for IDs starting with dash)
     #[arg(long = "video-id")]
-    video_id: String,
+    video_id: Option<String>,
 
     /// OAuth client secret file
     #[arg(long = "client-secret", default_value = "client_secret.json")]
@@ -45,6 +49,18 @@ struct Cli {
     /// Custom upload title (overrides auto-generated "... (Enhanced 4K)" title)
     #[arg(long = "title")]
     title: Option<String>,
+
+    /// Watch mode: poll jobs directory for finished MKVs and upload automatically
+    #[arg(long = "watch")]
+    watch: bool,
+
+    /// Jobs directory to watch (default: ~/jobs)
+    #[arg(long = "jobs-dir")]
+    jobs_dir: Option<String>,
+
+    /// Poll interval in seconds (default: 30)
+    #[arg(long = "poll-interval", default_value_t = 30)]
+    poll_interval: u64,
 }
 
 /// Token format compatible with Python google-auth
@@ -315,14 +331,92 @@ fn read_json_file(path: &Path) -> Option<serde_json::Value> {
         .and_then(|s| serde_json::from_str(&s).ok())
 }
 
+/// Watch mode: poll ~/jobs/ for finished MKVs and upload them
+async fn watch_and_upload(cli: &Cli) {
+    let home = env::var("HOME").unwrap_or_else(|_| "/root".to_string());
+    let jobs_dir = PathBuf::from(cli.jobs_dir.as_deref().unwrap_or(&format!("{}/jobs", home)));
+    let interval = std::time::Duration::from_secs(cli.poll_interval);
+
+    eprintln!("=== youtube_upload watch mode ===");
+    eprintln!("  Polling: {}", jobs_dir.display());
+    eprintln!("  Interval: {}s", cli.poll_interval);
+
+    loop {
+        // Scan job directories for unuploaded MKVs
+        if let Ok(entries) = fs::read_dir(&jobs_dir) {
+            for entry in entries.filter_map(|e| e.ok()) {
+                let job_dir = entry.path();
+                if !job_dir.is_dir() { continue; }
+
+                let vid_id = entry.file_name().to_string_lossy().to_string();
+                let uploaded_lock = job_dir.join(".uploaded");
+                if uploaded_lock.exists() { continue; } // already uploaded
+
+                // Find *_2x.mkv or *_4x.mkv
+                let mkv = find_output_mkv(&job_dir);
+                if mkv.is_none() { continue; } // not reassembled yet
+                let mkv = mkv.unwrap();
+
+                eprintln!("[watch] Found unuploaded: {} ({})", vid_id, mkv.display());
+
+                // Upload using the same binary (call ourselves in single mode)
+                let upload_bin = env::current_exe().unwrap_or_else(|_| PathBuf::from("/root/youtube_upload"));
+                let mkv_str = mkv.to_string_lossy().to_string();
+                let status = Command::new(&upload_bin)
+                    .args(&[&mkv_str, &format!("--video-id={}", vid_id),
+                        &format!("--client-secret={}", cli.client_secret),
+                        &format!("--token={}", cli.token)])
+                    .status();
+
+                if status.map(|s| s.success()).unwrap_or(false) {
+                    // Write lock file
+                    let now = Utc::now().to_rfc3339();
+                    let _ = fs::write(&uploaded_lock, format!("uploaded_at={}\n", now));
+                    eprintln!("[watch] {} uploaded successfully", vid_id);
+                } else {
+                    eprintln!("[watch] {} upload FAILED — will retry next cycle", vid_id);
+                }
+            }
+        }
+
+        std::thread::sleep(interval);
+    }
+}
+
+/// Find output MKV in job directory (*_2x.mkv or *_4x.mkv)
+fn find_output_mkv(job_dir: &Path) -> Option<PathBuf> {
+    fs::read_dir(job_dir).ok()?
+        .filter_map(|e| e.ok())
+        .map(|e| e.path())
+        .find(|p| {
+            let name = p.file_name().unwrap_or_default().to_string_lossy();
+            (name.ends_with("_2x.mkv") || name.ends_with("_4x.mkv")) && !name.contains(".tmp")
+        })
+}
+
 #[tokio::main]
 async fn main() {
     let cli = Cli::parse();
 
+    if cli.watch {
+        watch_and_upload(&cli).await;
+        return;
+    }
+
+    // Single mode: require enhanced_file and video_id
+    let enhanced_file = match &cli.enhanced_file {
+        Some(f) => f.clone(),
+        None => { eprintln!("ERROR: <enhanced_file> required (or use --watch mode)"); std::process::exit(1); }
+    };
+    let video_id = match &cli.video_id {
+        Some(id) => id.clone(),
+        None => { eprintln!("ERROR: --video-id required (or use --watch mode)"); std::process::exit(1); }
+    };
+
     // Validate enhanced file exists
-    let enhanced_path = PathBuf::from(&cli.enhanced_file);
+    let enhanced_path = PathBuf::from(&enhanced_file);
     if !enhanced_path.exists() {
-        eprintln!("ERROR: File not found: {}", cli.enhanced_file);
+        eprintln!("ERROR: File not found: {}", enhanced_file);
         std::process::exit(1);
     }
 
@@ -357,11 +451,11 @@ async fn main() {
     let hub = YouTube::new(client.clone(), auth.clone());
 
     // Fetch original video details
-    println!("Fetching details for original video {}...", cli.video_id);
+    println!("Fetching details for original video {}...", video_id);
     let (_, list_result) = hub
         .videos()
         .list(&vec!["snippet".to_string(), "status".to_string()])
-        .add_id(&cli.video_id)
+        .add_id(&video_id)
         .doit()
         .await
         .unwrap_or_else(|e| {
@@ -371,7 +465,7 @@ async fn main() {
 
     let items = list_result.items.unwrap_or_default();
     if items.is_empty() {
-        eprintln!("ERROR: Video {} not found on YouTube", cli.video_id);
+        eprintln!("ERROR: Video {} not found on YouTube", video_id);
         std::process::exit(1);
     }
 
@@ -495,7 +589,7 @@ async fn main() {
 
     // Append to ~/upload_log.jsonl
     if let Err(e) = append_upload_log(
-        &cli.video_id,
+        &video_id,
         &new_video_id,
         &original_title,
         elapsed_secs,
@@ -514,7 +608,7 @@ async fn main() {
                 &gmail_hub,
                 email,
                 &original_title,
-                &cli.video_id,
+                &video_id,
                 &new_video_id,
             )
             .await;
