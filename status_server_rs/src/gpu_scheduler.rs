@@ -147,40 +147,93 @@ fn upscale_on_gpus(cfg: &Cfg, vid: &Video, gpus: &[u32]) -> bool {
     let fo_str = fo_dir.to_string_lossy().to_string();
     let scale_str = vid.scale.to_string();
 
-    // --start/--end in upscale.py are LIST INDICES into sorted frames_in, NOT frame numbers
-    // Split count_in (actual file count) proportionally across GPUs
-    // Single GPU: no --start/--end, process all, skip done frames
-    let per_gpu = if gpus.len() > 1 { (count_in as u32 + gpus.len() as u32 - 1) / gpus.len() as u32 } else { 0 };
+    // Smart splitting: count missing frames per segment, distribute evenly by WORK not by index
+    // This prevents one GPU finishing early when prior runs already completed its segment
+    let done_set: HashSet<String> = fs::read_dir(&fo_dir).into_iter().flatten()
+        .filter_map(|e| e.ok())
+        .filter_map(|e| {
+            let n = e.file_name().to_string_lossy().to_string();
+            if n.starts_with("frame_") && n.ends_with(".png") && !n.contains(".tmp") { Some(n) } else { None }
+        })
+        .collect();
+
+    // Build list of frames_in that still need processing (not in frames_out)
+    let all_in: Vec<String> = {
+        let mut v: Vec<String> = fs::read_dir(&fi_dir).into_iter().flatten()
+            .filter_map(|e| e.ok())
+            .filter_map(|e| {
+                let n = e.file_name().to_string_lossy().to_string();
+                if n.starts_with("frame_") && n.ends_with(".png") && !n.contains(".tmp") { Some(n) } else { None }
+            })
+            .collect();
+        v.sort();
+        v
+    };
+
+    // Find indices of missing frames in the sorted all_in list
+    let missing_indices: Vec<u32> = all_in.iter().enumerate()
+        .filter(|(_, name)| !done_set.contains(name.as_str()))
+        .map(|(i, _)| i as u32)
+        .collect();
+
+    let num_missing = missing_indices.len() as u32;
+    eprintln!("[{}] {} missing frames to distribute across {} GPUs", vid.id, num_missing, gpus.len());
 
     let mut children = Vec::new();
-    for (i, &gpu) in gpus.iter().enumerate() {
-        let gpu_log = format!("{}/gpu{}.log", cfg.home.display(), gpu);
-        let log_file = fs::OpenOptions::new().create(true).append(true).open(&gpu_log).ok();
 
-        let mut args: Vec<String> = vec![
-            upscale_py.clone(), fi_str.clone(), fo_str.clone(), scale_str.clone(),
-            "--gpu-id".into(), gpu.to_string(),  // unique tmp files per GPU
-        ];
+    if gpus.len() > 1 && num_missing > 0 {
+        // Split missing frames evenly: find list-index boundaries that give each GPU equal WORK
+        let missing_per_gpu = (num_missing + gpus.len() as u32 - 1) / gpus.len() as u32;
+        for (i, &gpu) in gpus.iter().enumerate() {
+            let work_start = i as u32 * missing_per_gpu;
+            let work_end = std::cmp::min((i as u32 + 1) * missing_per_gpu, num_missing);
+            if work_start >= num_missing { continue; }
 
-        if gpus.len() > 1 {
-            // Multi-GPU: split by list index into sorted frames_in
-            let s = i as u32 * per_gpu;
-            let e = std::cmp::min((i as u32 + 1) * per_gpu, count_in as u32);
-            if s >= count_in as u32 { continue; }
-            eprintln!("[{}] GPU {}: list indices {}-{}", vid.id, gpu, s, e);
+            // Map back to list indices: start from first missing frame, end after last missing frame
+            let s = missing_indices[work_start as usize];
+            let e = if work_end < num_missing {
+                missing_indices[work_end as usize]
+            } else {
+                count_in as u32  // end of list
+            };
+
+            let gpu_log = format!("{}/gpu{}.log", cfg.home.display(), gpu);
+            let log_file = fs::OpenOptions::new().create(true).append(true).open(&gpu_log).ok();
+            let mut args: Vec<String> = vec![
+                upscale_py.clone(), fi_str.clone(), fo_str.clone(), scale_str.clone(),
+                "--gpu-id".into(), gpu.to_string(),
+            ];
+            eprintln!("[{}] GPU {}: list indices {}-{} ({} missing frames)", vid.id, gpu, s, e, work_end - work_start);
             args.extend_from_slice(&["--start".into(), s.to_string(), "--end".into(), e.to_string()]);
-        } else {
-            // Single GPU: no --start/--end, process all frames, skip done
-            eprintln!("[{}] GPU {}: all frames (skip done)", vid.id, gpu);
-        }
 
-        if let Ok(c) = Command::new("python3")
-            .args(&args.iter().map(|s| s.as_str()).collect::<Vec<_>>())
-            .env("CUDA_VISIBLE_DEVICES", gpu.to_string())
-            .stdout(log_file.as_ref().map(|f| Stdio::from(f.try_clone().unwrap())).unwrap_or(Stdio::inherit()))
-            .stderr(Stdio::inherit())
-            .spawn() {
-            children.push(c);
+            if let Ok(c) = Command::new("python3")
+                .args(&args.iter().map(|s| s.as_str()).collect::<Vec<_>>())
+                .env("CUDA_VISIBLE_DEVICES", gpu.to_string())
+                .stdout(log_file.as_ref().map(|f| Stdio::from(f.try_clone().unwrap())).unwrap_or(Stdio::inherit()))
+                .stderr(Stdio::inherit())
+                .spawn() {
+                children.push(c);
+            }
+        }
+    } else {
+        // Single GPU or no missing: process all, skip done
+        for &gpu in gpus.iter() {
+            let gpu_log = format!("{}/gpu{}.log", cfg.home.display(), gpu);
+            let log_file = fs::OpenOptions::new().create(true).append(true).open(&gpu_log).ok();
+            let args: Vec<String> = vec![
+                upscale_py.clone(), fi_str.clone(), fo_str.clone(), scale_str.clone(),
+                "--gpu-id".into(), gpu.to_string(),
+            ];
+            eprintln!("[{}] GPU {}: all frames (skip done)", vid.id, gpu);
+
+            if let Ok(c) = Command::new("python3")
+                .args(&args.iter().map(|s| s.as_str()).collect::<Vec<_>>())
+                .env("CUDA_VISIBLE_DEVICES", gpu.to_string())
+                .stdout(log_file.as_ref().map(|f| Stdio::from(f.try_clone().unwrap())).unwrap_or(Stdio::inherit()))
+                .stderr(Stdio::inherit())
+                .spawn() {
+                children.push(c);
+            }
         }
     }
 
