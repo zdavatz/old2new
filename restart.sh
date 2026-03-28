@@ -13,7 +13,7 @@ NUM_GPUS="${1:-}"
 
 echo "=== Killing all processes ==="
 # Get ALL PIDs in one shot, kill them all
-PIDS=$(pgrep -f 'status_server|gpu_scheduler|multi_gpu_queue|enhance.sh|/root/enhance|enhance_gpu.py|upscale.py|korea_single' 2>/dev/null | grep -v "^$$\$" || true)
+PIDS=$(pgrep -f 'status_server|gpu_scheduler|multi_gpu_queue|enhance.sh|/root/enhance|enhance_gpu.py|upscale.py|youtube_upload.*--watch|korea_single' 2>/dev/null | grep -v "^$$\$" || true)
 if [[ -n "$PIDS" ]]; then
     echo "$PIDS" | xargs kill -9 2>/dev/null
     echo "Killed: $PIDS"
@@ -98,6 +98,20 @@ else
     else
         echo "  FAILED — check /root/enhance.log"
     fi
+fi
+
+echo ""
+echo "=== Starting youtube_upload --watch ==="
+if [[ -x /root/youtube_upload ]]; then
+    nohup ./youtube_upload --watch >> /root/upload.log 2>&1 &
+    sleep 1
+    if pgrep -f "youtube_upload.*--watch" > /dev/null; then
+        echo "  OK (PID $(pgrep -f 'youtube_upload.*--watch' | head -1))"
+    else
+        echo "  FAILED — check /root/upload.log"
+    fi
+else
+    echo "  youtube_upload binary not found — upload must be done manually"
 fi
 
 echo ""
