@@ -535,7 +535,11 @@ rm json/BR5U-miBmt4.json && ./fetch_video_json.sh BR5U-miBmt4
 
 Each JSON file contains: title, description, channel, upload_date, resolution, duration, fps, megapixels, definition (hd/sd), recommended scale (2x/4x), recommended GPU (RTX 4090/RTX 5090), view_count, categories, tags, and thumbnail URL. The Rust dashboard reads these files instead of a static `video_queue.json`.
 
-As of March 2026: 29 of 226 videos enhanced, 197 remaining. Videos are split by YouTube definition (hd/sd), not by resolution.
+### Data Files
+
+- **`blacklist_machines.txt`** — vast.ai machine IDs that failed or were too slow. `deploy.sh` skips these when searching for instances. Format: `machine_id  # reason`.
+- **`cached_machines.txt`** — Benchmark scores for tested machines. Auto-updated by `deploy.sh` after successful deploy. Used for time estimates. Format: `machine_id  bench_score  # location — GPU — CPU`.
+- **`enhanced_status.json`** — Tracking status of all 226 Da Vaz videos (which have Enhanced 4K versions on YouTube). Updated by `check_enhanced.py`.
 
 ### YouTube API Quota
 
