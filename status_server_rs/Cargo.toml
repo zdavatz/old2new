@@ -33,6 +33,10 @@ path = "src/enhance.rs"
 name = "gpu_scheduler"
 path = "src/gpu_scheduler.rs"
 
+[[bin]]
+name = "preparer"
+path = "src/preparer.rs"
+
 [profile.release]
 strip = true
 lto = true

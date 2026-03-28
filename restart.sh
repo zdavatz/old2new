@@ -13,7 +13,7 @@ NUM_GPUS="${1:-}"
 
 echo "=== Killing all processes ==="
 # Get ALL PIDs in one shot, kill them all
-PIDS=$(pgrep -f 'status_server|gpu_scheduler|multi_gpu_queue|enhance.sh|/root/enhance|enhance_gpu.py|upscale.py|youtube_upload.*--watch|korea_single' 2>/dev/null | grep -v "^$$\$" || true)
+PIDS=$(pgrep -f 'status_server|gpu_scheduler|preparer|multi_gpu_queue|enhance.sh|/root/enhance|enhance_gpu.py|upscale.py|youtube_upload.*--watch|korea_single' 2>/dev/null | grep -v "^$$\$" || true)
 if [[ -n "$PIDS" ]]; then
     echo "$PIDS" | xargs kill -9 2>/dev/null
     echo "Killed: $PIDS"
@@ -78,9 +78,24 @@ echo "=== Starting queue ==="
 if [[ -z "$NUM_GPUS" ]]; then
     NUM_GPUS=$(nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null | wc -l)
 fi
-# Use Rust gpu_scheduler if available, fallback to Bash multi_gpu_queue.sh
+# Start preparer (download + extract, no GPU needed)
+echo ""
+echo "=== Starting preparer ==="
+if [[ -x /root/preparer ]]; then
+    nohup ./preparer >> /root/preparer.log 2>&1 &
+    sleep 1
+    if pgrep -x preparer > /dev/null; then
+        echo "  OK (PID $(pgrep -x preparer | head -1))"
+    else
+        echo "  FAILED — check /root/preparer.log"
+    fi
+else
+    echo "  preparer binary not found — download/extract must be done manually"
+fi
+
+# Start gpu_scheduler (upscale + reassemble)
 if [[ -x /root/gpu_scheduler ]]; then
-    nohup ./gpu_scheduler "$NUM_GPUS" >> /root/enhance.log 2>&1 &
+    nohup ./gpu_scheduler "$NUM_GPUS" >> /root/scheduler.log 2>&1 &
     sleep 2
     if pgrep -x gpu_scheduler > /dev/null; then
         echo "  OK — $NUM_GPUS GPUs via gpu_scheduler (PID $(pgrep -x gpu_scheduler | head -1))"
