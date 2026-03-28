@@ -563,7 +563,8 @@ fn parse_fps_from_logs() -> (f64, HashMap<String, f64>, String) {
             let tail = read_tail(path, 4096);
             // Parse fps: look for pattern like "1234/5678 (2.50 fps"
             let mut last_fps = None;
-            for line in tail.lines() {
+            // Split on \r and \n — ffmpeg -stats uses \r for progress updates
+        for line in tail.split(|c| c == '\r' || c == '\n') {
                 if let Some(fps) = parse_fps_line(line) {
                     last_fps = Some(fps);
                 }
@@ -593,7 +594,8 @@ fn parse_fps_from_logs() -> (f64, HashMap<String, f64>, String) {
             let lines: Vec<&str> = tail.lines().collect();
             let start = lines.len().saturating_sub(30);
             log_tail = lines[start..].join("\n");
-            for line in tail.lines() {
+            // Split on \r and \n — ffmpeg -stats uses \r for progress updates
+        for line in tail.split(|c| c == '\r' || c == '\n') {
                 if let Some(fps) = parse_fps_line(line) {
                     per_gpu_fps.insert("0".into(), fps);
                 }
@@ -638,7 +640,8 @@ fn parse_download_progress(job_name: &str) -> (f64, String) {
         if !tail.contains(job_name) {
             continue;
         }
-        for line in tail.lines() {
+        // Split on \r and \n — ffmpeg -stats uses \r for progress updates
+        for line in tail.split(|c| c == '\r' || c == '\n') {
             // Parse "[download]  45.2% of  1.23GiB"
             if line.contains("[download]") && line.contains('%') {
                 if let Some(idx) = line.find('%') {
@@ -690,7 +693,8 @@ fn parse_ffmpeg_frame(job_name: &str, total_frames: u64) -> u64 {
         if !tail.contains(job_name) && *log_name != "enhance.log" && *log_name != "scheduler.log" {
             continue;
         }
-        for line in tail.lines() {
+        // Split on \r and \n — ffmpeg -stats uses \r for progress updates
+        for line in tail.split(|c| c == '\r' || c == '\n') {
             // Only match reassembly ffmpeg lines (have "size=" with actual data, not "N/A")
             // Extraction lines have "size=N/A", reassembly has "size= 12345KiB"
             if let Some(idx) = line.find("frame=") {
@@ -729,7 +733,8 @@ fn parse_ffmpeg_progress(job_name: &str, total_frames: u64) -> String {
             continue;
         }
         // Parse "frame= 12345" and "speed=30.5x" — only reassembly lines (have size= with data)
-        for line in tail.lines() {
+        // Split on \r and \n — ffmpeg -stats uses \r for progress updates
+        for line in tail.split(|c| c == '\r' || c == '\n') {
             if let Some(idx) = line.find("frame=") {
                 if !line.contains("size=") || line.contains("size=N/A") {
                     continue; // skip extraction ffmpeg lines
@@ -779,7 +784,8 @@ fn parse_upload_progress(job_name: &str) -> (f64, String) {
         if !tail.contains(job_name) && *log_name != "enhance.log" && *log_name != "scheduler.log" {
             continue;
         }
-        for line in tail.lines() {
+        // Split on \r and \n — ffmpeg -stats uses \r for progress updates
+        for line in tail.split(|c| c == '\r' || c == '\n') {
             // Parse "Uploading: 45%" or "  Uploading: 45%"
             if let Some(idx) = line.find("Uploading:") {
                 let rest = line[idx + 10..].trim();
