@@ -343,7 +343,6 @@ fn verify_and_reassemble(cfg: &Cfg, vid: &Video) -> bool {
     } else { "youtube_upload" };
     let status = Command::new(upload_bin)
         .args(&[&output_str, &format!("--video-id={}", vid.id)])
-        .current_dir(&cfg.home)  // youtube_upload needs client_secret.json in cwd
         .stdout(Stdio::inherit()).stderr(Stdio::inherit())
         .status();
     // Only write lock on successful upload (exit code 0)

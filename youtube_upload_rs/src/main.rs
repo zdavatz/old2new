@@ -13,6 +13,7 @@ use hyper_rustls::HttpsConnector;
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::io::Write;
+use std::env;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use yup_oauth2::authenticator::Authenticator;
@@ -178,15 +179,23 @@ async fn build_authenticator(
     client_secret_path: &str,
     token_path: &str,
 ) -> Result<Authenticator<HttpsConnector<HttpConnector>>, Box<dyn std::error::Error>> {
-    // Read client secret
-    let cs_data = fs::read_to_string(client_secret_path).map_err(|e| {
-        format!(
-            "ERROR: Client secret not found: {}\n\
-             Download from Google Cloud Console -> Credentials -> OAuth 2.0 Client IDs\n\
-             {}",
-            client_secret_path, e
-        )
-    })?;
+    // Read client secret — try given path, then $HOME fallback
+    let cs_path = if Path::new(client_secret_path).exists() {
+        client_secret_path.to_string()
+    } else {
+        let home = env::var("HOME").unwrap_or_else(|_| "/root".to_string());
+        let home_path = format!("{}/{}", home, client_secret_path);
+        if Path::new(&home_path).exists() {
+            home_path
+        } else {
+            return Err(format!(
+                "ERROR: Client secret not found: {} or {}\n\
+                 Download from Google Cloud Console -> Credentials -> OAuth 2.0 Client IDs",
+                client_secret_path, home_path
+            ).into());
+        }
+    };
+    let cs_data = fs::read_to_string(&cs_path)?;
     let cs_file: ClientSecretFile = serde_json::from_str(&cs_data)?;
 
     let secret = yup_oauth2::ApplicationSecret {
@@ -198,10 +207,19 @@ async fn build_authenticator(
         ..Default::default()
     };
 
-    // Read the Python-format token and refresh it ourselves
-    let td = fs::read_to_string(token_path).map_err(|e| {
-        format!("ERROR: Token file not found: {} — {}", token_path, e)
-    })?;
+    // Read the Python-format token — try given path, then $HOME fallback
+    let tk_path = if Path::new(token_path).exists() {
+        token_path.to_string()
+    } else {
+        let home = env::var("HOME").unwrap_or_else(|_| "/root".to_string());
+        let home_path = format!("{}/{}", home, token_path);
+        if Path::new(&home_path).exists() {
+            home_path
+        } else {
+            return Err(format!("ERROR: Token file not found: {} or {}", token_path, home_path).into());
+        }
+    };
+    let td = fs::read_to_string(&tk_path)?;
     let py_token: PythonToken = serde_json::from_str(&td)?;
 
     eprintln!("Refreshing access token...");
