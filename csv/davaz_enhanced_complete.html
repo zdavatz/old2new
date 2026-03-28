@@ -26,13 +26,24 @@
   .badge-unmapped { background: #472a1a; color: #fb923c; }
   .badge-open { background: #471a1a; color: #f87171; }
   .section-count { color: #666; font-weight: normal; font-size: 0.8em; }
+  nav { background: #1a1a1a; border-radius: 8px; padding: 14px 18px; margin-bottom: 24px; display: flex; gap: 16px; flex-wrap: wrap; }
+  nav a { color: #3ea6ff; text-decoration: none; font-size: 0.95em; padding: 6px 12px; border-radius: 4px; transition: background 0.2s; }
+  nav a:hover { background: #333; }
+  h2 { scroll-margin-top: 20px; }
 </style>
 </head>
 <body>
 <h1>Da Vaz Enhanced 4K Videos</h1>
 <p class="stats">251 Enhanced 4K Videos auf YouTube &middot; 221 zugeordnet &middot; 33 nicht zugeordnet &middot; 9 offen</p>
 
-<h2>ALLE 251 ENHANCED 4K VIDEOS AUF YOUTUBE <span class="section-count">(251)</span></h2>
+<nav>
+  <a href="#alle">Alle 251 Enhanced</a>
+  <a href="#zugeordnet">221 Zugeordnet</a>
+  <a href="#unmapped">33 Nicht zugeordnet</a>
+  <a href="#offen">9 Offen</a>
+</nav>
+
+<h2 id="alle">ALLE 251 ENHANCED 4K VIDEOS AUF YOUTUBE <span class="section-count">(251)</span></h2>
 <div class="grid">
 <div class="card"><a href="https://www.youtube.com/watch?v=YZx82_OyGXw" target="_blank">
   <div class="thumb"><img src="https://img.youtube.com/vi/YZx82_OyGXw/mqdefault.jpg" loading="lazy" alt=""></div></a>
@@ -1039,7 +1050,7 @@
   <div class="info"><div class="title">🦜🐈🐛🪰🦅🐒🐸 (Enhanced 4K)<span class="badge badge-mapped">zugeordnet</span></div><div class="links"><a href="https://www.youtube.com/watch?v=lZio59r1fbE" target="_blank">Enhanced 4K</a> <a href="https://www.youtube.com/watch?v=B3p6iPx0EM0" target="_blank">Original</a></div></div>
 </div>
 </div>
-<h2>ZUGEORDNET: Original → Enhanced 4K <span class="section-count">(221)</span></h2>
+<h2 id="zugeordnet">ZUGEORDNET: Original → Enhanced 4K <span class="section-count">(221)</span></h2>
 <div class="grid">
 <div class="card"><a href="https://www.youtube.com/watch?v=WBsY8GGMOBE" target="_blank">
   <div class="thumb"><img src="https://img.youtube.com/vi/WBsY8GGMOBE/mqdefault.jpg" loading="lazy" alt=""></div></a>
@@ -1926,7 +1937,7 @@
   <div class="info"><div class="title">🦜🐈🐛🪰🦅🐒🐸<span class="badge badge-unmapped">nicht zugeordnet</span></div><div class="links"><a href="https://www.youtube.com/watch?v=hFL_Ct-qBRI" target="_blank">Enhanced 4K</a> <a href="https://www.youtube.com/watch?v=lZio59r1fbE" target="_blank">Original</a></div></div>
 </div>
 </div>
-<h2>NICHT ZUGEORDNET: 33 Enhanced Videos (Duplikate/v1/v2/v3) <span class="section-count">(33)</span></h2>
+<h2 id="unmapped">NICHT ZUGEORDNET: 33 Enhanced Videos (Duplikate/v1/v2/v3) <span class="section-count">(33)</span></h2>
 <div class="grid">
 <div class="card"><a href="https://www.youtube.com/watch?v=CCUxBRn7hxM" target="_blank">
   <div class="thumb"><img src="https://img.youtube.com/vi/CCUxBRn7hxM/mqdefault.jpg" loading="lazy" alt=""></div></a>
@@ -2061,7 +2072,7 @@
   <div class="info"><div class="title">🙂CHICKEN🐓WORLD🙂 (Enhanced 4K)<span class="badge badge-unmapped">nicht zugeordnet</span></div><div class="links"><a href="https://www.youtube.com/watch?v=uGalcoh4XWc" target="_blank">Enhanced 4K</a></div></div>
 </div>
 </div>
-<h2>OFFEN: 9 Issues ohne Enhanced Version <span class="section-count">(9)</span></h2>
+<h2 id="offen">OFFEN: 9 Issues ohne Enhanced Version <span class="section-count">(9)</span></h2>
 <div class="grid">
 <div class="card"><a href="https://www.youtube.com/watch?v=fuNkC-JNzEc" target="_blank">
   <div class="thumb"><img src="https://img.youtube.com/vi/fuNkC-JNzEc/mqdefault.jpg" loading="lazy" alt=""></div></a>
