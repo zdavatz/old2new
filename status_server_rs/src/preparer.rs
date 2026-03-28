@@ -133,6 +133,12 @@ fn main() {
                     let n = count_frames(&fi_dir);
                     if n > 0 {
                         eprintln!("[preparer] {} — extracted {} frames", id, n);
+                        // Write total_frames back to JSON — gpu_scheduler waits for this
+                        if let Ok(mut j) = serde_json::from_str::<serde_json::Value>(&content) {
+                            j["total_frames"] = serde_json::json!(n);
+                            let _ = fs::write(&json_path, serde_json::to_string_pretty(&j).unwrap_or_default());
+                            eprintln!("[preparer] {} — wrote total_frames={} to JSON", id, n);
+                        }
                     } else {
                         eprintln!("[preparer] {} — extraction FAILED", id);
                         continue;

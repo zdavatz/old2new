@@ -56,18 +56,30 @@ fn max_frame_number(dir: &Path) -> u64 {
 }
 
 /// Read scale from ~/json/<id>.json (or .processing variant)
-fn read_scale(json_dir: &Path, id: &str) -> u32 {
+/// Read JSON for a video — checks both .json and .json.processing
+fn read_json(json_dir: &Path, id: &str) -> Option<serde_json::Value> {
     for suffix in &["", ".processing"] {
         let path = json_dir.join(format!("{}.json{}", id, suffix));
         if let Ok(content) = fs::read_to_string(&path) {
             if let Ok(v) = serde_json::from_str::<serde_json::Value>(&content) {
-                if let Some(s) = v.get("scale").and_then(|s| s.as_u64()) {
-                    return s as u32;
-                }
+                return Some(v);
             }
         }
     }
-    4 // default
+    None
+}
+
+fn read_scale(json_dir: &Path, id: &str) -> u32 {
+    read_json(json_dir, id)
+        .and_then(|v| v.get("scale").and_then(|s| s.as_u64()))
+        .unwrap_or(4) as u32
+}
+
+/// Check if preparer has finished extraction (total_frames field present in JSON)
+fn is_prepared(json_dir: &Path, id: &str) -> bool {
+    read_json(json_dir, id)
+        .and_then(|v| v.get("total_frames").and_then(|t| t.as_u64()))
+        .unwrap_or(0) > 0
 }
 
 /// Scan ~/jobs/ for videos that have frames_in ready but no output MKV yet
@@ -81,6 +93,9 @@ fn find_ready_videos(cfg: &Cfg) -> Vec<Video> {
             let fi_dir = job_dir.join("frames_in");
             let fo_dir = job_dir.join("frames_out");
 
+            // Skip if preparer hasn't finished (no total_frames in JSON)
+            if !is_prepared(&cfg.json_dir, &id) { continue; }
+
             // Skip if no frames_in
             if count_frames(&fi_dir) == 0 { continue; }
 
@@ -92,18 +107,14 @@ fn find_ready_videos(cfg: &Cfg) -> Vec<Video> {
                 }).unwrap_or(false));
             if has_output { continue; }
 
-            // Check if upscaling is complete (all frames done)
             let count_in = count_frames(&fi_dir);
             let count_out = count_frames(&fo_dir);
-            let max_fi = max_frame_number(&fi_dir);
-            let max_fo = max_frame_number(&fo_dir);
-            let expected = std::cmp::max(max_fi, max_fo).max(count_in);
 
             // This video needs work (either upscaling or reassembly)
             let scale = read_scale(&cfg.json_dir, &id);
             videos.push(Video { id, scale });
 
-            eprintln!("[scan] {} — in={} out={} expected={}", videos.last().unwrap().id, count_in, count_out, expected);
+            eprintln!("[scan] {} — in={} out={}", videos.last().unwrap().id, count_in, count_out);
         }
     }
     videos
