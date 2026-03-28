@@ -352,12 +352,16 @@ async fn watch_and_upload(cli: &Cli) {
                 let uploaded_lock = job_dir.join(".uploaded");
                 if uploaded_lock.exists() { continue; } // already uploaded
 
+                // Check JSON for confirmed_frames_out — gpu_scheduler must have finished
+                let json_dir = PathBuf::from(format!("{}/json", home));
+                if !is_confirmed(&json_dir, &vid_id) { continue; }
+
                 // Find *_2x.mkv or *_4x.mkv
                 let mkv = find_output_mkv(&job_dir);
-                if mkv.is_none() { continue; } // not reassembled yet
+                if mkv.is_none() { continue; } // MKV missing despite confirmation
                 let mkv = mkv.unwrap();
 
-                eprintln!("[watch] Found unuploaded: {} ({})", vid_id, mkv.display());
+                eprintln!("[watch] Confirmed and ready: {} ({})", vid_id, mkv.display());
 
                 // Upload using the same binary (call ourselves in single mode)
                 let upload_bin = env::current_exe().unwrap_or_else(|_| PathBuf::from("/root/youtube_upload"));
@@ -381,6 +385,30 @@ async fn watch_and_upload(cli: &Cli) {
 
         std::thread::sleep(interval);
     }
+}
+
+/// Check if gpu_scheduler has confirmed frames_out in the JSON
+fn is_confirmed(json_dir: &Path, id: &str) -> bool {
+    for suffix in &["", ".processing"] {
+        let path = json_dir.join(format!("{}.json{}", id, suffix));
+        if let Ok(content) = fs::read_to_string(&path) {
+            if let Ok(v) = serde_json::from_str::<serde_json::Value>(&content) {
+                if v.get("confirmed_frames_out").and_then(|t| t.as_u64()).unwrap_or(0) > 0 {
+                    return true;
+                }
+            }
+        }
+    }
+    // Also check json_done/
+    let done_path = json_dir.parent().unwrap_or(json_dir).join("json_done").join(format!("{}.json", id));
+    if let Ok(content) = fs::read_to_string(&done_path) {
+        if let Ok(v) = serde_json::from_str::<serde_json::Value>(&content) {
+            if v.get("confirmed_frames_out").and_then(|t| t.as_u64()).unwrap_or(0) > 0 {
+                return true;
+            }
+        }
+    }
+    false
 }
 
 /// Find output MKV in job directory (*_2x.mkv or *_4x.mkv)

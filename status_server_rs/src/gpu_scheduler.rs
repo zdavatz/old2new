@@ -287,6 +287,20 @@ fn reassemble(cfg: &Cfg, vid: &Video) -> bool {
 
     if output_mkv.exists() {
         eprintln!("[{}] Reassembly complete: {}", vid.id, output_str);
+        // Write confirmed_frames_out + output_mkv to JSON — youtube_upload waits for this
+        if let Some(mut j) = read_json(&cfg.json_dir, &vid.id) {
+            j["confirmed_frames_out"] = serde_json::json!(count_out);
+            j["output_mkv"] = serde_json::json!(output_str);
+            // Write to both json and json.processing (whichever exists)
+            for suffix in &["", ".processing"] {
+                let path = cfg.json_dir.join(format!("{}.json{}", vid.id, suffix));
+                if path.exists() {
+                    let _ = fs::write(&path, serde_json::to_string_pretty(&j).unwrap_or_default());
+                    eprintln!("[{}] Wrote confirmed_frames_out={} to JSON", vid.id, count_out);
+                    break;
+                }
+            }
+        }
         true
     } else {
         eprintln!("[{}] Reassembly FAILED", vid.id);
