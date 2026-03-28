@@ -360,9 +360,21 @@ No code changes needed in `enhance_gpu.py` — just run multiple instances with 
 
 **Disk sizing for multi-GPU:** With 4 GPUs parallel, each GPU needs its own disk budget (total / 4). At 1920x1200 2x with 500GB: max ~5min per video. For short HD videos (<5min), 4x RTX 5090 at $1.35/hr on vast.ai Sichuan is ideal — processes 30 short videos in ~20min.
 
-**GPU Scheduler (Rust):** The `gpu_scheduler` binary replaces `multi_gpu_queue.sh`. It distributes GPUs **proportionally** across videos (2 videos + 4 GPUs = 2 GPUs per video, with segment splitting via `--start/--end` + `--gpu-id`). **Nearly-done detection**: videos with <2000 frames remaining get GPU 0 to finish while other GPUs start the next video. Frame count verification gate before reassembly prevents corrupt uploads. Built-in ffmpeg reassembly with brightness matching, YouTube upload. **Safety features**: upload lock file (`.uploaded`) prevents duplicate uploads; frames only deleted when more videos in queue (last video kept for manual YouTube verification); auto-destroy checks for running uploads/ffmpeg and unuploaded MKVs. **IMPORTANT**: use `deploy.sh swap-binary` for safe updates during processing, or `deploy.sh update` for full restart. Never manually start processes. **Smart segment splitting**: distributes work by actual missing frames, not fixed 50/50 — prevents one GPU finishing early when prior runs completed its range.
-- **OOM-kill recovery** — detects killed processes (exit > 128) and retries the same video after 60s
-- **Auto YouTube upload + email** after each video (via Rust `youtube_upload` binary)
+**3-Process Architecture — JSON is the contract:**
+
+`deploy.sh` uploads `<yt-id>.json` to `~/json/`, triggering an automatic pipeline:
+
+| Process | Polls | Reads from JSON | Writes to JSON | Output |
+|---------|-------|-----------------|----------------|--------|
+| **preparer** | `~/json/*.json` | video_id, scale | `total_frames` | `~/jobs/<yt-id>/frames_in/` |
+| **gpu_scheduler** | `~/jobs/<yt-id>/frames_in/` | `total_frames` | `confirmed_frames_out`, `output_mkv` | `~/jobs/<yt-id>/<yt-id>_2x.mkv` |
+| **youtube_upload --watch** | `~/jobs/<yt-id>/` | `confirmed_frames_out` | `.uploaded` lock | YouTube upload + email |
+
+No process starts before the previous has confirmed via JSON. One JSON in → one YouTube video out.
+
+- **preparer** (Rust) — Downloads via yt-dlp, extracts frames via ffmpeg. No GPU needed.
+- **gpu_scheduler** (Rust) — Distributes GPUs proportionally, runs `upscale.py` with smart segment splitting (by actual missing frames), reassembles with ffmpeg + brightness matching. Frame count verification gate prevents corrupt videos.
+- **youtube_upload --watch** (Rust) — Uploads to YouTube, sends email to juerg@davaz.com, writes `.uploaded` lock. Also works in single mode: `youtube_upload <file> --video-id=<id>`.
 
 The batch-of-N anti-pattern (`wait` for all 4 GPUs, then start next 4) wastes GPU time — fast-finishing GPUs sit idle waiting for the slowest one. On a 4x RTX 5090 instance at $1.35/hr, this caused 3 GPUs to idle for 2+ hours (~$2.70 wasted). The flock-based queue keeps all GPUs busy continuously.
 
