@@ -143,6 +143,74 @@ if pgrep -x status_server > /dev/null; then echo "status_server restarted"; else
             done
             exit 0
             ;;
+        swap-binary)
+            # Swap a single binary without disturbing other processes
+            # Usage: deploy.sh swap-binary <instance_id> <binary_name>
+            # Example: deploy.sh swap-binary 33597328 status_server
+            if [[ -z "${2:-}" || -z "${3:-}" ]]; then
+                echo "Usage: $0 swap-binary <instance_id> <binary_name>"
+                echo "  Uploads and swaps ONE binary, restarts only that process."
+                echo "  All other processes (ffmpeg, upscale, gpu_scheduler) keep running."
+                echo ""
+                echo "  Available binaries: status_server, gpu_scheduler, enhance,"
+                echo "    frame_gap_check, rebalance_calc, youtube_upload"
+                exit 1
+            fi
+            SWAP_ID="$2"
+            SWAP_BIN="$3"
+            echo "=== Swapping $SWAP_BIN on instance $SWAP_ID ==="
+            SWAP_URL=$(vastai ssh-url "$SWAP_ID" 2>/dev/null)
+            SWAP_HOST=$(echo "$SWAP_URL" | sed 's|ssh://root@||' | cut -d: -f1)
+            SWAP_PORT=$(echo "$SWAP_URL" | sed 's|ssh://root@||' | cut -d: -f2)
+            if [[ -z "$SWAP_HOST" ]]; then
+                echo "ERROR: Could not get SSH URL for instance $SWAP_ID"
+                exit 1
+            fi
+            SWAP_SCP="scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -P $SWAP_PORT"
+            SWAP_SSH="ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=10 root@$SWAP_HOST -p $SWAP_PORT"
+
+            # Find local binary
+            SWAP_LOCAL=""
+            for dir in status_server_rs/target/release youtube_upload_rs/target/release; do
+                if [[ -f "$SCRIPT_DIR/$dir/$SWAP_BIN" ]]; then
+                    SWAP_LOCAL="$SCRIPT_DIR/$dir/$SWAP_BIN"
+                    break
+                fi
+            done
+            if [[ -z "$SWAP_LOCAL" ]]; then
+                echo "ERROR: Binary '$SWAP_BIN' not found locally"
+                exit 1
+            fi
+
+            # Upload
+            $SWAP_SCP "$SWAP_LOCAL" root@"$SWAP_HOST":/root/${SWAP_BIN}.new 2>/dev/null
+            echo "  Uploaded ${SWAP_BIN}.new"
+
+            # Build restart command based on binary type
+            case "$SWAP_BIN" in
+                status_server)
+                    RESTART_CMD="cd /root && nohup ./$SWAP_BIN >> /root/status_server.log 2>&1 &"
+                    ;;
+                gpu_scheduler)
+                    # Restore .processing queue files, detect GPU count, start
+                    RESTART_CMD='cd /root/json && for f in *.processing*; do [ -f "$f" ] && mv "$f" $(echo "$f" | sed "s/.processing.*//"); done; NUM=$(nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null | wc -l); cd /root && nohup ./gpu_scheduler $NUM >> /root/scheduler.log 2>&1 &'
+                    ;;
+                *)
+                    RESTART_CMD=""
+                    ;;
+            esac
+
+            # Stop, swap, restart
+            $SWAP_SSH "pkill -x $SWAP_BIN 2>/dev/null; sleep 1; mv -f /root/${SWAP_BIN}.new /root/$SWAP_BIN; chmod +x /root/$SWAP_BIN; echo '  Binary swapped'" 2>/dev/null
+            if [[ -n "$RESTART_CMD" ]]; then
+                $SWAP_SSH "$RESTART_CMD; sleep 1; pgrep -x $SWAP_BIN > /dev/null && echo '  $SWAP_BIN restarted' || echo '  ERROR: $SWAP_BIN failed'" 2>/dev/null
+            else
+                echo "  Binary replaced (no auto-restart for $SWAP_BIN — starts on next use)"
+            fi
+            echo ""
+            echo "Done. Other processes untouched."
+            exit 0
+            ;;
         update)
             if [[ -z "${2:-}" ]]; then
                 echo "Usage: $0 update <instance_id>"
