@@ -540,6 +540,7 @@ Each JSON file contains: title, description, channel, upload_date, resolution, d
 - **`blacklist_machines.txt`** — vast.ai machine IDs that failed or were too slow. `deploy.sh` skips these when searching for instances. Format: `machine_id  # reason`.
 - **`cached_machines.txt`** — Benchmark scores for tested machines. Auto-updated by `deploy.sh` after successful deploy. Used for time estimates. Format: `machine_id  bench_score  # location — GPU — CPU`.
 - **`enhanced_status.json`** — Tracking status of all 226 Da Vaz videos (which have Enhanced 4K versions on YouTube). Updated by `check_enhanced.py`.
+- **[`csv/davaz_enhanced_complete.csv`](csv/davaz_enhanced_complete.csv)** — Complete overview of all Enhanced 4K videos in 4 sections: (1) all 251 Enhanced videos on YouTube, (2) 221 mapped Original → Enhanced pairs, (3) 33 unmapped Enhanced videos (duplicates/v1/v2/v3), (4) 9 open issues without Enhanced version.
 
 ### YouTube API Quota
 
