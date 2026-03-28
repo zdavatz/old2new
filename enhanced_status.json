@@ -1,25 +1,25 @@
 {
   "total_videos": 226,
-  "already_enhanced": 11,
-  "not_enhanced": 215,
+  "already_enhanced": 69,
+  "not_enhanced": 157,
   "not_on_youtube": 0,
   "missing_sd": [
+    {
+      "id": "mgUOHubnEC8",
+      "title": "CAMBODIA / DUST of LIFE",
+      "duration": 4062,
+      "scale": 4
+    },
+    {
+      "id": "NyUEAixkcfQ",
+      "title": "DPRK / Hero to Zero / eyes wide - mouth shut",
+      "duration": 3676,
+      "scale": 4
+    },
     {
       "id": "fuNkC-JNzEc",
       "title": "RUSSIA / TRAPPED REALITY",
       "duration": 3573,
-      "scale": 4
-    },
-    {
-      "id": "v1YJC8dMaas",
-      "title": "JAPAN / High School Girls - SHIBUYA - 171,2%",
-      "duration": 3290,
-      "scale": 4
-    },
-    {
-      "id": "hH4mTkFUKdg",
-      "title": "FILMTIME \u2013 MTV m2 Hungarian Television",
-      "duration": 3143,
       "scale": 4
     },
     {
@@ -35,33 +35,9 @@
       "scale": 4
     },
     {
-      "id": "Us1tVOObESU",
-      "title": "022b 21st Century China 4539 feb07",
-      "duration": 2746,
-      "scale": 4
-    },
-    {
-      "id": "Q9VKZeHaUIc",
-      "title": "BHUTAN LIVE",
-      "duration": 2541,
-      "scale": 4
-    },
-    {
       "id": "2udCsqGRnyg",
       "title": "China / CCTV - I TOOLS - EYE TOOLS - a portrait of J\u00fcrg Da Vaz",
       "duration": 2449,
-      "scale": 4
-    },
-    {
-      "id": "8wqZivWVLZs",
-      "title": "BUDAPEST diary",
-      "duration": 2345,
-      "scale": 4
-    },
-    {
-      "id": "c62HSWqoxKo",
-      "title": "RUSSIA / REALtime",
-      "duration": 2133,
       "scale": 4
     },
     {
@@ -89,12 +65,6 @@
       "scale": 4
     },
     {
-      "id": "Ydkc8oZzHBY",
-      "title": "fucking good KAMCHATKA \u2013 Ballet for Two Poachers (English Edition)",
-      "duration": 2004,
-      "scale": 4
-    },
-    {
       "id": "rxHoEF73O5k",
       "title": "fucking good KAMCHATKA \u2013 Ballett f\u00fcr Zwei Fischdiebe (Deutsche Edition)",
       "duration": 2004,
@@ -113,21 +83,21 @@
       "scale": 4
     },
     {
-      "id": "roeVmHWKobs",
-      "title": "RUSSIA / \u00d6REG T\u00d3 (Hungarian Edition)",
-      "duration": 1941,
+      "id": "kUmV1BDCnH4",
+      "title": "RUSSIA / OLD PONDS (English Edition)",
+      "duration": 1939,
+      "scale": 4
+    },
+    {
+      "id": "N6jAviwcNmo",
+      "title": "GAZA / HAMAS \u2013 RISE to POWER (English Edition)",
+      "duration": 1932,
       "scale": 4
     },
     {
       "id": "T0Z6t9zG0rw",
       "title": "TRAPPED REALITY - Short Stories from Moscow",
       "duration": 1864,
-      "scale": 4
-    },
-    {
-      "id": "WBsY8GGMOBE",
-      "title": "001a THE OTHER EYE - E",
-      "duration": 1774,
       "scale": 4
     },
     {
@@ -140,18 +110,6 @@
       "id": "0tapt-cyoSY",
       "title": "KAMCHATKA / BEAR and FISH (English Edition)",
       "duration": 1754,
-      "scale": 4
-    },
-    {
-      "id": "Hqa_G12v0Bw",
-      "title": "004 WORKS in PROGRESS",
-      "duration": 1733,
-      "scale": 4
-    },
-    {
-      "id": "acjxyO710lw",
-      "title": "023a RAISING CHINA / Interview H-E",
-      "duration": 1694,
       "scale": 4
     },
     {
@@ -215,18 +173,6 @@
       "scale": 4
     },
     {
-      "id": "cMvVKrXIN9Y",
-      "title": "024 CITY in MAKING",
-      "duration": 1289,
-      "scale": 4
-    },
-    {
-      "id": "Z3JLO-Vpk5U",
-      "title": "ARCHITECTURE of a TRIAL",
-      "duration": 1282,
-      "scale": 4
-    },
-    {
       "id": "bnbaapXPOjg",
       "title": "085 c / Maasai People",
       "duration": 1139,
@@ -239,21 +185,9 @@
       "scale": 4
     },
     {
-      "id": "NKXxfXK8qbI",
-      "title": "HONGKONG / MORPHOPOLIS",
-      "duration": 1080,
-      "scale": 4
-    },
-    {
       "id": "6hUUJNMZKDw",
       "title": "KAMCHATKA / TOLBACHIK 1975-2005",
       "duration": 1029,
-      "scale": 4
-    },
-    {
-      "id": "4_-BxRL1vFs",
-      "title": "005 pf-ERDE am HIMMEL",
-      "duration": 977,
       "scale": 4
     },
     {
@@ -299,24 +233,6 @@
       "scale": 4
     },
     {
-      "id": "-x_aIkSrXFw",
-      "title": "DPRK / Pyongyang Metro",
-      "duration": 391,
-      "scale": 4
-    },
-    {
-      "id": "Oy6C9xa-IkQ",
-      "title": "86c / Baboons out of Kenya",
-      "duration": 376,
-      "scale": 4
-    },
-    {
-      "id": "PVSGvKb2pzU",
-      "title": "DPRK / Overland from Panmunjon to Pyongyang",
-      "duration": 360,
-      "scale": 4
-    },
-    {
       "id": "aOn12f4HN4E",
       "title": "083e / DPRK / haircut in a cooperative state farm - Wonsan",
       "duration": 336,
@@ -353,63 +269,15 @@
       "scale": 4
     },
     {
-      "id": "AjiFJbsRYyg",
-      "title": "085a / 50 tons of wild life - Kenya",
-      "duration": 206,
-      "scale": 4
-    },
-    {
       "id": "4QqadqB5ZSs",
       "title": "PIANO PRACTISE, DPRK",
       "duration": 159,
       "scale": 4
     },
     {
-      "id": "6L-z22_WnvA",
-      "title": "Fly over Kamchatka",
-      "duration": 145,
-      "scale": 4
-    },
-    {
-      "id": "4sgXo0I4uTI",
-      "title": "DPRK / Swiss Yodeling over Pyongyang",
-      "duration": 143,
-      "scale": 4
-    },
-    {
-      "id": "kIIFdZrQuTQ",
-      "title": "Hairdresser in Georgia",
-      "duration": 140,
-      "scale": 4
-    },
-    {
-      "id": "6JCZA5BMpg0",
-      "title": "DPRK / 37th floor - Pyongyang",
-      "duration": 119,
-      "scale": 4
-    },
-    {
       "id": "lCpwATzkfMA",
       "title": "DRAWING PRACTISE, DPRK",
       "duration": 117,
-      "scale": 4
-    },
-    {
-      "id": "rNtr5Y7Yaok",
-      "title": "DPRK / Guns and Cherry Blossoms",
-      "duration": 112,
-      "scale": 4
-    },
-    {
-      "id": "pdya9ZzlGhg",
-      "title": "DPRK / DRAMA CLASS",
-      "duration": 87,
-      "scale": 4
-    },
-    {
-      "id": "y81sU3NL3Fo",
-      "title": "DPRK / TRADITIONAL DANCE",
-      "duration": 62,
       "scale": 4
     },
     {
@@ -422,12 +290,6 @@
       "id": "td5h1Gcx0gg",
       "title": "How do you do in DPRK?",
       "duration": 55,
-      "scale": 4
-    },
-    {
-      "id": "wtn4-4bQKsk",
-      "title": "Itzhak Frey gondolata a Felvid\u00e9kr\u0151l",
-      "duration": 44,
       "scale": 4
     },
     {
@@ -463,12 +325,6 @@
       "scale": 2
     },
     {
-      "id": "tljAVZCj6lw",
-      "title": "BLUEPRINTS of LIFE",
-      "duration": 3602,
-      "scale": 2
-    },
-    {
       "id": "N_Ui88q-gy8",
       "title": "072a / Iran / CHADOR CONDOM COFFEESHOP - Farsi/Esub",
       "duration": 3377,
@@ -493,12 +349,6 @@
       "scale": 2
     },
     {
-      "id": "WwHJW39JqPk",
-      "title": "050c BORN to MOVE / X-treams, X-dreams - K/Hsub",
-      "duration": 3068,
-      "scale": 2
-    },
-    {
       "id": "u9LHBYxyj5w",
       "title": "VERGANGENHEIT als VERM\u00c4CHTNIS \u2013 work in progress 1.0",
       "duration": 2701,
@@ -511,18 +361,6 @@
       "scale": 2
     },
     {
-      "id": "SHFqywMgx1Q",
-      "title": "007b BUDAPESTEN NAPLO - H",
-      "duration": 2344,
-      "scale": 2
-    },
-    {
-      "id": "X3J2WOb0FyI",
-      "title": "030a ALICE in WONDERLAND - E",
-      "duration": 2097,
-      "scale": 2
-    },
-    {
       "id": "4_gaU85Zzog",
       "title": "075a  / MAO's BARBERSHOP - chinese/Esub",
       "duration": 2072,
@@ -532,24 +370,6 @@
       "id": "v27m8UT4w0M",
       "title": "074c / \u0417\u0410\u0412\u0415\u0429\u0410\u041d\u0418\u0415 / \u0415\u0412\u0413\u0415\u041d\u0418\u042e \u0411\u0423\u0420\u0410\u041a\u0423 - R",
       "duration": 2059,
-      "scale": 2
-    },
-    {
-      "id": "t6YvdmcGdo8",
-      "title": "049b Liebe Anna - D",
-      "duration": 2042,
-      "scale": 2
-    },
-    {
-      "id": "KHRHsyGIRlI",
-      "title": "049a Liebe Anna - E",
-      "duration": 2033,
-      "scale": 2
-    },
-    {
-      "id": "UExLHdyGfwA",
-      "title": "049c Liebe Anna - H",
-      "duration": 2020,
       "scale": 2
     },
     {
@@ -595,33 +415,9 @@
       "scale": 2
     },
     {
-      "id": "FaRUcjDYZis",
-      "title": "001b MAS SZEMMEL - H",
-      "duration": 1759,
-      "scale": 2
-    },
-    {
       "id": "qSgiCb2aJa4",
       "title": "070c / KMARA - EL\u00c9G! / ROZSAS FORRADALOM",
       "duration": 1758,
-      "scale": 2
-    },
-    {
-      "id": "hH_E66CkUjQ",
-      "title": "070b / KMARA - GENUG! / ROSEN-REVOLUTION - G/R/D",
-      "duration": 1757,
-      "scale": 2
-    },
-    {
-      "id": "7qQ47AhQca4",
-      "title": "060b / LAZAC \u00c9S MACKO / PARADICSOM - R/Hsub",
-      "duration": 1753,
-      "scale": 2
-    },
-    {
-      "id": "EywN1gXXrAQ",
-      "title": "085 DEER VISION - Kenya",
-      "duration": 1720,
       "scale": 2
     },
     {
@@ -634,12 +430,6 @@
       "id": "I-W2hJc6q1U",
       "title": "053a / JASMINE and OLIVES",
       "duration": 1597,
-      "scale": 2
-    },
-    {
-      "id": "nACZdLod2mU",
-      "title": "030b ALICE CSODAORSZAGBAN - H",
-      "duration": 1524,
       "scale": 2
     },
     {
@@ -667,12 +457,6 @@
       "scale": 2
     },
     {
-      "id": "yPJT2-Bodhw",
-      "title": "038a YOUNG WOLF / Smolensk - R/G, Esub",
-      "duration": 1295,
-      "scale": 2
-    },
-    {
       "id": "OiVFgnVqVpk",
       "title": "053b  JASMINE and OLIVES - Hsub",
       "duration": 1288,
@@ -691,12 +475,6 @@
       "scale": 2
     },
     {
-      "id": "k3nEp6-h5ZA",
-      "title": "MACH aus dem VERGANGENEN, was Du KANNST",
-      "duration": 1138,
-      "scale": 2
-    },
-    {
       "id": "0LdSpIR6x2I",
       "title": "078 / The FURNITURE in AFGHANISTAN - Afghan/Russian/English",
       "duration": 1086,
@@ -712,12 +490,6 @@
       "id": "qeNigfxHkEo",
       "title": "033 The Takami Family, Tokyo",
       "duration": 937,
-      "scale": 2
-    },
-    {
-      "id": "csxaS-i3wtw",
-      "title": "061b Volcano TOLBACHIK - time change",
-      "duration": 928,
       "scale": 2
     },
     {
@@ -741,12 +513,6 @@
     {
       "id": "1iN1Fvei5Jk",
       "title": "082a / Syria / DEIR ez-ZOR \u062f\u064a\u0631 \u0627\u0644\u0632\u0648\u0631 / CAMELS for BABIES - Arabic/Esub",
-      "duration": 848,
-      "scale": 2
-    },
-    {
-      "id": "IDZ3VoE3bNo",
-      "title": "082b / Syria / Teve\u0301ket Gyerekeke\u0301rt - Arabic/Hsub",
       "duration": 848,
       "scale": 2
     },
@@ -787,12 +553,6 @@
       "scale": 2
     },
     {
-      "id": "UrwKbdcn5DY",
-      "title": "Museum Da Vaz Februar 2024 Santa Maria",
-      "duration": 628,
-      "scale": 2
-    },
-    {
       "id": "BR5U-miBmt4",
       "title": "073 / WANG GUANGYI - Communism Pops - C",
       "duration": 610,
@@ -805,39 +565,15 @@
       "scale": 2
     },
     {
-      "id": "AWblTn9NeBQ",
-      "title": "081b / ZENG FANZHI / EMBER \u00e9s FENEDAD - Chinese/Hsub",
-      "duration": 593,
-      "scale": 2
-    },
-    {
       "id": "35EDsDp4aI0",
       "title": "081a / ZENG FANZHI / meat and mask - Chinese/Esub",
       "duration": 591,
       "scale": 2
     },
     {
-      "id": "f1FFHaB68UY",
-      "title": "043 Land Inside Me - Almaty",
-      "duration": 588,
-      "scale": 2
-    },
-    {
-      "id": "FKkFMCWm0HI",
-      "title": "042 Behind the Curtain - Interview H/E",
-      "duration": 560,
-      "scale": 2
-    },
-    {
       "id": "lBtqIR7eu5A",
       "title": "084 South Korea / Penis Parc - Korean/Esub",
       "duration": 517,
-      "scale": 2
-    },
-    {
-      "id": "otseQlbkGRE",
-      "title": "TIBET / Rongbuk Monastery",
-      "duration": 504,
       "scale": 2
     },
     {
@@ -850,18 +586,6 @@
       "id": "mlPRxM0RY3E",
       "title": "Fundaziun Da Vaz \u2013 Ein Einblick",
       "duration": 486,
-      "scale": 2
-    },
-    {
-      "id": "3teIj0Rttzg",
-      "title": "066 / The BEATLES in GEORGIA - Georgian/Esub",
-      "duration": 417,
-      "scale": 2
-    },
-    {
-      "id": "g_ynBcYgNoM",
-      "title": "092 / Tatra Tram in Kyiv, Ukraine",
-      "duration": 415,
       "scale": 2
     },
     {
@@ -883,45 +607,15 @@
       "scale": 2
     },
     {
-      "id": "HM8JI7LlMU0",
-      "title": "039a Kazakh Television / Interview - E",
-      "duration": 305,
-      "scale": 2
-    },
-    {
       "id": "ouzpBuJuCJk",
       "title": "039b Kazakh Television / Interview - R",
       "duration": 305,
       "scale": 2
     },
     {
-      "id": "M7pLqiSxJ8c",
-      "title": "Visual Thinking - inner landscapes - out of a black whole",
-      "duration": 286,
-      "scale": 2
-    },
-    {
-      "id": "Tg8RccQYnPA",
-      "title": "094 / Welcome to Ukraine",
-      "duration": 286,
-      "scale": 2
-    },
-    {
-      "id": "gJe-iNomJLk",
-      "title": "089 / Sberbank Kyiv",
-      "duration": 232,
-      "scale": 2
-    },
-    {
       "id": "V1k1xyzaGzY",
       "title": "067 / SOMETHING to SAY to the WORLD - Bests from Lis out of Kenya",
       "duration": 220,
-      "scale": 2
-    },
-    {
-      "id": "86Njsv89dlo",
-      "title": "Wunderblock",
-      "duration": 192,
       "scale": 2
     },
     {
@@ -958,18 +652,6 @@
       "id": "28sD05dtKzE",
       "title": "052ab ITZHAK FREY / Gedanken zur Gr\u00fcndung des Slowakischen Staates - D",
       "duration": 46,
-      "scale": 2
-    },
-    {
-      "id": "aV-BtCv_vzs",
-      "title": "052af David Frey / Kindheitserinnerungen",
-      "duration": 37,
-      "scale": 2
-    },
-    {
-      "id": "T5H9nBJ99SU",
-      "title": "Museum Elephant",
-      "duration": 29,
       "scale": 2
     },
     {
@@ -1017,12 +699,6 @@
     {
       "id": "8AW2b8VvDtk",
       "title": "hard BEAT",
-      "duration": 15,
-      "scale": 2
-    },
-    {
-      "id": "8Nj1D0wWu1I",
-      "title": "WUNDERBLOCK",
       "duration": 15,
       "scale": 2
     },
@@ -1081,20 +757,8 @@
       "scale": 2
     },
     {
-      "id": "QPQyVHtCyho",
-      "title": "CUTTING-EDGE",
-      "duration": 15,
-      "scale": 2
-    },
-    {
       "id": "RTcR_xd9S_I",
       "title": "CROSS BORDERS",
-      "duration": 15,
-      "scale": 2
-    },
-    {
-      "id": "RkRryabSdiw",
-      "title": "MATTER OF CHANCE",
       "duration": 15,
       "scale": 2
     },
@@ -1171,12 +835,6 @@
       "scale": 2
     },
     {
-      "id": "hFL_Ct-qBRI",
-      "title": "\ud83e\udd9c\ud83d\udc08\ud83d\udc1b\ud83e\udeb0\ud83e\udd85\ud83d\udc12\ud83d\udc38",
-      "duration": 15,
-      "scale": 2
-    },
-    {
       "id": "iLdhxG2KPoM",
       "title": "\ud83d\ude34DREAM \ud83d\udeccWORLD\ud83d\ude34",
       "duration": 15,
@@ -1197,12 +855,6 @@
     {
       "id": "qnQMFzoMsHA",
       "title": "At natives deep inside Kamchatka",
-      "duration": 15,
-      "scale": 2
-    },
-    {
-      "id": "vpNjxCy99Fs",
-      "title": "WE\ud83d\udd0dCANNOT\ud83d\udd0dIMAGINE",
       "duration": 15,
       "scale": 2
     },
@@ -1299,6 +951,34 @@
   ],
   "suggested_batch": [
     {
+      "id": "T0Z6t9zG0rw",
+      "title": "TRAPPED REALITY - Short Stories from Moscow",
+      "duration": 1864,
+      "definition": "sd",
+      "scale": 4
+    },
+    {
+      "id": "KMclVtn2aoc",
+      "title": "Republic of GEORGIA / KMARA -- ENOUGH! / THE ROSE REVOLUTION",
+      "duration": 1762,
+      "definition": "sd",
+      "scale": 4
+    },
+    {
+      "id": "0tapt-cyoSY",
+      "title": "KAMCHATKA / BEAR and FISH (English Edition)",
+      "duration": 1754,
+      "definition": "sd",
+      "scale": 4
+    },
+    {
+      "id": "j1J5t163asA",
+      "title": "KAZAKHSTAN / BALANCE of LIFE \u2013 BABUSHKA MASHA (English Edition)",
+      "duration": 1629,
+      "definition": "sd",
+      "scale": 4
+    },
+    {
       "id": "vVJAdgh-yxo",
       "title": "KAZAKHSTAN / EGYENS\u00daLYBAN \u2013 BABUSHKA MASHA (Hungarian Edition)",
       "duration": 1609,
@@ -1362,20 +1042,6 @@
       "scale": 4
     },
     {
-      "id": "cMvVKrXIN9Y",
-      "title": "024 CITY in MAKING",
-      "duration": 1289,
-      "definition": "sd",
-      "scale": 4
-    },
-    {
-      "id": "Z3JLO-Vpk5U",
-      "title": "ARCHITECTURE of a TRIAL",
-      "duration": 1282,
-      "definition": "sd",
-      "scale": 4
-    },
-    {
       "id": "bnbaapXPOjg",
       "title": "085 c / Maasai People",
       "duration": 1139,
@@ -1390,23 +1056,9 @@
       "scale": 4
     },
     {
-      "id": "NKXxfXK8qbI",
-      "title": "HONGKONG / MORPHOPOLIS",
-      "duration": 1080,
-      "definition": "sd",
-      "scale": 4
-    },
-    {
       "id": "6hUUJNMZKDw",
       "title": "KAMCHATKA / TOLBACHIK 1975-2005",
       "duration": 1029,
-      "definition": "sd",
-      "scale": 4
-    },
-    {
-      "id": "4_-BxRL1vFs",
-      "title": "005 pf-ERDE am HIMMEL",
-      "duration": 977,
       "definition": "sd",
       "scale": 4
     },

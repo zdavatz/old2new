@@ -13,9 +13,22 @@
 53711  0  # South Korea, KR — 1x RTX 5090
 46469  3924172  # New York, US — 1x RTX 5090 — AMD Ryzen Threadripper 7960X 24-Cores
 55712  3967641  # Texas — AMD Ryzen 9 7950X 16-Core Processor
-34847  4811052  # Ontario, CA — 1x RTX 5090 — AMD Ryzen 9 9950X 16-Core Processor
 45826  5156128  # Spain, ES — 1x RTX 5090 — AMD Ryzen 9 9950X 16-Core Processor
 45820  4854350  # Spain, ES — 1x RTX 5090 — AMD Ryzen 9 9950X 16-Core Processor
 43685  5223319  # Spain, ES — 1x RTX 5090 — AMD Ryzen 9 9950X 16-Core Processor
 55896  5067800  # Texas, US — 1x RTX 5090 — AMD Ryzen 9 9950X3D 16-Core Processor
 35097  4090982  # Quebec, CA — 1x RTX 5090 — AMD Ryzen 9 9950X 16-Core Processor
+45822  4231166  # Spain, ES — 1x RTX 5090 — AMD Ryzen 9 7950X 16-Core Processor
+33816  1518457  # Washington, US — 1x RTX 4090 — AMD EPYC 7402P 24-Core Processor
+19048  5257839  # Japan, JP — 1x RTX 5090 — AMD Ryzen 9 9950X 16-Core Processor
+45116  4735634  # Spain, ES — 1x RTX 5090 — AMD Ryzen 9 9950X 16-Core Processor
+53324  3829358  # Saskatchewan, CA — 1x RTX 5090 — AMD Ryzen 9 9950X 16-Core Processor
+58345  2636862  # France, FR — 4x RTX 4090 — AMD EPYC 74F3 24-Core Processor
+54425  3318882  # Virginia, US — 8x RTX 5090 — AMD EPYC 9474F 48-Core Processor
+49754  0  # Taiwan, TW —  — SLOW
+13918  2020737  # Germany, DE — 4x RTX 4090 — AMD EPYC 7763 64-Core Processor
+29567  2810996  # North Macedonia, MK — 4x RTX 4090 — AMD EPYC 9354 32-Core Processor
+39255  4137708  # Denmark, DK — 4x RTX 5090 — AMD Ryzen 9 7950X3D 16-Core Processor
+58244  1558403  # California, US — INTEL(R) XEON(R) GOLD 6530
+53881  5017830  # Slovakia, SK — 2x RTX 5090 — AMD Ryzen Threadripper PRO 9975WX 32-Cores
+34847  4998812  # Ontario, CA — 2x RTX 5090 — AMD Ryzen 9 9950X 16-Core Processor

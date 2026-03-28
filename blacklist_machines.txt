@@ -3,3 +3,11 @@
 28876  # Ontario, CA — aborted, never started
 46165  # Argentina, AR — aborted, never started
 11051  # Japan, JP — aborted, never started
+9062  # Japan, JP — aborted, never started
+58101  # The Netherlands, NL — aborted, never started
+42652  # Sichuan, CN — stuck loading, never started
+42696  # Sichuan, CN — aborted, never started
+54399  # , CN — aborted, never started
+34731  # Sichuan, CN — aborted, never started
+4129  # Norway, NO — aborted, never started
+58069  # Croatia, HR — aborted, never started
