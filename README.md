@@ -93,7 +93,11 @@ vastai set api-key YOUR_KEY
 # Update scripts + binaries on a running instance (auto-restarts via restart.sh)
 ./deploy.sh update 33326865
 
-# Soft update — upload scripts without restarting (safe for running upscales)
+# Swap a single binary without disturbing other processes (safe during ffmpeg/upscaling)
+./deploy.sh swap-binary 33326865 status_server    # restart dashboard only
+./deploy.sh swap-binary 33326865 gpu_scheduler    # restart scheduler only
+
+# Soft update — upload all scripts/binaries as .new without restarting anything
 ./deploy.sh update-soft 33326865 33379097 33459088
 
 # Destroy an instance
@@ -354,7 +358,7 @@ No code changes needed in `enhance_gpu.py` — just run multiple instances with 
 
 **Disk sizing for multi-GPU:** With 4 GPUs parallel, each GPU needs its own disk budget (total / 4). At 1920x1200 2x with 500GB: max ~5min per video. For short HD videos (<5min), 4x RTX 5090 at $1.35/hr on vast.ai Sichuan is ideal — processes 30 short videos in ~20min.
 
-**GPU Scheduler (Rust):** The `gpu_scheduler` binary replaces `multi_gpu_queue.sh`. It distributes GPUs **proportionally** across videos (2 videos + 4 GPUs = 2 GPUs per video, with segment splitting via `--start/--end` + `--gpu-id`). **Nearly-done detection**: videos with <2000 frames remaining get GPU 0 to finish while other GPUs start the next video. Frame count verification gate before reassembly prevents corrupt uploads. Built-in ffmpeg reassembly with brightness matching, YouTube upload. **Safety features**: upload lock file (`.uploaded`) prevents duplicate uploads; frames only deleted when more videos in queue (last video kept for manual YouTube verification); auto-destroy checks for running uploads/ffmpeg and unuploaded MKVs. **IMPORTANT**: always use `deploy.sh update` to deploy — never manually start processes.
+**GPU Scheduler (Rust):** The `gpu_scheduler` binary replaces `multi_gpu_queue.sh`. It distributes GPUs **proportionally** across videos (2 videos + 4 GPUs = 2 GPUs per video, with segment splitting via `--start/--end` + `--gpu-id`). **Nearly-done detection**: videos with <2000 frames remaining get GPU 0 to finish while other GPUs start the next video. Frame count verification gate before reassembly prevents corrupt uploads. Built-in ffmpeg reassembly with brightness matching, YouTube upload. **Safety features**: upload lock file (`.uploaded`) prevents duplicate uploads; frames only deleted when more videos in queue (last video kept for manual YouTube verification); auto-destroy checks for running uploads/ffmpeg and unuploaded MKVs. **IMPORTANT**: use `deploy.sh swap-binary` for safe updates during processing, or `deploy.sh update` for full restart. Never manually start processes. **Smart segment splitting**: distributes work by actual missing frames, not fixed 50/50 — prevents one GPU finishing early when prior runs completed its range.
 - **OOM-kill recovery** — detects killed processes (exit > 128) and retries the same video after 60s
 - **Auto YouTube upload + email** after each video (via Rust `youtube_upload` binary)
 
