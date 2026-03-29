@@ -143,6 +143,52 @@ if pgrep -x status_server > /dev/null; then echo "status_server restarted"; else
             done
             exit 0
             ;;
+        restart)
+            # Restart a process without uploading new binaries
+            # Usage: deploy.sh restart <instance_id> <process_name>
+            # Example: deploy.sh restart 33760528 gpu_scheduler
+            if [[ -z "${2:-}" || -z "${3:-}" ]]; then
+                echo "Usage: $0 restart <instance_id> <process_name>"
+                echo "  Kills the process (and its children) and restarts it."
+                echo "  No binaries are uploaded — uses what's already on the server."
+                echo ""
+                echo "  Processes: gpu_scheduler, preparer, status_server, youtube_upload"
+                exit 1
+            fi
+            RST_ID="$2"
+            RST_PROC="$3"
+            RST_URL=$(vastai ssh-url "$RST_ID" 2>/dev/null)
+            RST_HOST=$(echo "$RST_URL" | sed 's|ssh://root@||' | cut -d: -f1)
+            RST_PORT=$(echo "$RST_URL" | sed 's|ssh://root@||' | cut -d: -f2)
+            if [[ -z "$RST_HOST" ]]; then
+                echo "ERROR: Could not get SSH URL for instance $RST_ID"
+                exit 1
+            fi
+            RST_SSH="ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=10 root@$RST_HOST -p $RST_PORT"
+
+            echo "=== Restarting $RST_PROC on instance $RST_ID ==="
+
+            case "$RST_PROC" in
+                gpu_scheduler)
+                    $RST_SSH "killall gpu_scheduler python3 2>/dev/null; sleep 2; cd /root/json && for f in *.processing*; do [ -f \"\$f\" ] && mv \"\$f\" \$(echo \"\$f\" | sed 's/.processing.*//'); done; NUM=\$(nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null | wc -l); cd /root && nohup ./gpu_scheduler \$NUM >> /root/scheduler.log 2>&1 & sleep 2; pgrep -x gpu_scheduler && echo 'OK — gpu_scheduler restarted' || echo 'FAILED'" 2>/dev/null
+                    ;;
+                preparer)
+                    $RST_SSH "killall preparer 2>/dev/null; sleep 1; cd /root && nohup ./preparer >> /root/preparer.log 2>&1 & sleep 1; pgrep -x preparer && echo 'OK — preparer restarted' || echo 'FAILED'" 2>/dev/null
+                    ;;
+                status_server)
+                    $RST_SSH "killall status_server 2>/dev/null; sleep 1; cd /root && nohup ./status_server >> /root/status_server.log 2>&1 & sleep 1; pgrep -x status_server && echo 'OK — status_server restarted' || echo 'FAILED'" 2>/dev/null
+                    ;;
+                youtube_upload)
+                    $RST_SSH "pkill -f 'youtube_upload.*--watch' 2>/dev/null; sleep 1; cd /root && nohup ./youtube_upload --watch >> /root/upload.log 2>&1 & sleep 1; pgrep -f 'youtube_upload.*--watch' && echo 'OK — youtube_upload restarted' || echo 'FAILED'" 2>/dev/null
+                    ;;
+                *)
+                    echo "Unknown process: $RST_PROC"
+                    echo "Available: gpu_scheduler, preparer, status_server, youtube_upload"
+                    exit 1
+                    ;;
+            esac
+            exit 0
+            ;;
         swap-binary)
             # Swap a single binary without disturbing other processes
             # Usage: deploy.sh swap-binary <instance_id> <binary_name>
