@@ -81,8 +81,15 @@ fn main() {
                     continue;
                 }
 
+                // Check disk space before downloading (need at least 50GB free)
+                let free_gb = get_free_disk_gb("/");
+                if free_gb < 50 {
+                    eprintln!("[preparer] {} — skipping, only {}GB free (need 50GB+)", id, free_gb);
+                    continue;
+                }
+
                 // Prepare this video
-                eprintln!("[preparer] {} — starting download + extract", id);
+                eprintln!("[preparer] {} — starting download + extract ({}GB free)", id, free_gb);
                 let _ = fs::create_dir_all(&fi_dir);
                 let _ = fs::create_dir_all(work_dir.join("frames_out"));
 
@@ -170,4 +177,16 @@ fn count_frames(dir: &Path) -> u64 {
             s.starts_with("frame_") && s.ends_with(".png") && !s.contains(".tmp")
         })
         .count() as u64
+}
+
+fn get_free_disk_gb(path: &str) -> u64 {
+    Command::new("df").args(&["--output=avail", "-BG", path])
+        .output().ok()
+        .and_then(|o| {
+            String::from_utf8_lossy(&o.stdout)
+                .lines().last()
+                .and_then(|l| l.trim().strip_suffix('G'))
+                .and_then(|n| n.trim().parse::<u64>().ok())
+        })
+        .unwrap_or(0)
 }
