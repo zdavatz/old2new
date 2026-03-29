@@ -447,39 +447,21 @@ fn main() {
             continue;
         }
 
-        eprintln!("[scheduler] {} videos ready, {} GPUs", videos.len(), num_gpus);
+        eprintln!("[scheduler] {} videos ready, {} GPUs — processing first video with all GPUs", videos.len(), num_gpus);
 
-        // Distribute GPUs
-        let gpus_per = std::cmp::max(1, num_gpus / videos.len() as u32);
-        let mut gpu_idx = 0u32;
-        let mut assignments: Vec<Vec<u32>> = Vec::new();
-        for (i, _) in videos.iter().enumerate() {
-            let n = if i == videos.len() - 1 { num_gpus - gpu_idx } else { gpus_per };
-            let mut gpus = Vec::new();
-            for _ in 0..n {
-                if gpu_idx < num_gpus { gpus.push(gpu_idx); gpu_idx += 1; }
-            }
-            assignments.push(gpus);
-        }
+        // Process ONE video at a time with ALL GPUs (sequential, not parallel)
+        let vid = &videos[0];
+        let all_gpus: Vec<u32> = (0..num_gpus).collect();
+        eprintln!("[{}] All {} GPUs assigned", vid.id, num_gpus);
 
-        // Upscale all videos in parallel
-        let mut handles = Vec::new();
-        for (i, vid) in videos.iter().enumerate() {
-            let gpus = assignments[i].clone();
-            let v = vid.clone();
-            let c = Cfg {
-                home: cfg.home.clone(), json_dir: cfg.json_dir.clone(),
-                done_dir: cfg.done_dir.clone(), jobs_dir: cfg.jobs_dir.clone(),
-                num_gpus: gpus.len() as u32,
-            };
-            handles.push(thread::spawn(move || {
-                upscale_on_gpus(&c, &v, &gpus);
-            }));
-        }
-        for h in handles { let _ = h.join(); }
+        upscale_on_gpus(&cfg, vid, &all_gpus);
 
-        // Reassemble completed videos
-        for vid in &videos {
+        // Reassemble if complete
+        let fo_dir = cfg.jobs_dir.join(&vid.id).join("frames_out");
+        let fi_dir = cfg.jobs_dir.join(&vid.id).join("frames_in");
+        // Use videos slice for reassembly loop compatibility
+        let single = vec![vid.clone()];
+        for vid in &single {
             let fo_dir = cfg.jobs_dir.join(&vid.id).join("frames_out");
             let fi_dir = cfg.jobs_dir.join(&vid.id).join("frames_in");
             let count_out = count_frames(&fo_dir);
