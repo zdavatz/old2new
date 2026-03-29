@@ -377,6 +377,18 @@ async fn watch_and_upload(cli: &Cli) {
                     let now = Utc::now().to_rfc3339();
                     let _ = fs::write(&uploaded_lock, format!("uploaded_at={}\n", now));
                     eprintln!("[watch] {} uploaded successfully", vid_id);
+
+                    // Clean up frames to free disk for next video
+                    let fi_dir = job_dir.join("frames_in");
+                    let fo_dir = job_dir.join("frames_out");
+                    if fi_dir.exists() {
+                        let _ = fs::remove_dir_all(&fi_dir);
+                        eprintln!("[watch] {} deleted frames_in", vid_id);
+                    }
+                    if fo_dir.exists() {
+                        let _ = fs::remove_dir_all(&fo_dir);
+                        eprintln!("[watch] {} deleted frames_out", vid_id);
+                    }
                 } else {
                     eprintln!("[watch] {} upload FAILED — will retry next cycle", vid_id);
                 }
