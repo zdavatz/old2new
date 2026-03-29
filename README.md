@@ -94,8 +94,14 @@ vastai set api-key YOUR_KEY
 ./deploy.sh update 33326865
 
 # Swap a single binary without disturbing other processes (safe during ffmpeg/upscaling)
-./deploy.sh swap-binary 33326865 status_server    # restart dashboard only
-./deploy.sh swap-binary 33326865 gpu_scheduler    # restart scheduler only
+./deploy.sh swap-binary 33326865 status_server    # upload + restart dashboard only
+./deploy.sh swap-binary 33326865 gpu_scheduler    # upload + restart scheduler only
+
+# Restart a process without uploading binaries (no disk risk, uses existing binary)
+./deploy.sh restart 33326865 gpu_scheduler        # kills upscale.py children too
+./deploy.sh restart 33326865 preparer
+./deploy.sh restart 33326865 status_server
+./deploy.sh restart 33326865 youtube_upload
 
 # Soft update — upload all scripts/binaries as .new without restarting anything
 ./deploy.sh update-soft 33326865 33379097 33459088
