@@ -1036,7 +1036,7 @@ fi
 CREATE_RESULT=$(vastai create instance "$OFFER_ID" \
     --image "$DOCKER_IMAGE" \
     --disk "$DISK_GB" \
-    --label "davaz-${GPU_NAME,,}-${VIDEO_COUNT}vid" \
+    --label "davaz-$(echo "$GPU_NAME" | tr '[:upper:]' '[:lower:]')-${VIDEO_COUNT}vid" \
     --ssh --direct 2>&1)
 
 echo "$CREATE_RESULT"
@@ -1329,7 +1329,7 @@ echo "  Queue: $VIDEO_COUNT JSON files"
 
 # Instance metadata
 $SSH "cat > /root/instance_meta.json << EOF
-{\"label\": \"davaz-${GPU_NAME,,}-${VIDEO_COUNT}vid\", \"location\": \"$OFFER_LOCATION\", \"cost_per_hr\": $OFFER_PRICE, \"provider\": \"vast.ai\", \"instance_id\": \"$INSTANCE_ID\"}
+{\"label\": \"davaz-$(echo "$GPU_NAME" | tr '[:upper:]' '[:lower:]')-${VIDEO_COUNT}vid\", \"location\": \"$OFFER_LOCATION\", \"cost_per_hr\": $OFFER_PRICE, \"provider\": \"vast.ai\", \"instance_id\": \"$INSTANCE_ID\"}
 EOF" 2>/dev/null
 
 $SSH 'chmod +x /root/enhance.sh /root/multi_gpu_queue.sh /root/status_server /root/youtube_upload 2>/dev/null' 2>/dev/null
