@@ -65,9 +65,18 @@ fn main() {
                 let work_dir = jobs_dir.join(&id);
                 let fi_dir = work_dir.join("frames_in");
 
-                // Skip if frames already extracted
+                // Skip if frames already extracted — but ensure total_frames is in JSON
                 if fi_dir.exists() && count_frames(&fi_dir) > 0 {
-                    eprintln!("[preparer] {} — frames already exist ({})", id, count_frames(&fi_dir));
+                    let n = count_frames(&fi_dir);
+                    eprintln!("[preparer] {} — frames already exist ({})", id, n);
+                    // Write total_frames if missing (gpu_scheduler waits for this)
+                    if let Ok(mut j) = serde_json::from_str::<serde_json::Value>(&content) {
+                        if j.get("total_frames").is_none() {
+                            j["total_frames"] = serde_json::json!(n);
+                            let _ = fs::write(&json_path, serde_json::to_string_pretty(&j).unwrap_or_default());
+                            eprintln!("[preparer] {} — wrote total_frames={} to JSON", id, n);
+                        }
+                    }
                     prepared.insert(id);
                     continue;
                 }
