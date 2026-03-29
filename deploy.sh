@@ -1160,8 +1160,8 @@ if [[ "$bench_rating" == "TOO SLOW" ]]; then
     echo "  CPU is throttled or misconfigured (power-saving mode?)."
     echo "  RTX 5090 HD videos will be very slow (~0.1 fps instead of ~0.5 fps)."
     echo ""
-    read -p "  Continue anyway, or destroy instance? [c=continue / D=destroy] " cpu_choice
-    if [[ "$cpu_choice" != "c" && "$cpu_choice" != "C" ]]; then
+    read -p "  Continue anyway, or destroy instance? [C=continue / d=destroy] " cpu_choice
+    if [[ "$cpu_choice" == "d" || "$cpu_choice" == "D" ]]; then
         # Save slow benchmark score to cache — will show in future listings
         MACHINE_ID=$(vastai show instance "$INSTANCE_ID" --raw 2>/dev/null | python3 -c "import json,sys; print(json.load(sys.stdin).get('machine_id',''))" 2>/dev/null)
         if [[ -n "$MACHINE_ID" ]]; then
@@ -1333,8 +1333,8 @@ else
     echo "  SSH tunnel: ssh -p $SSH_PORT -L 8080:localhost:8080 root@$SSH_HOST"
     echo "  Then open: http://localhost:8080"
     echo ""
-    read -p "Continue with SSH tunnel, or destroy instance? [c=continue / D=destroy] " dash_choice
-    if [[ "$dash_choice" != "c" && "$dash_choice" != "C" ]]; then
+    read -p "Continue with SSH tunnel, or destroy instance? [C=continue / d=destroy] " dash_choice
+    if [[ "$dash_choice" == "d" || "$dash_choice" == "D" ]]; then
         echo "  Destroying instance $INSTANCE_ID..."
         vastai destroy instance "$INSTANCE_ID" 2>/dev/null
         echo "  Instance destroyed. Try a different host."
