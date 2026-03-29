@@ -195,6 +195,12 @@ if pgrep -x status_server > /dev/null; then echo "status_server restarted"; else
                     # Restore .processing queue files, detect GPU count, start
                     RESTART_CMD='cd /root/json && for f in *.processing*; do [ -f "$f" ] && mv "$f" $(echo "$f" | sed "s/.processing.*//"); done; NUM=$(nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null | wc -l); cd /root && nohup ./gpu_scheduler $NUM >> /root/scheduler.log 2>&1 &'
                     ;;
+                preparer)
+                    RESTART_CMD="cd /root && nohup ./$SWAP_BIN >> /root/preparer.log 2>&1 &"
+                    ;;
+                youtube_upload)
+                    RESTART_CMD="cd /root && nohup ./$SWAP_BIN --watch >> /root/upload.log 2>&1 &"
+                    ;;
                 *)
                     RESTART_CMD=""
                     ;;
