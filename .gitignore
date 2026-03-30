@@ -16,3 +16,4 @@ youtube_token.json
 *.zip
 status_server_rs/target/
 youtube_upload_rs/target/
+tk_push_rs/target/
