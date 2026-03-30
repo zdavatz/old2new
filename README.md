@@ -385,14 +385,17 @@ No process starts before the previous has confirmed via JSON. One JSON in → on
 ### TikTok Upload
 
 ```bash
-# First time: authenticate with TikTok
+# First time: authenticate with TikTok (opens browser for OAuth2 PKCE flow)
 ./tk_push_rs/target/release/tk_push --auth
 
-# Upload video
+# Upload video (direct post, requires approved app)
 ./tk_push_rs/target/release/tk_push video.mp4 --title "My Video" --privacy public
+
+# Upload to inbox/draft (sandbox/unaudited apps)
+./tk_push_rs/target/release/tk_push video.mp4 --title "My Video" --privacy self
 ```
 
-Rust binary (`tk_push`) using TikTok Content Posting API. OAuth2 auth with local callback, chunked upload (10MB) with progress, status polling until published. Credentials in `tiktok_credentials.json`, token in `tiktok_token.json`.
+Rust binary (`tk_push`) using TikTok Content Posting API. OAuth2 PKCE auth (S256 with hex-encoded SHA256 — TikTok deviates from RFC 7636 base64url). Local callback server on port 8091, auto-kills stale listeners. Chunked upload with progress (single chunk up to 64MB, 10MB chunks for larger files). Status polling until published. Sandbox apps must use `--privacy self` (inbox/draft endpoint). Credentials in `tiktok_credentials.json`, token in `tiktok_token.json`. Writes PID to `~/tk_push.pid`.
 
 The batch-of-N anti-pattern (`wait` for all 4 GPUs, then start next 4) wastes GPU time — fast-finishing GPUs sit idle waiting for the slowest one. On a 4x RTX 5090 instance at $1.35/hr, this caused 3 GPUs to idle for 2+ hours (~$2.70 wasted). The flock-based queue keeps all GPUs busy continuously.
 

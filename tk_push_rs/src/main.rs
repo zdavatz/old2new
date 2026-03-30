@@ -7,8 +7,11 @@
 //! Requires: client_key + client_secret in tiktok_credentials.json
 //! Token saved to tiktok_token.json
 
+use base64::Engine;
 use clap::Parser;
+use rand::Rng;
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::env;
 use std::fs;
 use std::io::Read;
@@ -130,6 +133,11 @@ const REDIRECT_URI: &str = "http://localhost:8091/callback";
 
 #[tokio::main]
 async fn main() {
+    // Write PID file
+    let pid = std::process::id();
+    let pid_path = format!("{}/tk_push.pid", env::var("HOME").unwrap_or_else(|_| "/root".to_string()));
+    fs::write(&pid_path, pid.to_string()).ok();
+
     let cli = Cli::parse();
 
     if cli.auth {
@@ -183,27 +191,53 @@ async fn main() {
     eprintln!("Privacy: {}", privacy);
 
     // Step 1: Initialize upload
-    let chunk_size: u64 = 10 * 1024 * 1024; // 10 MB chunks
-    let total_chunks = if file_size <= chunk_size { 1 } else { file_size / chunk_size + if file_size % chunk_size > 0 { 1 } else { 0 } };
+    // TikTok: min 5MB/chunk (except final), max 64MB/chunk
+    // total_chunk_count = floor(video_size / chunk_size), final chunk absorbs remainder
+    let (chunk_size, total_chunks) = if file_size <= 64 * 1024 * 1024 {
+        // Single chunk for files up to 64MB
+        (file_size, 1u64)
+    } else {
+        let cs = 10 * 1024 * 1024u64; // 10 MB
+        (cs, file_size / cs)
+    };
 
     let client = reqwest::Client::new();
 
-    let init_body = serde_json::json!({
-        "post_info": {
-            "title": title,
-            "privacy_level": privacy,
-        },
-        "source_info": {
-            "source": "FILE_UPLOAD",
-            "video_size": file_size,
-            "chunk_size": chunk_size,
-            "total_chunk_count": total_chunks,
-        }
-    });
+    // Use inbox endpoint for sandbox/unaudited apps, direct post for approved apps
+    let use_inbox = privacy == "SELF_ONLY";
+    let init_body = if use_inbox {
+        // Inbox (draft) upload — no post_info needed
+        serde_json::json!({
+            "source_info": {
+                "source": "FILE_UPLOAD",
+                "video_size": file_size,
+                "chunk_size": chunk_size,
+                "total_chunk_count": total_chunks,
+            }
+        })
+    } else {
+        serde_json::json!({
+            "post_info": {
+                "title": title,
+                "privacy_level": privacy,
+            },
+            "source_info": {
+                "source": "FILE_UPLOAD",
+                "video_size": file_size,
+                "chunk_size": chunk_size,
+                "total_chunk_count": total_chunks,
+            }
+        })
+    };
 
-    eprintln!("Initializing upload ({} chunks)...", total_chunks);
+    let init_url = if use_inbox {
+        "https://open.tiktokapis.com/v2/post/publish/inbox/video/init/"
+    } else {
+        "https://open.tiktokapis.com/v2/post/publish/video/init/"
+    };
+    eprintln!("Initializing upload ({} chunks, {})...", total_chunks, if use_inbox { "inbox/draft" } else { "direct post" });
     let init_resp = client
-        .post("https://open.tiktokapis.com/v2/post/publish/video/init/")
+        .post(init_url)
         .header("Authorization", format!("Bearer {}", token.access_token))
         .header("Content-Type", "application/json; charset=UTF-8")
         .json(&init_body)
@@ -318,17 +352,41 @@ async fn auth_flow(cli: &Cli) {
         std::process::exit(1);
     });
 
+    // Generate PKCE code_verifier and code_challenge (RFC 7636, S256)
+    let code_verifier: String = {
+        let mut rng = rand::thread_rng();
+        (0..43).map(|_| {
+            let idx = rng.gen_range(0..62);
+            b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789"[idx] as char
+        }).collect()
+    };
+    let code_challenge = {
+        let hash = Sha256::digest(code_verifier.as_bytes());
+        // TikTok requires HEX encoding of SHA256, NOT base64url
+        hash.iter().map(|b| format!("{:02x}", b)).collect::<String>()
+    };
+
+    eprintln!("code_verifier: {}", code_verifier);
+    eprintln!("code_challenge: {}", code_challenge);
+
     // Step 1: Open browser for authorization
     let auth_url = format!(
-        "https://www.tiktok.com/v2/auth/authorize/?client_key={}&scope=video.publish,video.upload&response_type=code&redirect_uri={}",
-        creds.client_key, REDIRECT_URI
+        "https://www.tiktok.com/v2/auth/authorize/?client_key={}&scope=video.publish,video.upload&response_type=code&redirect_uri={}&code_challenge={}&code_challenge_method=S256",
+        creds.client_key, REDIRECT_URI, code_challenge
     );
 
-    eprintln!("Opening browser for TikTok authorization...");
-    eprintln!("If browser doesn't open, visit:\n{}\n", auth_url);
-    let _ = open::that(&auth_url);
+    eprintln!("\nCopy and paste this URL into your browser:\n{}\n", auth_url);
 
-    // Step 2: Start local server to receive callback
+    // Step 2: Start local server to receive callback (kill stale listener first)
+    if let Ok(output) = std::process::Command::new("lsof").args(["-ti:8091"]).output() {
+        if !output.stdout.is_empty() {
+            let pids = String::from_utf8_lossy(&output.stdout);
+            for pid in pids.trim().lines() {
+                let _ = std::process::Command::new("kill").args(["-9", pid.trim()]).output();
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        }
+    }
     eprintln!("Waiting for callback on {}...", REDIRECT_URI);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:8091")
         .await
@@ -341,41 +399,57 @@ async fn auth_flow(cli: &Cli) {
     let request = String::from_utf8_lossy(&buf[..n]);
 
     // Extract code from GET /callback?code=XXX
-    let code = request
-        .split("code=").nth(1)
-        .and_then(|s| s.split(|c: char| c == '&' || c == ' ' || c == '\r' || c == '\n').next())
-        .unwrap_or("");
+    eprintln!("DEBUG: raw request:\n{}", request);
+
+    // Parse query string properly - find ?code= or &code= to avoid matching code_challenge
+    let query = request.split('?').nth(1).unwrap_or("");
+    let query = query.split(' ').next().unwrap_or(query); // cut at HTTP/1.1
+    let code: String = query.split('&')
+        .find(|p| p.starts_with("code="))
+        .and_then(|p| p.strip_prefix("code="))
+        .unwrap_or("")
+        .to_string();
+    // URL-decode the code (TikTok docs say code should be URL-decoded before sending)
+    let code = urlencoding::decode(&code).unwrap_or(std::borrow::Cow::Borrowed(&code)).to_string();
 
     if code.is_empty() {
         eprintln!("ERROR: No authorization code received");
         std::process::exit(1);
     }
 
+    eprintln!("DEBUG: extracted code={}", code);
+
     // Send response to browser
     let response = "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\n\r\n<h1>TikTok authorized! You can close this window.</h1>";
     tokio::io::AsyncWriteExt::write_all(&mut socket, response.as_bytes()).await.ok();
 
     eprintln!("Authorization code received. Exchanging for token...");
+    eprintln!("DEBUG: sending code_verifier={}", code_verifier);
+    eprintln!("DEBUG: sending code={}", code);
 
-    // Step 3: Exchange code for token
+    // Step 3: Exchange code for token via curl for exact control
     let client = reqwest::Client::new();
-    let token_resp = client
-        .post("https://open.tiktokapis.com/v2/oauth/token/")
-        .header("Content-Type", "application/x-www-form-urlencoded")
-        .body(format!(
-            "client_key={}&client_secret={}&code={}&grant_type=authorization_code&redirect_uri={}",
-            creds.client_key, creds.client_secret, code, REDIRECT_URI
-        ))
-        .send()
-        .await
-        .expect("token request failed");
-
-    let token_text = token_resp.text().await.expect("read token response");
+    // Use curl subprocess for exact --data-urlencode behavior
+    let curl_output = std::process::Command::new("curl")
+        .args(["--silent", "--location", "--request", "POST",
+            "https://open.tiktokapis.com/v2/oauth/token/",
+            "--header", "Content-Type: application/x-www-form-urlencoded",
+            "--header", "Cache-Control: no-cache",
+            "--data-urlencode", &format!("client_key={}", creds.client_key),
+            "--data-urlencode", &format!("client_secret={}", creds.client_secret),
+            "--data-urlencode", &format!("code={}", code),
+            "--data-urlencode", "grant_type=authorization_code",
+            "--data-urlencode", &format!("redirect_uri={}", REDIRECT_URI),
+            "--data-urlencode", &format!("code_verifier={}", code_verifier),
+        ])
+        .output()
+        .expect("curl failed");
+    let token_text = String::from_utf8_lossy(&curl_output.stdout).to_string();
+    eprintln!("DEBUG: curl response: {}", token_text);
     let token_data: serde_json::Value = serde_json::from_str(&token_text).unwrap_or_else(|e| {
         eprintln!("ERROR: Failed to parse token response: {}\n{}", e, token_text);
         std::process::exit(1);
     });
-
     if let Some(err) = token_data.get("error").and_then(|e| e.as_str()) {
         if err != "ok" {
             eprintln!("ERROR: Token exchange failed: {}", token_text);
