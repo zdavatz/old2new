@@ -12,7 +12,7 @@ use hyper::Client;
 use hyper_rustls::HttpsConnector;
 use serde::{Deserialize, Serialize};
 use std::fs;
-use std::io::Write;
+use std::io::{Read as IoRead, Seek, SeekFrom, Write};
 use std::env;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -426,6 +426,45 @@ fn find_output_mkv(job_dir: &Path) -> Option<PathBuf> {
         })
 }
 
+/// File reader that prints upload progress to stderr
+struct ProgressReader {
+    inner: fs::File,
+    total: u64,
+    read_so_far: u64,
+    last_pct: u64,
+    job_name: String,
+}
+
+impl ProgressReader {
+    fn new(file: fs::File, total: u64, job_name: &str) -> Self {
+        Self { inner: file, total, read_so_far: 0, last_pct: 0, job_name: job_name.to_string() }
+    }
+}
+
+impl IoRead for ProgressReader {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        let n = self.inner.read(buf)?;
+        self.read_so_far += n as u64;
+        let pct = if self.total > 0 { self.read_so_far * 100 / self.total } else { 0 };
+        if pct != self.last_pct {
+            self.last_pct = pct;
+            let mb_done = self.read_so_far / (1024 * 1024);
+            let mb_total = self.total / (1024 * 1024);
+            // Print progress — status_server parses "Uploading: 45%" pattern
+            eprint!("\r[{}] Uploading: {}% ({}/{}MB)    ", self.job_name, pct, mb_done, mb_total);
+        }
+        Ok(n)
+    }
+}
+
+impl Seek for ProgressReader {
+    fn seek(&mut self, pos: SeekFrom) -> std::io::Result<u64> {
+        let result = self.inner.seek(pos)?;
+        self.read_so_far = result;
+        Ok(result)
+    }
+}
+
 #[tokio::main]
 async fn main() {
     let cli = Cli::parse();
@@ -561,6 +600,7 @@ async fn main() {
         eprintln!("ERROR: Cannot open file: {}", e);
         std::process::exit(1);
     });
+    let progress_reader = ProgressReader::new(file_reader, file_size, &video_id);
 
     let mime_type: mime::Mime = "video/x-matroska"
         .parse()
@@ -569,7 +609,7 @@ async fn main() {
     let result = hub
         .videos()
         .insert(video)
-        .upload_resumable(file_reader, mime_type)
+        .upload_resumable(progress_reader, mime_type)
         .await;
 
     let upload_elapsed = upload_start.elapsed();
