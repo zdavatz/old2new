@@ -252,8 +252,8 @@ if pgrep -x status_server > /dev/null; then echo "status_server restarted"; else
                     ;;
             esac
 
-            # Stop, swap, restart
-            $SWAP_SSH "pkill -x $SWAP_BIN 2>/dev/null; sleep 1; mv -f /root/${SWAP_BIN}.new /root/$SWAP_BIN; chmod +x /root/$SWAP_BIN; echo '  Binary swapped'" 2>/dev/null
+            # Stop, swap, restart — kill by PID for reliability
+            $SWAP_SSH "PID=\$(pgrep -f $SWAP_BIN | head -5 | tr '\n' ' '); if [ -n \"\$PID\" ]; then kill \$PID 2>/dev/null; echo \"  Killed PID: \$PID\"; sleep 2; fi; mv -f /root/${SWAP_BIN}.new /root/$SWAP_BIN; chmod +x /root/$SWAP_BIN; echo '  Binary swapped'" 2>/dev/null
             if [[ -n "$RESTART_CMD" ]]; then
                 $SWAP_SSH "$RESTART_CMD; sleep 1; pgrep -x $SWAP_BIN > /dev/null && echo '  $SWAP_BIN restarted' || echo '  ERROR: $SWAP_BIN failed'" 2>/dev/null
             else
