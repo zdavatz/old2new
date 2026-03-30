@@ -141,7 +141,7 @@ The script automatically:
 
 #### Dashboard (Rust)
 
-Each instance runs a Rust dashboard binary (`status_server`) on port 8080, showing real-time progress for all pipeline phases. The binary is cross-compiled and deployed via `deploy.sh update`. On instances with older glibc (e.g. `pytorch:2.1.0-cuda12.1`), build on the server: `apt install gcc pkg-config libssl-dev git && curl -sSf https://sh.rustup.rs | sh -s -- -y && git clone https://github.com/zdavatz/old2new.git && cd old2new/status_server_rs && cargo build --release && cp target/release/status_server ~/`.
+Each instance runs a Rust dashboard binary (`status_server`) on port 8080, showing real-time progress for all pipeline phases. The binary is cross-compiled and deployed via `deploy.sh update`. `restart.sh` auto-detects glibc incompatibility and falls back to Docker image binaries (`/usr/local/bin/`) — works on both slim (glibc 2.39) and compat (glibc 2.35) images. Upload progress is shown via `youtube_upload` ProgressReader output parsed from `upload.log`.
 
 | Phase | Progress shown |
 |-------|---------------|
