@@ -382,6 +382,18 @@ No process starts before the previous has confirmed via JSON. One JSON in → on
 - **gpu_scheduler** (Rust) — Distributes GPUs proportionally, runs `upscale.py` with smart segment splitting (by actual missing frames), reassembles with ffmpeg + brightness matching. Frame count verification gate prevents corrupt videos.
 - **youtube_upload --watch** (Rust) — Uploads to YouTube, sends email to juerg@davaz.com, writes `.uploaded` lock. Also works in single mode: `youtube_upload <file> --video-id=<id>`.
 
+### TikTok Upload
+
+```bash
+# First time: authenticate with TikTok
+./tk_push_rs/target/release/tk_push --auth
+
+# Upload video
+./tk_push_rs/target/release/tk_push video.mp4 --title "My Video" --privacy public
+```
+
+Rust binary (`tk_push`) using TikTok Content Posting API. OAuth2 auth with local callback, chunked upload (10MB) with progress, status polling until published. Credentials in `tiktok_credentials.json`, token in `tiktok_token.json`.
+
 The batch-of-N anti-pattern (`wait` for all 4 GPUs, then start next 4) wastes GPU time — fast-finishing GPUs sit idle waiting for the slowest one. On a 4x RTX 5090 instance at $1.35/hr, this caused 3 GPUs to idle for 2+ hours (~$2.70 wasted). The flock-based queue keeps all GPUs busy continuously.
 
 **OOM-Kill recovery:** With 4 parallel HD videos (1920x1200), RAM usage can hit 400GB+ and Linux OOM-killer may kill processes. Do NOT use `/proc/environ` to detect GPU assignments — it has race conditions (new process hasn't set `CUDA_VISIBLE_DEVICES` yet when monitor checks, causing 2 processes on same GPU). Use **PID-files per GPU** instead.
