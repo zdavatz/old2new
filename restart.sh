@@ -35,7 +35,7 @@ echo "Remaining: $REMAINING processes"
 echo ""
 echo "=== Replacing binaries ==="
 # Test .new binaries before replacing — avoid overwriting working binary with glibc-incompatible one
-for bin in status_server youtube_upload enhance frame_gap_check rebalance_calc; do
+for bin in status_server youtube_upload enhance frame_gap_check rebalance_calc gpu_scheduler preparer; do
     if [ -f "/root/${bin}.new" ]; then
         if ldd "/root/${bin}.new" 2>&1 | grep -q "not found"; then
             rm -f "/root/${bin}.new"
