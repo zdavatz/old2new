@@ -170,16 +170,16 @@ if pgrep -x status_server > /dev/null; then echo "status_server restarted"; else
 
             case "$RST_PROC" in
                 gpu_scheduler)
-                    $RST_SSH "killall gpu_scheduler python3 2>/dev/null; sleep 2; cd /root/json && for f in *.processing*; do [ -f \"\$f\" ] && mv \"\$f\" \$(echo \"\$f\" | sed 's/.processing.*//'); done; NUM=\$(nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null | wc -l); cd /root && nohup ./gpu_scheduler \$NUM >> /root/scheduler.log 2>&1 & sleep 2; pgrep -x gpu_scheduler && echo 'OK — gpu_scheduler restarted' || echo 'FAILED'" 2>/dev/null
+                    $RST_SSH "if [ -f /root/gpu_scheduler.pid ]; then kill \$(cat /root/gpu_scheduler.pid) 2>/dev/null; fi; killall gpu_scheduler python3 2>/dev/null; sleep 2; cd /root/json && for f in *.processing*; do [ -f \"\$f\" ] && mv \"\$f\" \$(echo \"\$f\" | sed 's/.processing.*//'); done; NUM=\$(nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null | wc -l); cd /root && nohup ./gpu_scheduler \$NUM >> /root/scheduler.log 2>&1 & echo \$! > /root/gpu_scheduler.pid; sleep 2; echo \"OK — gpu_scheduler restarted (PID \$(cat /root/gpu_scheduler.pid))\"" 2>/dev/null
                     ;;
                 preparer)
-                    $RST_SSH "killall preparer 2>/dev/null; sleep 1; cd /root && nohup ./preparer >> /root/preparer.log 2>&1 & sleep 1; pgrep -x preparer && echo 'OK — preparer restarted' || echo 'FAILED'" 2>/dev/null
+                    $RST_SSH "if [ -f /root/preparer.pid ]; then kill \$(cat /root/preparer.pid) 2>/dev/null; fi; killall preparer 2>/dev/null; sleep 1; cd /root && nohup ./preparer >> /root/preparer.log 2>&1 & echo \$! > /root/preparer.pid; sleep 1; echo \"OK — preparer restarted (PID \$(cat /root/preparer.pid))\"" 2>/dev/null
                     ;;
                 status_server)
-                    $RST_SSH "killall status_server 2>/dev/null; sleep 1; cd /root && nohup ./status_server >> /root/status_server.log 2>&1 & sleep 1; pgrep -x status_server && echo 'OK — status_server restarted' || echo 'FAILED'" 2>/dev/null
+                    $RST_SSH "if [ -f /root/status_server.pid ]; then kill \$(cat /root/status_server.pid) 2>/dev/null; fi; killall status_server 2>/dev/null; sleep 1; cd /root && nohup ./status_server >> /root/status_server.log 2>&1 & echo \$! > /root/status_server.pid; sleep 1; echo \"OK — status_server restarted (PID \$(cat /root/status_server.pid))\"" 2>/dev/null
                     ;;
                 youtube_upload)
-                    $RST_SSH "pkill -f 'youtube_upload.*--watch' 2>/dev/null; sleep 1; cd /root && nohup ./youtube_upload --watch >> /root/upload.log 2>&1 & sleep 1; pgrep -f 'youtube_upload.*--watch' && echo 'OK — youtube_upload restarted' || echo 'FAILED'" 2>/dev/null
+                    $RST_SSH "if [ -f /root/youtube_upload.pid ]; then kill \$(cat /root/youtube_upload.pid) 2>/dev/null; fi; pkill -f 'youtube_upload.*--watch' 2>/dev/null; sleep 1; cd /root && nohup ./youtube_upload --watch >> /root/upload.log 2>&1 & echo \$! > /root/youtube_upload.pid; sleep 1; echo \"OK — youtube_upload restarted (PID \$(cat /root/youtube_upload.pid))\"" 2>/dev/null
                     ;;
                 *)
                     echo "Unknown process: $RST_PROC"
@@ -252,10 +252,10 @@ if pgrep -x status_server > /dev/null; then echo "status_server restarted"; else
                     ;;
             esac
 
-            # Stop, swap, restart — kill by PID for reliability
-            $SWAP_SSH "PID=\$(pgrep -f $SWAP_BIN | head -5 | tr '\n' ' '); if [ -n \"\$PID\" ]; then kill \$PID 2>/dev/null; echo \"  Killed PID: \$PID\"; sleep 2; fi; mv -f /root/${SWAP_BIN}.new /root/$SWAP_BIN; chmod +x /root/$SWAP_BIN; echo '  Binary swapped'" 2>/dev/null
+            # Stop, swap, restart — kill by PID file first, then pgrep fallback
+            $SWAP_SSH "if [ -f /root/${SWAP_BIN}.pid ]; then kill \$(cat /root/${SWAP_BIN}.pid) 2>/dev/null && echo \"  Killed PID \$(cat /root/${SWAP_BIN}.pid) (from .pid)\"; rm -f /root/${SWAP_BIN}.pid; else PID=\$(pgrep -f $SWAP_BIN | head -5 | tr '\n' ' '); if [ -n \"\$PID\" ]; then kill \$PID 2>/dev/null; echo \"  Killed PID: \$PID\"; fi; fi; sleep 2; mv -f /root/${SWAP_BIN}.new /root/$SWAP_BIN; chmod +x /root/$SWAP_BIN; echo '  Binary swapped'" 2>/dev/null
             if [[ -n "$RESTART_CMD" ]]; then
-                $SWAP_SSH "$RESTART_CMD; sleep 1; pgrep -x $SWAP_BIN > /dev/null && echo '  $SWAP_BIN restarted' || echo '  ERROR: $SWAP_BIN failed'" 2>/dev/null
+                $SWAP_SSH "$RESTART_CMD echo \$! > /root/${SWAP_BIN}.pid; sleep 1; kill -0 \$(cat /root/${SWAP_BIN}.pid 2>/dev/null) 2>/dev/null && echo '  $SWAP_BIN restarted (PID '\$(cat /root/${SWAP_BIN}.pid)')' || echo '  ERROR: $SWAP_BIN failed'" 2>/dev/null
             else
                 echo "  Binary replaced (no auto-restart for $SWAP_BIN — starts on next use)"
             fi

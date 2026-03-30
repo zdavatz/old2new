@@ -12,16 +12,24 @@ cd /root
 NUM_GPUS="${1:-}"
 
 echo "=== Killing all processes ==="
-# Get ALL PIDs in one shot, kill them all
-PIDS=$(pgrep -f 'status_server|gpu_scheduler|preparer|multi_gpu_queue|enhance.sh|/root/enhance|enhance_gpu.py|upscale.py|youtube_upload.*--watch|korea_single' 2>/dev/null | grep -v "^$$\$" || true)
+# Kill by PID files first (reliable)
+for pidfile in /root/status_server.pid /root/gpu_scheduler.pid /root/preparer.pid /root/youtube_upload.pid; do
+    if [[ -f "$pidfile" ]]; then
+        PID=$(cat "$pidfile")
+        kill -9 "$PID" 2>/dev/null && echo "  Killed $(basename $pidfile .pid) (PID $PID)"
+        rm -f "$pidfile"
+    fi
+done
+# Also kill any remaining processes not tracked by PID files
+PIDS=$(pgrep -f 'status_server|gpu_scheduler|preparer|multi_gpu_queue|enhance.sh|/root/enhance|enhance_gpu.py|upscale.py|youtube_upload|korea_single' 2>/dev/null | grep -v "^$$\$" || true)
 if [[ -n "$PIDS" ]]; then
     echo "$PIDS" | xargs kill -9 2>/dev/null
-    echo "Killed: $PIDS"
-    sleep 3
+    echo "  Killed remaining: $PIDS"
 fi
+sleep 3
 
 # Verify
-REMAINING=$(pgrep -f 'status_server|multi_gpu_queue|enhance|upscale' 2>/dev/null | wc -l)
+REMAINING=$(pgrep -f 'status_server|multi_gpu_queue|enhance|upscale|preparer|youtube_upload' 2>/dev/null | wc -l)
 echo "Remaining: $REMAINING processes"
 
 echo ""
@@ -66,9 +74,10 @@ echo "  Queue: $(ls /root/json/*.json 2>/dev/null | wc -l) JSON files"
 echo ""
 echo "=== Starting status_server ==="
 nohup ./status_server >> /root/status_server.log 2>&1 &
+echo $! > /root/status_server.pid
 sleep 2
-if pgrep -x status_server > /dev/null; then
-    echo "  OK (PID $(pgrep -x status_server))"
+if kill -0 $(cat /root/status_server.pid) 2>/dev/null; then
+    echo "  OK (PID $(cat /root/status_server.pid))"
 else
     echo "  FAILED — check /root/status_server.log"
 fi
@@ -83,9 +92,10 @@ echo ""
 echo "=== Starting preparer ==="
 if [[ -x /root/preparer ]]; then
     nohup ./preparer >> /root/preparer.log 2>&1 &
+    echo $! > /root/preparer.pid
     sleep 1
-    if pgrep -x preparer > /dev/null; then
-        echo "  OK (PID $(pgrep -x preparer | head -1))"
+    if kill -0 $(cat /root/preparer.pid) 2>/dev/null; then
+        echo "  OK (PID $(cat /root/preparer.pid))"
     else
         echo "  FAILED — check /root/preparer.log"
     fi
@@ -96,9 +106,10 @@ fi
 # Start gpu_scheduler (upscale + reassemble)
 if [[ -x /root/gpu_scheduler ]]; then
     nohup ./gpu_scheduler "$NUM_GPUS" >> /root/scheduler.log 2>&1 &
+    echo $! > /root/gpu_scheduler.pid
     sleep 2
-    if pgrep -x gpu_scheduler > /dev/null; then
-        echo "  OK — $NUM_GPUS GPUs via gpu_scheduler (PID $(pgrep -x gpu_scheduler | head -1))"
+    if kill -0 $(cat /root/gpu_scheduler.pid) 2>/dev/null; then
+        echo "  OK — $NUM_GPUS GPUs via gpu_scheduler (PID $(cat /root/gpu_scheduler.pid))"
     else
         echo "  gpu_scheduler FAILED, falling back to multi_gpu_queue.sh"
         nohup ./multi_gpu_queue.sh "$NUM_GPUS" >> /root/enhance.log 2>&1 &
@@ -119,9 +130,10 @@ echo ""
 echo "=== Starting youtube_upload --watch ==="
 if [[ -x /root/youtube_upload ]]; then
     nohup ./youtube_upload --watch >> /root/upload.log 2>&1 &
+    echo $! > /root/youtube_upload.pid
     sleep 1
-    if pgrep -f "youtube_upload.*--watch" > /dev/null; then
-        echo "  OK (PID $(pgrep -f 'youtube_upload.*--watch' | head -1))"
+    if kill -0 $(cat /root/youtube_upload.pid) 2>/dev/null; then
+        echo "  OK (PID $(cat /root/youtube_upload.pid))"
     else
         echo "  FAILED — check /root/upload.log"
     fi
