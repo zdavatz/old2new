@@ -11,3 +11,13 @@
 34731  # Sichuan, CN — aborted, never started
 4129  # Norway, NO — aborted, never started
 58069  # Croatia, HR — aborted, never started
+56079  # Germany, DE — aborted, never started
+58883  # Vietnam, VN — aborted, never started
+22955  # Bulgaria, BG — stuck loading, never started
+25430  # Sichuan, CN — aborted, never started
+47421  # Nebraska, US — aborted, never started
+26475  # Taiwan, TW — stuck loading, never started
+53123  # , CN — aborted, never started
+22972  # Taiwan, TW — aborted, never started
+19781  # Quebec, CA — aborted, never started
+26013  # Sichuan, CN — aborted, never started
