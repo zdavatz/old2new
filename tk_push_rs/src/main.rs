@@ -321,7 +321,7 @@ async fn main() {
                 if let Ok(status) = serde_json::from_str::<StatusResponse>(&text) {
                     if let Some(data) = &status.data {
                         eprint!("\r  Status: {}    ", data.status);
-                        if data.status == "PUBLISH_COMPLETE" {
+                        if data.status == "PUBLISH_COMPLETE" || data.status == "SEND_TO_USER_INBOX" {
                             eprintln!("\n\nUpload complete!");
                             break;
                         } else if data.status.contains("FAILED") || data.status.contains("ERROR") {

@@ -397,6 +397,30 @@ No process starts before the previous has confirmed via JSON. One JSON in → on
 
 Rust binary (`tk_push`) using TikTok Content Posting API. OAuth2 PKCE auth (S256 with hex-encoded SHA256 — TikTok deviates from RFC 7636 base64url). Local callback server on port 8091, auto-kills stale listeners. Chunked upload with progress (single chunk up to 64MB, 10MB chunks for larger files). Status polling until published. Sandbox apps must use `--privacy self` (inbox/draft endpoint). Credentials in `tiktok_credentials.json`, token in `tiktok_token.json`. Writes PID to `~/tk_push.pid`.
 
+### LinkedIn Upload
+
+```bash
+# First time: authenticate with LinkedIn (opens browser for OAuth2 + OpenID Connect)
+./li_push_rs/target/release/li_push --auth
+
+# Upload local video
+./li_push_rs/target/release/li_push video.mp4 --title "My Video"
+
+# Upload from YouTube URL (auto-downloads via yt-dlp, copies title + description)
+./li_push_rs/target/release/li_push "https://www.youtube.com/watch?v=VIDEO_ID"
+
+# Upload from YouTube video ID
+./li_push_rs/target/release/li_push VIDEO_ID
+
+# Lower quality if video exceeds 500MB LinkedIn limit
+./li_push_rs/target/release/li_push VIDEO_ID --low-quality
+
+# Friends only
+./li_push_rs/target/release/li_push video.mp4 --title "My Video" --visibility CONNECTIONS
+```
+
+Rust binary (`li_push`) using LinkedIn Videos API + Posts API. OAuth2 auth with OpenID Connect (person ID from JWT id_token). Local callback on port 8092. 4-step upload: initialize → chunked upload (4MB parts with ETags) → finalize → create post. Supports YouTube URL/ID as input — auto-downloads via yt-dlp with title/description. Pre-checks duration (max 30 min) and filesize (max 500MB). `--low-quality` for 1080p fallback. Shows post URL after publish. Credentials in `linkedin_credentials.json`, token in `linkedin_token.json`. Writes PID to `~/li_push.pid`.
+
 The batch-of-N anti-pattern (`wait` for all 4 GPUs, then start next 4) wastes GPU time — fast-finishing GPUs sit idle waiting for the slowest one. On a 4x RTX 5090 instance at $1.35/hr, this caused 3 GPUs to idle for 2+ hours (~$2.70 wasted). The flock-based queue keeps all GPUs busy continuously.
 
 **OOM-Kill recovery:** With 4 parallel HD videos (1920x1200), RAM usage can hit 400GB+ and Linux OOM-killer may kill processes. Do NOT use `/proc/environ` to detect GPU assignments — it has race conditions (new process hasn't set `CUDA_VISIBLE_DEVICES` yet when monitor checks, causing 2 processes on same GPU). Use **PID-files per GPU** instead.
