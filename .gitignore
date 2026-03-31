@@ -26,3 +26,4 @@ status_server_rs/target/
 youtube_upload_rs/target/
 tk_push_rs/target/
 li_push_rs/target/
+auth/
