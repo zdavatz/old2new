@@ -42,6 +42,14 @@ struct Cli {
     #[arg(long)]
     auth: bool,
 
+    /// Pick a random short Da Vaz video (Enhanced 4K, under 5 min) and upload
+    #[arg(long)]
+    random_short: bool,
+
+    /// List all previously uploaded videos
+    #[arg(long)]
+    list: bool,
+
     /// Credentials file
     #[arg(long, default_value = "linkedin_credentials.json")]
     credentials: String,
@@ -101,6 +109,98 @@ fn save_token(path: &str, token: &Token) {
     fs::write(path, json).expect("write token");
 }
 
+fn upload_log_path() -> PathBuf {
+    let home = env::var("HOME").unwrap_or_else(|_| "/root".to_string());
+    PathBuf::from(home).join("li_push_log.jsonl")
+}
+
+fn load_uploaded_ids() -> std::collections::HashSet<String> {
+    let path = upload_log_path();
+    let mut ids = std::collections::HashSet::new();
+    if let Ok(data) = fs::read_to_string(&path) {
+        for line in data.lines() {
+            if let Ok(entry) = serde_json::from_str::<serde_json::Value>(line) {
+                if let Some(yt_id) = entry["youtube_id"].as_str() {
+                    if !yt_id.is_empty() {
+                        ids.insert(yt_id.to_string());
+                    }
+                }
+            }
+        }
+    }
+    ids
+}
+
+fn append_upload_log(youtube_id: &str, title: &str, post_id: &str, post_url: &str) {
+    let path = upload_log_path();
+    let entry = serde_json::json!({
+        "youtube_id": youtube_id,
+        "title": title,
+        "post_id": post_id,
+        "post_url": post_url,
+        "timestamp": chrono_now(),
+    });
+    let mut file = fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)
+        .expect("open upload log");
+    use std::io::Write;
+    writeln!(file, "{}", entry).expect("write upload log");
+}
+
+fn chrono_now() -> String {
+    // Simple ISO timestamp without chrono dependency
+    let output = std::process::Command::new("date")
+        .args(["+%Y-%m-%dT%H:%M:%S"])
+        .output()
+        .ok();
+    output
+        .and_then(|o| String::from_utf8(o.stdout).ok())
+        .unwrap_or_default()
+        .trim()
+        .to_string()
+}
+
+fn list_uploads() {
+    let path = upload_log_path();
+    if !path.exists() {
+        eprintln!("No uploads yet.");
+        return;
+    }
+    let data = fs::read_to_string(&path).unwrap_or_default();
+    let mut count = 0;
+    for line in data.lines() {
+        if let Ok(entry) = serde_json::from_str::<serde_json::Value>(line) {
+            count += 1;
+            eprintln!("{:3}. [{}] {} — {}",
+                count,
+                entry["youtube_id"].as_str().unwrap_or("-"),
+                entry["title"].as_str().unwrap_or("?"),
+                entry["post_url"].as_str().unwrap_or(""),
+            );
+        }
+    }
+    if count == 0 {
+        eprintln!("No uploads yet.");
+    } else {
+        eprintln!("\nTotal: {} videos uploaded to LinkedIn", count);
+    }
+}
+
+/// Extract YouTube video ID from a URL or return input if already an ID
+fn extract_youtube_id(input: &str) -> Option<String> {
+    if input.contains("youtube.com/watch") {
+        input.split("v=").nth(1).and_then(|s| s.split('&').next()).map(|s| s.to_string())
+    } else if input.contains("youtu.be/") {
+        input.split("youtu.be/").nth(1).and_then(|s| s.split('?').next()).map(|s| s.to_string())
+    } else if !input.contains('/') && !input.contains('.') && input.len() >= 8 && input.len() <= 15 {
+        Some(input.to_string())
+    } else {
+        None
+    }
+}
+
 #[tokio::main]
 async fn main() {
     // Write PID file
@@ -118,21 +218,100 @@ async fn main() {
         return;
     }
 
-    let video_input = match &cli.video_file {
-        Some(f) => f.clone(),
-        None => {
-            eprintln!("ERROR: <video_file> or YouTube URL required (or use --auth for authentication)");
+    if cli.list {
+        list_uploads();
+        return;
+    }
+
+    let uploaded_ids = load_uploaded_ids();
+
+    // --random-short: pick a random Enhanced 4K short from CSV
+    let video_input = if cli.random_short {
+        // Read shorts from csv/davaz_enhanced_list.csv
+        let csv_path = {
+            // Look in CWD first, then next to the binary
+            let cwd_path = PathBuf::from("csv/davaz_enhanced_list.csv");
+            if cwd_path.exists() {
+                cwd_path
+            } else {
+                let exe_dir = env::current_exe()
+                    .ok()
+                    .and_then(|p| p.parent().map(|p| p.to_path_buf()))
+                    .unwrap_or_default();
+                exe_dir.join("../../csv/davaz_enhanced_list.csv")
+            }
+        };
+
+        let csv_data = fs::read_to_string(&csv_path).unwrap_or_else(|e| {
+            eprintln!("ERROR: Cannot read {}: {}", csv_path.display(), e);
+            eprintln!("Run from the old2new directory.");
             std::process::exit(1);
+        });
+
+        // Parse CSV: Title,Original,Enhanced 4K,Duration (s),Short
+        let mut candidates: Vec<(String, String, u64)> = Vec::new(); // (id, title, duration)
+        for line in csv_data.lines().skip(1) {
+            let fields: Vec<&str> = line.splitn(5, ',').collect();
+            if fields.len() >= 5 && fields[4].trim() == "yes" {
+                let title = fields[0].to_string();
+                let enhanced_url = fields[2];
+                let duration: u64 = fields[3].trim().parse().unwrap_or(0);
+
+                // Extract video ID from Enhanced 4K URL
+                let id = enhanced_url
+                    .split("v=").nth(1)
+                    .and_then(|s| s.split('&').next())
+                    .unwrap_or("")
+                    .to_string();
+
+                if !id.is_empty() && !uploaded_ids.contains(&id) {
+                    candidates.push((id, title, duration));
+                }
+            }
+        }
+
+        if candidates.is_empty() {
+            eprintln!("All {} shorts already uploaded to LinkedIn!", uploaded_ids.len());
+            std::process::exit(0);
+        }
+
+        // Pick random
+        let idx = {
+            use std::time::SystemTime;
+            let seed = SystemTime::now()
+                .duration_since(SystemTime::UNIX_EPOCH)
+                .unwrap_or_default()
+                .subsec_nanos() as usize;
+            seed % candidates.len()
+        };
+        let (id, title, duration) = &candidates[idx];
+        eprintln!("Selected: {} — {} ({}s)", id, title, duration);
+        eprintln!("({} shorts available, {} already uploaded)", candidates.len(), uploaded_ids.len());
+        format!("https://www.youtube.com/watch?v={}", id)
+    } else {
+        match &cli.video_file {
+            Some(f) => f.clone(),
+            None => {
+                eprintln!("ERROR: <video_file> or YouTube URL required (or use --auth/--random-short)");
+                std::process::exit(1);
+            }
         }
     };
 
     // Check if input is a YouTube URL or video ID
     let video_input = if !video_input.contains('/') && !video_input.contains('.') && video_input.len() >= 8 && video_input.len() <= 15 {
-        // Looks like a YouTube video ID (e.g. "dQw4w9WgXcQ")
         format!("https://www.youtube.com/watch?v={}", video_input)
     } else {
         video_input
     };
+
+    // Duplicate check for YouTube videos
+    if let Some(yt_id) = extract_youtube_id(&video_input) {
+        if uploaded_ids.contains(&yt_id) {
+            eprintln!("SKIP: {} already uploaded to LinkedIn. See ~/li_push_log.jsonl", yt_id);
+            std::process::exit(0);
+        }
+    }
     let is_youtube = video_input.contains("youtube.com/") || video_input.contains("youtu.be/");
     let mut yt_title = String::new();
     let mut yt_description = String::new();
@@ -489,6 +668,10 @@ async fn main() {
 
     // Build post URL from URN: urn:li:share:123456 -> https://www.linkedin.com/feed/update/urn:li:share:123456/
     let post_url = format!("https://www.linkedin.com/feed/update/{}/", post_id);
+
+    // Log the upload
+    let yt_id = extract_youtube_id(&video_input).unwrap_or_default();
+    append_upload_log(&yt_id, &title, post_id, &post_url);
 
     eprintln!("Video published to LinkedIn!");
     eprintln!("  Post ID: {}", post_id);

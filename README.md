@@ -415,11 +415,17 @@ Rust binary (`tk_push`) using TikTok Content Posting API. OAuth2 PKCE auth (S256
 # Lower quality if video exceeds 500MB LinkedIn limit
 ./li_push_rs/target/release/li_push VIDEO_ID --low-quality
 
+# Random short Da Vaz Enhanced 4K video (from csv/davaz_enhanced_list.csv)
+./li_push_rs/target/release/li_push --random-short
+
+# List all previous uploads
+./li_push_rs/target/release/li_push --list
+
 # Friends only
 ./li_push_rs/target/release/li_push video.mp4 --title "My Video" --visibility CONNECTIONS
 ```
 
-Rust binary (`li_push`) using LinkedIn Videos API + Posts API. OAuth2 auth with OpenID Connect (person ID from JWT id_token). Local callback on port 8092. 4-step upload: initialize → chunked upload (4MB parts with ETags) → finalize → create post. Supports YouTube URL/ID as input — auto-downloads via yt-dlp with title/description. Pre-checks duration (max 30 min) and filesize (max 500MB). `--low-quality` for 1080p fallback. Shows post URL after publish. Credentials in `linkedin_credentials.json`, token in `linkedin_token.json`. Writes PID to `~/li_push.pid`.
+Rust binary (`li_push`) using LinkedIn Videos API + Posts API. OAuth2 auth with OpenID Connect (person ID from JWT id_token). Local callback on port 8092. 4-step upload: initialize → chunked upload (4MB parts with ETags) → finalize → create post. Supports YouTube URL/ID as input — auto-downloads via yt-dlp with title/description. Pre-checks duration (max 30 min) and filesize (max 500MB). `--low-quality` for 1080p fallback. Shows post URL after publish. Upload log in `~/li_push_log.jsonl` prevents duplicate uploads. `--random-short` picks a random unuploaded short from `csv/davaz_enhanced_list.csv` (54 shorts). `--list` shows all previous uploads. Credentials in `linkedin_credentials.json`, token in `linkedin_token.json`. Writes PID to `~/li_push.pid`.
 
 The batch-of-N anti-pattern (`wait` for all 4 GPUs, then start next 4) wastes GPU time — fast-finishing GPUs sit idle waiting for the slowest one. On a 4x RTX 5090 instance at $1.35/hr, this caused 3 GPUs to idle for 2+ hours (~$2.70 wasted). The flock-based queue keeps all GPUs busy continuously.
 
