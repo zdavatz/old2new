@@ -21,3 +21,7 @@
 22972  # Taiwan, TW — aborted, never started
 19781  # Quebec, CA — aborted, never started
 26013  # Sichuan, CN — aborted, never started
+53881  # Slovakia, SK — aborted, never started
+27999  # Finland, FI — aborted, never started
+53527  # Tennessee, US — aborted, never started
+13918  # Germany, DE — aborted, never started

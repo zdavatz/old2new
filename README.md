@@ -279,6 +279,8 @@ This reads the `video_id` from the JSON file, deletes `~/jobs/<video_id>/` (free
 
 If any check fails, it exits with specific fix commands — no wasted time downloading on broken instances.
 
+**glibc compatibility check**: `deploy.sh` verifies the remote glibc version before uploading Rust binaries — both during initial deploy and `update`. Slim image binaries need glibc >=2.39, compat binaries need >=2.35. If the remote glibc is too old, deploy aborts early instead of uploading binaries that fail with "GLIBC not found". When glibc is 2.35-2.38, it checks for pre-built compat binaries in the Docker image (`/usr/local/bin/`) and `restart.sh` falls back to those automatically.
+
 After the pre-flight check, a **pre-download disk estimate** fetches video metadata via `yt-dlp --dump-json` (without downloading) to calculate disk needs based on resolution, duration, and scale. If disk space is insufficient, it aborts before downloading — preventing wasted bandwidth and time on undersized instances.
 
 #### Performance Tips

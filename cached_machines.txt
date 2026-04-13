@@ -24,7 +24,6 @@
 45116  4735634  # Spain, ES — 1x RTX 5090 — AMD Ryzen 9 9950X 16-Core Processor
 53324  3829358  # Saskatchewan, CA — 1x RTX 5090 — AMD Ryzen 9 9950X 16-Core Processor
 58345  2636862  # France, FR — 4x RTX 4090 — AMD EPYC 74F3 24-Core Processor
-54425  3318882  # Virginia, US — 8x RTX 5090 — AMD EPYC 9474F 48-Core Processor
 49754  0  # Taiwan, TW —  — SLOW
 13918  2020737  # Germany, DE — 4x RTX 4090 — AMD EPYC 7763 64-Core Processor
 39255  4137708  # Denmark, DK — 4x RTX 5090 — AMD Ryzen 9 7950X3D 16-Core Processor
@@ -41,3 +40,6 @@
 26416  2322586  # Taiwan, TW — 4x RTX 4090 — AMD EPYC 7663 56-Core Processor
 55796  3572198  # Puerto Rico, PR — 4x RTX 5090 — AMD Ryzen Threadripper PRO 7965WX 24-Cores
 29567  2941274  # North Macedonia, MK — 4x RTX 4090 — AMD EPYC 9354 32-Core Processor
+31030  2325749  # Texas, US — 4x RTX 4090 — AMD EPYC 7B13 64-Core Processor
+54425  2952030  # Virginia, US — 4x RTX 5090 — AMD EPYC 9474F 48-Core Processor
+10673  2740125  # Norway, NO — 4x RTX 4090 — AMD Ryzen Threadripper PRO 5995WX 64-Cores

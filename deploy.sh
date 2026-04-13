@@ -280,6 +280,32 @@ if pgrep -x status_server > /dev/null; then echo "status_server restarted"; else
             UPD_SCP="scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -P $UPD_PORT"
             UPD_SSH="ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=10 root@$UPD_HOST -p $UPD_PORT"
 
+            # Step 0: Check glibc compatibility before uploading
+            UPD_GLIBC=$($UPD_SSH 'ldd --version 2>&1 | head -1 | grep -oP "[0-9]+\.[0-9]+$"' 2>/dev/null)
+            UPD_GLIBC_VER=$(python3 -c "
+g = '${UPD_GLIBC:-0}'
+try:
+    maj, mino = g.split('.')
+    print(int(maj) * 100 + int(mino))
+except:
+    print(0)
+" 2>/dev/null)
+            if [[ "${UPD_GLIBC_VER:-0}" -lt 235 ]]; then
+                echo "  *** ERROR: glibc ${UPD_GLIBC:-unknown} is too old (need >=2.35) ***"
+                echo "  Rust binaries will not work on this instance."
+                exit 1
+            elif [[ "${UPD_GLIBC_VER:-0}" -lt 239 ]]; then
+                UPD_HAS_COMPAT=$($UPD_SSH 'test -f /usr/local/bin/preparer && echo YES || echo NO' 2>/dev/null)
+                if [[ "$UPD_HAS_COMPAT" != "YES" ]]; then
+                    echo "  *** WARNING: glibc ${UPD_GLIBC} < 2.39, no compat binaries in Docker image ***"
+                    echo "  Uploaded binaries will fail. Use compat Docker image or redeploy."
+                    exit 1
+                fi
+                echo "  glibc: ${UPD_GLIBC} (compat — restart.sh will fallback to Docker image binaries)"
+            else
+                echo "  glibc: ${UPD_GLIBC} (OK)"
+            fi
+
             # Step 1: Upload everything first (while old processes still run)
             $UPD_SCP "$SCRIPT_DIR/enhance.sh" "$SCRIPT_DIR/upscale.py" "$SCRIPT_DIR/multi_gpu_queue.sh" "$SCRIPT_DIR/restart.sh" root@"$UPD_HOST":/root/ 2>/dev/null
             echo "  Scripts uploaded"
@@ -1153,7 +1179,63 @@ if [[ "$CUDA_OK" != "OK" ]]; then
     fi
 fi
 
-# Step 3: Run parallel CPU benchmark (separate SSH to avoid quoting hell)
+# Step 3: Verify glibc version (binaries need glibc 2.39 for slim image, 2.35 for compat)
+REMOTE_GLIBC=$($SSH 'ldd --version 2>&1 | head -1 | grep -oP "[0-9]+\.[0-9]+$"' 2>/dev/null)
+GLIBC_OK=$(python3 -c "
+glibc = '${REMOTE_GLIBC:-0}'
+try:
+    major, minor = glibc.split('.')
+    ver = int(major) * 100 + int(minor)
+    if ver >= 239:
+        print('OK')
+    elif ver >= 235:
+        print('COMPAT_ONLY')
+    else:
+        print(f'TOO_OLD:{glibc}')
+except:
+    print(f'UNKNOWN:{glibc}')
+" 2>/dev/null)
+
+if [[ "$GLIBC_OK" == "TOO_OLD:"* || "$GLIBC_OK" == "UNKNOWN:"* ]]; then
+    echo ""
+    echo "  *** GLIBC TOO OLD: ${REMOTE_GLIBC:-unknown} ***"
+    echo "  Rust binaries need glibc >=2.35 (compat) or >=2.39 (slim)."
+    echo "  This instance cannot run any of our binaries."
+    echo ""
+    read -p "  Destroy instance? [Y/n] " glibc_choice
+    if [[ "$glibc_choice" != "n" && "$glibc_choice" != "N" ]]; then
+        echo "  Destroying instance $INSTANCE_ID..."
+        vastai destroy instance "$INSTANCE_ID" 2>/dev/null
+        echo "  Instance destroyed."
+        INSTANCE_ID=""
+        exit 1
+    fi
+elif [[ "$GLIBC_OK" == "COMPAT_ONLY" ]]; then
+    echo "  glibc: ${REMOTE_GLIBC} (compat binaries only — slim binaries need >=2.39)"
+    # Check if Docker image has pre-built compat binaries
+    HAS_COMPAT_BINS=$($SSH 'test -f /usr/local/bin/preparer && echo YES || echo NO' 2>/dev/null)
+    if [[ "$HAS_COMPAT_BINS" != "YES" ]]; then
+        echo ""
+        echo "  *** WARNING: glibc ${REMOTE_GLIBC} < 2.39 and no compat binaries in Docker image ***"
+        echo "  Deployed Rust binaries will fail with 'GLIBC not found'."
+        echo "  Use compat Docker image (ghcr.io/zdavatz/realesrgan-benchmark-compat:latest)"
+        echo ""
+        read -p "  Continue anyway, or destroy? [C=continue / d=destroy] " glibc_choice2
+        if [[ "$glibc_choice2" == "d" || "$glibc_choice2" == "D" ]]; then
+            echo "  Destroying instance $INSTANCE_ID..."
+            vastai destroy instance "$INSTANCE_ID" 2>/dev/null
+            echo "  Instance destroyed."
+            INSTANCE_ID=""
+            exit 1
+        fi
+    else
+        echo "  glibc: ${REMOTE_GLIBC} — compat binaries available in Docker image (will fallback)"
+    fi
+else
+    echo "  glibc: ${REMOTE_GLIBC} (OK)"
+fi
+
+# Step 4: Run parallel CPU benchmark (separate SSH to avoid quoting hell)
 ACTUAL_GPUS="${actual_gpu_count:-1}"
 bench_score=$($SSH "python3 -c \"
 import time, hashlib, multiprocessing
