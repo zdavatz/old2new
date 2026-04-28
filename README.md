@@ -384,6 +384,29 @@ No process starts before the previous has confirmed via JSON. One JSON in → on
 - **gpu_scheduler** (Rust) — Distributes GPUs proportionally, runs `upscale.py` with smart segment splitting (by actual missing frames), reassembles with ffmpeg + brightness matching. Frame count verification gate prevents corrupt videos.
 - **youtube_upload --watch** (Rust) — Uploads to YouTube, sends email to juerg@davaz.com, writes `.uploaded` lock. Also works in single mode: `youtube_upload <file> --video-id=<id>`.
 
+### Create YouTube Short From Existing Video
+
+```bash
+# Extract 12:44-13:14, upload as "poco forte" with description "Eugen Beck" (public)
+cd /Users/zdavatz/software/old2new
+./create_short_rs/target/release/create_short \
+  iXs-sL-Sf8w -s 12:44 -e 13:14 \
+  -t "poco forte" -d "Eugen Beck"
+
+# From full URL, unlisted, keep local file after upload
+./create_short_rs/target/release/create_short \
+  "https://www.youtube.com/watch?v=iXs-sL-Sf8w" \
+  -s 8:37 -e 8:57 -t "back ache" -d "Eugen Beck" \
+  --privacy unlisted --keep
+
+# Download only (skip upload), force a specific yt-dlp format
+./create_short_rs/target/release/create_short \
+  iXs-sL-Sf8w -s 23:20 -e 23:42 -t "challenge" -d "Eugen Beck" \
+  -f "271+140" --dry-run
+```
+
+Rust binary (`create_short`) for extracting a time segment from any YouTube video and re-uploading it as a new YouTube video with a custom title and description. Pipeline: yt-dlp `--download-sections "*START-END" --force-keyframes-at-cuts` (default format `bestvideo[height<=2160]+bestaudio/best`, mp4 output) → upload via Google YouTube API (resumable, with progress). Reuses auth from `youtube_upload_rs` — same `client_secret.json` + `youtube_token.json` (Python google-auth format). Required: `--start`, `--end`, `--title`, `--description`. Optional: `--privacy {public|unlisted|private}` (default public), `--format` (yt-dlp selector), `--output`, `--keep` (don't delete after upload), `--dry-run`. Default output `/tmp/create_short/<sanitized-title>_<start>-<end>.mp4`. Run from the project dir so credential files are auto-discovered.
+
 ### TikTok Upload
 
 ```bash
