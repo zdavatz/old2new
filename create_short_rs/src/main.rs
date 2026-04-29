@@ -18,6 +18,7 @@ use yup_oauth2::authenticator_delegate::InstalledFlowDelegate;
 const SCOPES: &[&str] = &[
     "https://www.googleapis.com/auth/youtube.upload",
     "https://www.googleapis.com/auth/youtube.readonly",
+    "https://www.googleapis.com/auth/youtube",
 ];
 
 /// Download a segment of a YouTube video and re-upload as a new video.
@@ -402,10 +403,16 @@ async fn main() {
     let client = build_https_client();
     let hub = YouTube::new(client, auth);
 
+    let original_url = format!("https://www.youtube.com/watch?v={}", video_id);
+    let full_description = format!(
+        "{}\n\nOriginal: {} ({}-{})",
+        cli.description, original_url, cli.start, cli.end
+    );
+
     let video = Video {
         snippet: Some(VideoSnippet {
             title: Some(cli.title.clone()),
-            description: Some(cli.description.clone()),
+            description: Some(full_description),
             category_id: Some(cli.category_id.clone()),
             ..Default::default()
         }),
