@@ -10,6 +10,7 @@ mod deps;
 mod oauth;
 mod pipeline;
 mod settings;
+mod update;
 mod youtube;
 
 use crossbeam_channel::{unbounded, Receiver, Sender};
@@ -98,12 +99,24 @@ struct App {
     deps: deps::DepStatus,
     brew_installing: bool,
     brew_rx: Option<Receiver<BrewEvent>>,
+    update_rx: Option<Receiver<update::UpdateInfo>>,
+    update_info: Option<update::UpdateInfo>,
 }
 
 enum BrewEvent {
     Log(String),
     Done,
     Error(String),
+}
+
+fn spawn_update_check() -> Receiver<update::UpdateInfo> {
+    let (tx, rx) = unbounded::<update::UpdateInfo>();
+    std::thread::spawn(move || {
+        if let Some(info) = update::check_latest(APP_VERSION) {
+            let _ = tx.send(info);
+        }
+    });
+    rx
 }
 
 enum SignInEvent {
@@ -169,6 +182,8 @@ impl App {
             deps: deps::DepStatus::check(),
             brew_installing: false,
             brew_rx: None,
+            update_rx: Some(spawn_update_check()),
+            update_info: None,
         }
     }
 
@@ -365,6 +380,14 @@ impl App {
             }
         }
 
+        if let Some(rx) = &self.update_rx {
+            if let Ok(info) = rx.try_recv() {
+                self.append_log(format!("Update available: {} → {}", APP_VERSION, info.pretty()));
+                self.update_info = Some(info);
+                self.update_rx = None;
+            }
+        }
+
         if let Some(rx) = &self.brew_rx {
             let mut done = false;
             while let Ok(ev) = rx.try_recv() {
@@ -449,6 +472,31 @@ impl eframe::App for App {
 
         egui::CentralPanel::default().show(ctx, |ui| {
             ui.add_space(6.0);
+
+            if let Some(info) = self.update_info.clone() {
+                egui::Frame::none()
+                    .fill(egui::Color32::from_rgb(220, 240, 255))
+                    .stroke(egui::Stroke::new(1.0, egui::Color32::from_rgb(80, 130, 200)))
+                    .inner_margin(8.0)
+                    .rounding(4.0)
+                    .show(ui, |ui| {
+                        ui.horizontal(|ui| {
+                            ui.colored_label(
+                                egui::Color32::from_rgb(20, 60, 120),
+                                format!("⬆ Update available: {} (you have v{})", info.pretty(), APP_VERSION),
+                            );
+                            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                if ui.button("Dismiss").clicked() {
+                                    self.update_info = None;
+                                }
+                                if ui.button("Open release page").clicked() {
+                                    let _ = open::that(&info.url);
+                                }
+                            });
+                        });
+                    });
+                ui.add_space(6.0);
+            }
 
             let missing = self.deps.missing();
             if !missing.is_empty() {
