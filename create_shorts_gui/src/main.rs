@@ -6,6 +6,7 @@
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod deps;
 mod oauth;
 mod pipeline;
 mod settings;
@@ -72,6 +73,15 @@ struct App {
     signin_rx: Option<Receiver<SignInEvent>>,
     signed_in: bool,
     icon_texture: Option<egui::TextureHandle>,
+    deps: deps::DepStatus,
+    brew_installing: bool,
+    brew_rx: Option<Receiver<BrewEvent>>,
+}
+
+enum BrewEvent {
+    Log(String),
+    Done,
+    Error(String),
 }
 
 enum SignInEvent {
@@ -134,7 +144,68 @@ impl App {
             signin_rx: None,
             signed_in,
             icon_texture: None,
+            deps: deps::DepStatus::check(),
+            brew_installing: false,
+            brew_rx: None,
         }
+    }
+
+    fn start_brew_install(&mut self) {
+        if self.brew_installing { return; }
+        let Some(brew) = deps::brew_path() else {
+            self.last_error = Some("Homebrew not installed".into());
+            return;
+        };
+        let missing = self.deps.missing();
+        let pkgs = deps::brew_packages_for(&missing);
+        if pkgs.is_empty() { return; }
+
+        self.last_error = None;
+        let (tx, rx) = unbounded::<BrewEvent>();
+        self.brew_rx = Some(rx);
+        self.brew_installing = true;
+        self.append_log(format!("Running: {} install {}", brew, pkgs.join(" ")));
+
+        std::thread::spawn(move || {
+            use std::io::{BufRead, BufReader};
+            use std::process::{Command, Stdio};
+            let mut cmd = Command::new(&brew);
+            cmd.arg("install");
+            for p in &pkgs { cmd.arg(p); }
+            cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
+            let mut child = match cmd.spawn() {
+                Ok(c) => c,
+                Err(e) => { let _ = tx.send(BrewEvent::Error(format!("brew spawn failed: {}", e))); return; }
+            };
+            let stdout = child.stdout.take();
+            let stderr = child.stderr.take();
+            let tx_o = tx.clone();
+            let tx_e = tx.clone();
+            let h_out = stdout.map(|r| std::thread::spawn(move || {
+                let mut buf = BufReader::new(r);
+                let mut line = String::new();
+                while buf.read_line(&mut line).map(|n| n > 0).unwrap_or(false) {
+                    let _ = tx_o.send(BrewEvent::Log(line.trim_end_matches(['\r','\n']).to_string()));
+                    line.clear();
+                }
+            }));
+            let h_err = stderr.map(|r| std::thread::spawn(move || {
+                let mut buf = BufReader::new(r);
+                let mut line = String::new();
+                while buf.read_line(&mut line).map(|n| n > 0).unwrap_or(false) {
+                    let _ = tx_e.send(BrewEvent::Log(line.trim_end_matches(['\r','\n']).to_string()));
+                    line.clear();
+                }
+            }));
+            let status = child.wait();
+            if let Some(h) = h_out { let _ = h.join(); }
+            if let Some(h) = h_err { let _ = h.join(); }
+            match status {
+                Ok(s) if s.success() => { let _ = tx.send(BrewEvent::Done); }
+                Ok(s) => { let _ = tx.send(BrewEvent::Error(format!("brew exited with {:?}", s.code()))); }
+                Err(e) => { let _ = tx.send(BrewEvent::Error(format!("brew wait failed: {}", e))); }
+            }
+        });
     }
 
     fn ensure_icon_texture(&mut self, ctx: &egui::Context) {
@@ -163,6 +234,15 @@ impl App {
 
     fn start_job(&mut self) {
         if self.running { return; }
+        let missing = self.deps.missing();
+        if !missing.is_empty() {
+            self.last_error = Some(format!(
+                "Missing required tools: {}. {}",
+                missing.join(", "),
+                deps::DepStatus::install_hint(&missing),
+            ));
+            return;
+        }
         if self.form.source.trim().is_empty() {
             self.last_error = Some("URL or video ID is required".into());
             return;
@@ -250,6 +330,29 @@ impl App {
                 self.signin_rx = None;
             }
         }
+
+        if let Some(rx) = &self.brew_rx {
+            let mut done = false;
+            while let Ok(ev) = rx.try_recv() {
+                match ev {
+                    BrewEvent::Log(s) => self.append_log(s),
+                    BrewEvent::Done => {
+                        self.append_log("Homebrew install finished.".into());
+                        self.deps = deps::DepStatus::check();
+                        done = true;
+                    }
+                    BrewEvent::Error(e) => {
+                        self.last_error = Some(e.clone());
+                        self.append_log(format!("brew install error: {}", e));
+                        done = true;
+                    }
+                }
+            }
+            if done {
+                self.brew_installing = false;
+                self.brew_rx = None;
+            }
+        }
     }
 
     fn start_signin(&mut self) {
@@ -279,7 +382,7 @@ impl eframe::App for App {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.drain_events();
         self.ensure_icon_texture(ctx);
-        if self.running || self.signing_in {
+        if self.running || self.signing_in || self.brew_installing {
             ctx.request_repaint_after(std::time::Duration::from_millis(150));
         }
 
@@ -291,10 +394,17 @@ impl eframe::App for App {
                 |ui| {
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         if let Some(tex) = &self.icon_texture {
-                            ui.add(egui::Image::new(tex).max_width(40.0).max_height(40.0));
+                            let resp = ui
+                                .add(
+                                    egui::Image::new(tex)
+                                        .max_width(40.0)
+                                        .max_height(40.0)
+                                        .sense(egui::Sense::click()),
+                                )
+                                .on_hover_text("Settings");
+                            if resp.clicked() { self.show_settings = true; }
                             ui.add_space(8.0);
                         }
-                        if ui.button("Settings…").clicked() { self.show_settings = true; }
                         let badge = if self.signed_in { "✅ signed in" } else { "⚠ not signed in" };
                         ui.label(badge);
                     });
@@ -305,6 +415,52 @@ impl eframe::App for App {
 
         egui::CentralPanel::default().show(ctx, |ui| {
             ui.add_space(6.0);
+
+            let missing = self.deps.missing();
+            if !missing.is_empty() {
+                let brew = deps::brew_path();
+                egui::Frame::none()
+                    .fill(egui::Color32::from_rgb(255, 240, 205))
+                    .stroke(egui::Stroke::new(1.0, egui::Color32::from_rgb(220, 170, 60)))
+                    .inner_margin(8.0)
+                    .rounding(4.0)
+                    .show(ui, |ui| {
+                        ui.horizontal(|ui| {
+                            ui.colored_label(
+                                egui::Color32::from_rgb(140, 80, 0),
+                                format!("⚠ Missing required tools: {}", missing.join(", ")),
+                            );
+                            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                if ui.button("Re-check").clicked() {
+                                    self.deps = deps::DepStatus::check();
+                                }
+                                if cfg!(target_os = "macos") {
+                                    if brew.is_some() {
+                                        let label = if self.brew_installing { "Installing…" } else { "Install with Homebrew" };
+                                        let resp = ui.add_enabled(!self.brew_installing, egui::Button::new(label));
+                                        if resp.clicked() { self.start_brew_install(); }
+                                    } else if ui.button("How to install Homebrew").clicked() {
+                                        let _ = open::that("https://brew.sh");
+                                    }
+                                }
+                            });
+                        });
+                        if cfg!(target_os = "macos") && brew.is_none() {
+                            ui.label("Homebrew is not installed. Open Terminal and run:");
+                            let mut cmd = deps::HOMEBREW_INSTALL_CMD.to_string();
+                            ui.add(
+                                egui::TextEdit::singleline(&mut cmd)
+                                    .font(egui::TextStyle::Monospace)
+                                    .desired_width(f32::INFINITY),
+                            );
+                            ui.label("Then come back here and click Re-check.");
+                        } else {
+                            ui.label(deps::DepStatus::install_hint(&missing));
+                        }
+                    });
+                ui.add_space(6.0);
+            }
+
             egui::Grid::new("form_grid")
                 .num_columns(2)
                 .spacing([10.0, 8.0])
@@ -344,8 +500,12 @@ impl eframe::App for App {
 
             ui.add_space(8.0);
             ui.horizontal(|ui| {
+                let deps_ok = self.deps.missing().is_empty();
                 let label = if self.running { "Working…" } else { "Create short and upload" };
-                let btn = ui.add_enabled(!self.running, egui::Button::new(label).min_size(egui::vec2(220.0, 32.0)));
+                let btn = ui.add_enabled(
+                    !self.running && deps_ok,
+                    egui::Button::new(label).min_size(egui::vec2(220.0, 32.0)),
+                );
                 if btn.clicked() { self.start_job(); }
 
                 if let Some(url) = &self.last_done_url {
