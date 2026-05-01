@@ -14,6 +14,7 @@ pub enum Event {
     Log(String),
     Progress(u64, u64),
     Done(String),
+    Preview(PathBuf),
     Error(String),
 }
 
@@ -24,6 +25,7 @@ pub struct Job {
     pub title: String,
     pub description: String,
     pub privacy: String,
+    pub preview_only: bool,
 }
 
 pub fn run(job: Job, settings: Settings, tx: Sender<Event>) {
@@ -61,6 +63,12 @@ pub fn run(job: Job, settings: Settings, tx: Sender<Event>) {
         }
     };
     let _ = tx.send(Event::Log(format!("Downloaded {:.1} MB", size as f64 / 1024.0 / 1024.0)));
+
+    if job.preview_only {
+        let _ = tx.send(Event::Log(format!("Preview file kept at {}", out.display())));
+        let _ = tx.send(Event::Preview(out));
+        return;
+    }
 
     let _ = tx.send(Event::Log("Refreshing YouTube access token…".to_string()));
     let access_token = match oauth::refresh_access_token(&settings.client_id, &settings.client_secret) {

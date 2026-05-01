@@ -232,7 +232,10 @@ impl App {
         }
     }
 
-    fn start_job(&mut self) {
+    fn start_job(&mut self) { self.kick_off(false); }
+    fn start_preview(&mut self) { self.kick_off(true); }
+
+    fn kick_off(&mut self, preview_only: bool) {
         if self.running { return; }
         let missing = self.deps.missing();
         if !missing.is_empty() {
@@ -251,11 +254,12 @@ impl App {
             self.last_error = Some("Start and end timestamps are required".into());
             return;
         }
-        if self.form.title.trim().is_empty() {
+        // Title is only required when actually uploading.
+        if !preview_only && self.form.title.trim().is_empty() {
             self.last_error = Some("Title is required".into());
             return;
         }
-        if !self.signed_in {
+        if !preview_only && !self.signed_in {
             self.last_error = Some("Sign in to YouTube first (Settings)".into());
             return;
         }
@@ -272,9 +276,10 @@ impl App {
             source: self.form.source.trim().to_string(),
             start: self.form.start.trim().to_string(),
             end: self.form.end.trim().to_string(),
-            title: self.form.title.trim().to_string(),
+            title: if self.form.title.trim().is_empty() { "preview".to_string() } else { self.form.title.trim().to_string() },
             description: self.form.description.trim().to_string(),
             privacy: self.form.privacy.clone(),
+            preview_only,
         };
         let settings = self.settings.clone();
         std::thread::spawn(move || pipeline::run(job, settings, tx));
@@ -292,6 +297,13 @@ impl App {
                     Event::Done(url) => {
                         self.last_done_url = Some(url.clone());
                         self.append_log(format!("DONE: {}", url));
+                        still_running = false;
+                    }
+                    Event::Preview(path) => {
+                        self.append_log(format!("Opening preview: {}", path.display()));
+                        if let Err(e) = open::that(&path) {
+                            self.last_error = Some(format!("Could not open preview ({}). File at {}", e, path.display()));
+                        }
                         still_running = false;
                     }
                     Event::Error(e) => {
@@ -501,6 +513,12 @@ impl eframe::App for App {
             ui.add_space(8.0);
             ui.horizontal(|ui| {
                 let deps_ok = self.deps.missing().is_empty();
+                let preview_btn = ui.add_enabled(
+                    !self.running && deps_ok,
+                    egui::Button::new("Preview").min_size(egui::vec2(110.0, 32.0)),
+                ).on_hover_text("Download the segment and open it in your default video player without uploading");
+                if preview_btn.clicked() { self.start_preview(); }
+                ui.add_space(8.0);
                 let label = if self.running { "Working…" } else { "Create short and upload" };
                 let btn = ui.add_enabled(
                     !self.running && deps_ok,
