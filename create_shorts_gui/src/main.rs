@@ -33,7 +33,29 @@ fn load_icon() -> Option<egui::IconData> {
     Some(egui::IconData { rgba: rgba.into_raw(), width: w, height: h })
 }
 
+/// macOS .app bundles launched from Finder inherit a stripped PATH
+/// (`/usr/bin:/bin:/usr/sbin:/sbin`) that excludes Homebrew's bin
+/// directories, so `Command::new("yt-dlp")` etc. silently fail to
+/// resolve even when the tools are installed. Prepend the standard
+/// Homebrew locations so every later `Command::new` call finds them.
+fn ensure_homebrew_on_path() {
+    if !cfg!(target_os = "macos") { return; }
+    let cur = std::env::var("PATH").unwrap_or_default();
+    let mut prefix = String::new();
+    for d in ["/opt/homebrew/bin", "/opt/homebrew/sbin", "/usr/local/bin"] {
+        if !cur.split(':').any(|p| p == d) && std::path::Path::new(d).exists() {
+            if !prefix.is_empty() { prefix.push(':'); }
+            prefix.push_str(d);
+        }
+    }
+    if !prefix.is_empty() {
+        let new_path = if cur.is_empty() { prefix } else { format!("{}:{}", prefix, cur) };
+        std::env::set_var("PATH", new_path);
+    }
+}
+
 fn main() -> eframe::Result<()> {
+    ensure_homebrew_on_path();
     let mut viewport = egui::ViewportBuilder::default()
         .with_title(format!("create_shorts v{}", APP_VERSION))
         .with_inner_size([900.0, 720.0])
