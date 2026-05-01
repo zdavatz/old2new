@@ -407,6 +407,18 @@ cd /Users/zdavatz/software/old2new
 
 Rust binary (`create_short`) for extracting a time segment from any YouTube video and re-uploading it as a new YouTube video with a custom title and description. Pipeline: yt-dlp `--download-sections "*START-END" --force-keyframes-at-cuts` (default format `bestvideo[height<=2160]+bestaudio/best`, mp4 output) → upload via Google YouTube API (resumable, with progress). Reuses auth from `youtube_upload_rs` — same `client_secret.json` + `youtube_token.json` (Python google-auth format). Required: `--start`, `--end`, `--title`, `--description`. Optional: `--privacy {public|unlisted|private}` (default public), `--format` (yt-dlp selector), `--output`, `--keep` (don't delete after upload), `--dry-run`. Default output `/tmp/create_short/<sanitized-title>_<start>-<end>.mp4`. Description on the new video is auto-suffixed with `\n\nOriginal: <url> (<start>-<end>)` linking back to the source video. Run from the project dir so credential files are auto-discovered.
 
+### Create Shorts GUI (desktop app)
+
+Cross-platform eframe/egui desktop app wrapping the same pipeline as `create_short` for non-CLI users — built so Jürg can self-serve. Settings dialog takes a Google OAuth Desktop client_id + client_secret (no shared client embedded — each user brings their own Google Cloud project + quota). One-time browser sign-in mints a refresh token cached at `~/Library/Application Support/create_shorts/token.json` (or platform equivalent). Logs persist across restarts (`<config_dir>/log.txt`, last 5000 lines).
+
+```bash
+cd create_shorts_gui
+cargo build --release
+./target/release/create_shorts_gui
+```
+
+Releases: push a tag `create-shorts-vX.Y.Z` from `main` and the workflow at `.github/workflows/create-shorts-release.yml` builds Linux + Windows binaries plus a notarized macOS universal DMG (Developer ID signed, hardened runtime, stapled via `notarytool`). Requires repo secrets: `MACOS_DEVELOPER_ID_CERTIFICATE`, `MACOS_DEVELOPER_ID_CERTIFICATE_PASSWORD`, `APPLE_API_KEY_P8`, `APPLE_API_KEY_ID`, `APPLE_API_ISSUER_ID`. Without those, the DMG ships unsigned.
+
 ### TikTok Upload
 
 ```bash

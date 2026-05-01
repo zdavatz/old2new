@@ -1,0 +1,71 @@
+//! Persisted user settings: Google OAuth client credentials, default
+//! privacy, optional cookies-from-browser selector. Stored at the
+//! platform's standard config directory under `create_shorts/`.
+
+use serde::{Deserialize, Serialize};
+use std::fs;
+use std::path::PathBuf;
+
+#[derive(Clone, Serialize, Deserialize)]
+pub struct Settings {
+    #[serde(default)]
+    pub client_id: String,
+    #[serde(default)]
+    pub client_secret: String,
+    #[serde(default = "default_privacy")]
+    pub default_privacy: String,
+    /// Empty = don't pass `--cookies-from-browser` to yt-dlp.
+    /// Otherwise one of: chrome, brave, chromium, edge, firefox, opera, safari, vivaldi.
+    #[serde(default)]
+    pub cookies_browser: String,
+}
+
+fn default_privacy() -> String {
+    "public".to_string()
+}
+
+impl Default for Settings {
+    fn default() -> Self {
+        Self {
+            client_id: String::new(),
+            client_secret: String::new(),
+            default_privacy: default_privacy(),
+            cookies_browser: String::new(),
+        }
+    }
+}
+
+pub fn config_dir() -> PathBuf {
+    let base = dirs::config_dir().unwrap_or_else(|| PathBuf::from("."));
+    base.join("create_shorts")
+}
+
+pub fn settings_path() -> PathBuf {
+    config_dir().join("settings.json")
+}
+
+pub fn token_path() -> PathBuf {
+    config_dir().join("token.json")
+}
+
+pub fn log_path() -> PathBuf {
+    config_dir().join("log.txt")
+}
+
+impl Settings {
+    pub fn load() -> Self {
+        let path = settings_path();
+        match fs::read_to_string(&path) {
+            Ok(s) => serde_json::from_str(&s).unwrap_or_default(),
+            Err(_) => Self::default(),
+        }
+    }
+
+    pub fn save(&self) -> std::io::Result<()> {
+        let dir = config_dir();
+        fs::create_dir_all(&dir)?;
+        let s = serde_json::to_string_pretty(self).unwrap_or_default();
+        fs::write(settings_path(), s)?;
+        Ok(())
+    }
+}
