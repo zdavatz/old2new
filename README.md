@@ -409,7 +409,14 @@ Rust binary (`create_short`) for extracting a time segment from any YouTube vide
 
 ### Create Shorts GUI (desktop app)
 
-Cross-platform eframe/egui desktop app wrapping the same pipeline as `create_short` for non-CLI users — built so Jürg can self-serve. Settings dialog takes a Google OAuth Desktop client_id + client_secret (no shared client embedded — each user brings their own Google Cloud project + quota). One-time browser sign-in mints a refresh token cached at `~/Library/Application Support/create_shorts/token.json` (or platform equivalent). Logs persist across restarts (`<config_dir>/log.txt`, last 5000 lines).
+Cross-platform eframe/egui desktop app wrapping the same pipeline as `create_short` for non-CLI users — built so Jürg can self-serve.
+
+- **Settings** (click the app icon, top-right) takes a Google OAuth Desktop client_id + client_secret. Each user brings their own Google Cloud project + quota; nothing is embedded in the binary.
+- **One-time browser sign-in** mints a refresh token cached at `~/Library/Application Support/create_shorts/token.json` (or platform equivalent).
+- **Preview button** downloads the segment via yt-dlp and opens it in your default video player without uploading.
+- **Dependency check**: probes `yt-dlp` / `ffmpeg` / `ffprobe` at startup. On macOS, an "Install with Homebrew" button shells out `brew install …` for whatever is missing (ffmpeg covers ffprobe). If Homebrew isn't installed, the banner shows the standard `/bin/bash -c "$(curl …)"` install command. Linux/Windows fall back to apt/scoop hints.
+- **In-app update check** on startup, plus a "Check for updates" button in Settings. New versions show a blue banner linking to the GitHub release page.
+- **Persisted across restarts**: log (`<config_dir>/log.txt`, last 5000 lines) + form fields (eframe storage), so closing mid-edit doesn't lose work.
 
 ```bash
 cd create_shorts_gui
