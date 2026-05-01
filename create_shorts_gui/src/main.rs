@@ -68,18 +68,18 @@ fn main() -> eframe::Result<()> {
     eframe::run_native(
         "create_shorts_gui",
         options,
-        Box::new(|_cc| Ok(Box::new(App::new()))),
+        Box::new(|cc| Ok(Box::new(App::new(cc)))),
     )
 }
 
-#[derive(Default, Clone)]
+#[derive(Default, Clone, serde::Serialize, serde::Deserialize)]
 struct FormState {
-    source: String,
-    start: String,
-    end: String,
-    title: String,
-    description: String,
-    privacy: String,
+    #[serde(default)] source: String,
+    #[serde(default)] start: String,
+    #[serde(default)] end: String,
+    #[serde(default)] title: String,
+    #[serde(default)] description: String,
+    #[serde(default)] privacy: String,
 }
 
 struct App {
@@ -99,8 +99,10 @@ struct App {
     deps: deps::DepStatus,
     brew_installing: bool,
     brew_rx: Option<Receiver<BrewEvent>>,
-    update_rx: Option<Receiver<update::UpdateInfo>>,
+    update_rx: Option<Receiver<Option<update::UpdateInfo>>>,
     update_info: Option<update::UpdateInfo>,
+    update_checking: bool,
+    update_status_msg: Option<String>,
 }
 
 enum BrewEvent {
@@ -109,12 +111,10 @@ enum BrewEvent {
     Error(String),
 }
 
-fn spawn_update_check() -> Receiver<update::UpdateInfo> {
-    let (tx, rx) = unbounded::<update::UpdateInfo>();
+fn spawn_update_check() -> Receiver<Option<update::UpdateInfo>> {
+    let (tx, rx) = unbounded::<Option<update::UpdateInfo>>();
     std::thread::spawn(move || {
-        if let Some(info) = update::check_latest(APP_VERSION) {
-            let _ = tx.send(info);
-        }
+        let _ = tx.send(update::check_latest(APP_VERSION));
     });
     rx
 }
@@ -151,7 +151,7 @@ fn chrono_like_now() -> String {
 }
 
 impl App {
-    fn new() -> Self {
+    fn new(cc: &eframe::CreationContext<'_>) -> Self {
         let settings = Settings::load();
         let signed_in = oauth::load_token().map(|t| !t.refresh_token.is_empty()).unwrap_or(false);
         let show_settings = settings.client_id.is_empty() || settings.client_secret.is_empty();
@@ -160,13 +160,20 @@ impl App {
         let marker = format!("─── session started {} ───", stamp);
         let _ = append_to_log_file(&marker);
         initial_log.push(marker);
-        let privacy = if settings.default_privacy.is_empty() {
-            "public".to_string()
-        } else {
+
+        let saved_form: FormState = cc
+            .storage
+            .and_then(|s| eframe::get_value::<FormState>(s, "form_state"))
+            .unwrap_or_default();
+        let privacy = if !saved_form.privacy.is_empty() {
+            saved_form.privacy.clone()
+        } else if !settings.default_privacy.is_empty() {
             settings.default_privacy.clone()
+        } else {
+            "public".to_string()
         };
         Self {
-            form: FormState { privacy, ..Default::default() },
+            form: FormState { privacy, ..saved_form },
             settings,
             log: Arc::new(Mutex::new(initial_log)),
             progress: Arc::new(Mutex::new((0, 0))),
@@ -184,7 +191,16 @@ impl App {
             brew_rx: None,
             update_rx: Some(spawn_update_check()),
             update_info: None,
+            update_checking: true,
+            update_status_msg: None,
         }
+    }
+
+    fn trigger_update_check(&mut self) {
+        if self.update_checking { return; }
+        self.update_status_msg = None;
+        self.update_checking = true;
+        self.update_rx = Some(spawn_update_check());
     }
 
     fn start_brew_install(&mut self) {
@@ -381,10 +397,19 @@ impl App {
         }
 
         if let Some(rx) = &self.update_rx {
-            if let Ok(info) = rx.try_recv() {
-                self.append_log(format!("Update available: {} → {}", APP_VERSION, info.pretty()));
-                self.update_info = Some(info);
+            if let Ok(result) = rx.try_recv() {
+                self.update_checking = false;
                 self.update_rx = None;
+                match result {
+                    Some(info) => {
+                        self.append_log(format!("Update available: {} → {}", APP_VERSION, info.pretty()));
+                        self.update_status_msg = Some(format!("Update available: {}", info.pretty()));
+                        self.update_info = Some(info);
+                    }
+                    None => {
+                        self.update_status_msg = Some(format!("You're on the latest version (v{}).", APP_VERSION));
+                    }
+                }
             }
         }
 
@@ -436,10 +461,14 @@ impl App {
 }
 
 impl eframe::App for App {
+    fn save(&mut self, storage: &mut dyn eframe::Storage) {
+        eframe::set_value(storage, "form_state", &self.form);
+    }
+
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.drain_events();
         self.ensure_icon_texture(ctx);
-        if self.running || self.signing_in || self.brew_installing {
+        if self.running || self.signing_in || self.brew_installing || self.update_checking {
             ctx.request_repaint_after(std::time::Duration::from_millis(150));
         }
 
@@ -706,6 +735,21 @@ impl App {
                     let signin_label = if self.signing_in { "Signing in…" } else if self.signed_in { "Re-sign in to YouTube" } else { "Sign in to YouTube" };
                     let signin = ui.add_enabled(!self.signing_in, egui::Button::new(signin_label));
                     if signin.clicked() { self.start_signin(); }
+                });
+                ui.add_space(8.0);
+                ui.separator();
+                ui.add_space(4.0);
+                ui.label(RichText::new("Updates").strong());
+                ui.horizontal(|ui| {
+                    let label = if self.update_checking { "Checking…" } else { "Check for updates" };
+                    if ui.add_enabled(!self.update_checking, egui::Button::new(label)).clicked() {
+                        self.trigger_update_check();
+                    }
+                    if let Some(msg) = &self.update_status_msg {
+                        ui.label(msg);
+                    } else {
+                        ui.label(format!("Current version: v{}", APP_VERSION));
+                    }
                 });
                 ui.add_space(4.0);
                 ui.label(RichText::new(format!("Token cached at: {}", token_path().display())).weak());
