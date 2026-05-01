@@ -86,7 +86,7 @@ struct App {
     settings: Settings,
     form: FormState,
     log: Arc<Mutex<Vec<String>>>,
-    progress: Arc<Mutex<(u64, u64)>>,
+    progress: Arc<Mutex<ProgressInfo>>,
     rx: Option<Receiver<Event>>,
     running: bool,
     last_done_url: Option<String>,
@@ -123,6 +123,13 @@ enum SignInEvent {
     Log(String),
     Done,
     Error(String),
+}
+
+#[derive(Default, Clone)]
+struct ProgressInfo {
+    phase: String,
+    fraction: f32,
+    detail: String,
 }
 
 fn load_persisted_log() -> Vec<String> {
@@ -176,7 +183,7 @@ impl App {
             form: FormState { privacy, ..saved_form },
             settings,
             log: Arc::new(Mutex::new(initial_log)),
-            progress: Arc::new(Mutex::new((0, 0))),
+            progress: Arc::new(Mutex::new(ProgressInfo::default())),
             rx: None,
             running: false,
             last_done_url: None,
@@ -323,7 +330,7 @@ impl App {
         self.last_done_url = None;
         self.last_error = None;
         if let Ok(mut g) = self.log.lock() { g.clear(); }
-        if let Ok(mut p) = self.progress.lock() { *p = (0, 0); }
+        if let Ok(mut p) = self.progress.lock() { *p = ProgressInfo::default(); }
 
         let job = Job {
             source: self.form.source.trim().to_string(),
@@ -344,8 +351,10 @@ impl App {
             while let Ok(ev) = rx.try_recv() {
                 match ev {
                     Event::Log(s) => self.append_log(s),
-                    Event::Progress(s, t) => {
-                        if let Ok(mut p) = self.progress.lock() { *p = (s, t); }
+                    Event::Progress { phase, fraction, detail } => {
+                        if let Ok(mut p) = self.progress.lock() {
+                            *p = ProgressInfo { phase, fraction, detail };
+                        }
                     }
                     Event::Done(url) => {
                         self.last_done_url = Some(url.clone());
@@ -624,20 +633,50 @@ impl eframe::App for App {
                     egui::Button::new(label).min_size(egui::vec2(220.0, 32.0)),
                 );
                 if btn.clicked() { self.start_job(); }
-
-                if let Some(url) = &self.last_done_url {
-                    if ui.link(format!("Open {}", url)).clicked() {
-                        let _ = open::that(url);
-                    }
-                }
             });
 
+            if let Some(url) = self.last_done_url.clone() {
+                ui.add_space(6.0);
+                egui::Frame::none()
+                    .fill(egui::Color32::from_rgb(220, 245, 220))
+                    .stroke(egui::Stroke::new(1.0, egui::Color32::from_rgb(80, 160, 80)))
+                    .inner_margin(10.0)
+                    .rounding(4.0)
+                    .show(ui, |ui| {
+                        ui.horizontal(|ui| {
+                            ui.colored_label(
+                                egui::Color32::from_rgb(20, 90, 20),
+                                RichText::new(format!("✅ Uploaded: {}", url)).strong(),
+                            );
+                            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                if ui.button("Dismiss").clicked() {
+                                    self.last_done_url = None;
+                                }
+                                if ui.button("Copy URL").clicked() {
+                                    ui.ctx().output_mut(|o| o.copied_text = url.clone());
+                                }
+                                if ui.button("Open in browser").clicked() {
+                                    let _ = open::that(&url);
+                                }
+                            });
+                        });
+                    });
+            }
+
             if self.running {
-                let (sent, total) = *self.progress.lock().unwrap();
-                if total > 0 {
-                    let f = sent as f32 / total as f32;
-                    ui.add(egui::ProgressBar::new(f).show_percentage().animate(true));
-                    ui.label(format!("{:.1} / {:.1} MB", sent as f64 / 1_048_576.0, total as f64 / 1_048_576.0));
+                let p = self.progress.lock().unwrap().clone();
+                if !p.phase.is_empty() || p.fraction > 0.0 {
+                    let bar = if p.fraction > 0.0 {
+                        egui::ProgressBar::new(p.fraction).show_percentage().animate(true)
+                    } else {
+                        egui::ProgressBar::new(0.0).animate(true)
+                    };
+                    let phase_label = if p.phase.is_empty() { "Working".to_string() } else { p.phase.clone() };
+                    let bar = bar.text(phase_label);
+                    ui.add(bar);
+                    if !p.detail.is_empty() {
+                        ui.label(RichText::new(p.detail).weak().small());
+                    }
                 }
             }
 
