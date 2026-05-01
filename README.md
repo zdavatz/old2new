@@ -424,6 +424,8 @@ Rust binary (`tk_push`) using TikTok Content Posting API. OAuth2 PKCE auth (S256
 
 ### LinkedIn Upload
 
+**First-time setup**: register an app at https://www.linkedin.com/developers/apps with redirect URI `http://localhost:8092/callback` and request the products **Sign In with LinkedIn using OpenID Connect** + **Share on LinkedIn** (scopes `openid profile w_member_social`). Drop the Client ID + Primary Client Secret into `linkedin_credentials.json` (gitignored): `{"client_id": "...", "client_secret": "..."}`.
+
 ```bash
 # First time: authenticate with LinkedIn (opens browser for OAuth2 + OpenID Connect)
 ./li_push_rs/target/release/li_push --auth
