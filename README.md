@@ -414,6 +414,8 @@ Cross-platform eframe/egui desktop app wrapping the same pipeline as `create_sho
 - **Settings** (click the app icon, top-right) takes a Google OAuth Desktop client_id + client_secret. Each user brings their own Google Cloud project + quota; nothing is embedded in the binary.
 - **One-time browser sign-in** mints a refresh token cached at `~/Library/Application Support/create_shorts/token.json` (or platform equivalent).
 - **Preview button** downloads the segment via yt-dlp and opens it in your default video player without uploading.
+- **Cookie auto-detect**: the Settings dialog probes for installed browsers (chrome/brave/chromium/edge/firefox/opera/safari/vivaldi) and labels detected ones in the dropdown. A **Test** button verifies the chosen browser actually grants yt-dlp cookie access, useful for age-restricted videos.
+- **Segment cache** at `~/Library/Caches/create_shorts/segments/` reuses identical (video, start, end) re-requests so Preview → Upload doesn't re-download.
 - **Dependency check**: probes `yt-dlp` / `ffmpeg` / `ffprobe` at startup. On macOS, an "Install with Homebrew" button shells out `brew install …` for whatever is missing (ffmpeg covers ffprobe). If Homebrew isn't installed, the banner shows the standard `/bin/bash -c "$(curl …)"` install command. Linux/Windows fall back to apt/scoop hints.
 - **In-app update check** on startup, plus a "Check for updates" button in Settings. New versions show a blue banner linking to the GitHub release page.
 - **Persisted across restarts**: log (`<config_dir>/log.txt`, last 5000 lines) + form fields (eframe storage), so closing mid-edit doesn't lose work.
