@@ -76,37 +76,45 @@ pub fn run(job: Job, settings: Settings, tx: Sender<Event>) {
     };
     let original_url = format!("https://www.youtube.com/watch?v={}", video_id);
 
-    // 1. Ensure the *full* video is cached at <cache>/<video_id>.mp4.
-    //    Re-cutting the same video with different timestamps reuses
-    //    this file instead of hitting yt-dlp again.
-    let full = match ensure_full_video_cached(&video_id, &url, &settings, &tx, segment_secs) {
-        Ok(p) => p,
-        Err(e) => { let _ = tx.send(Event::Error(format!("download: {}", e))); return; }
+    // Cache cut segments at <cache_dir>/segments/<video_id>_<start>_<end>.mp4.
+    // If the exact same (video_id, start, end) is requested again — same
+    // video, same timestamps — we skip yt-dlp entirely. Different
+    // timestamps re-run yt-dlp with --download-sections, which only
+    // pulls the bytes for that range (a few MB for a 30-second clip).
+    let stamp = format!("{}_{}", job.start.replace(':', "_"), job.end.replace(':', "_"));
+    let cache_dir = segment_cache_dir();
+    if let Err(e) = std::fs::create_dir_all(&cache_dir) {
+        let _ = tx.send(Event::Error(format!("mkdir {}: {}", cache_dir.display(), e)));
+        return;
+    }
+    let cached = cache_dir.join(format!("{}_{}.mp4", video_id, stamp));
+
+    let out = if cached.exists() {
+        let _ = tx.send(Event::Log(format!(
+            "Reusing cached segment {} ({:.1} MB)",
+            cached.display(),
+            cached.metadata().map(|m| m.len()).unwrap_or(0) as f64 / 1_048_576.0,
+        )));
+        cached.clone()
+    } else {
+        let _ = tx.send(Event::Log(format!("Downloading {} ({}-{}) → {}", url, job.start, job.end, cached.display())));
+        let _ = tx.send(Event::Progress { phase: "Downloading".into(), fraction: 0.0, detail: String::new() });
+        if let Err(e) = run_yt_dlp(&url, &job.start, &job.end, &cached, &settings, &tx, segment_secs) {
+            let _ = std::fs::remove_file(&cached);
+            let _ = tx.send(Event::Error(format!("yt-dlp: {}", e)));
+            return;
+        }
+        cached.clone()
     };
-
-    let tmp = std::env::temp_dir().join("create_shorts_gui");
-    if let Err(e) = std::fs::create_dir_all(&tmp) {
-        let _ = tx.send(Event::Error(format!("mkdir {}: {}", tmp.display(), e)));
-        return;
-    }
-    let stem = sanitize_filename(&job.title);
-    let stamp = format!("{}-{}", job.start.replace(':', "_"), job.end.replace(':', "_"));
-    let out = tmp.join(format!("{}_{}.mp4", stem, stamp));
-
-    // 2. Cut the requested segment from the cached full video.
-    if let Err(e) = cut_segment(&full, &job.start, &job.end, &out, segment_secs, &tx) {
-        let _ = tx.send(Event::Error(format!("ffmpeg: {}", e)));
-        return;
-    }
 
     let size = match std::fs::metadata(&out) {
         Ok(m) => m.len(),
         Err(e) => {
-            let _ = tx.send(Event::Error(format!("ffmpeg produced no file: {}", e)));
+            let _ = tx.send(Event::Error(format!("yt-dlp produced no file: {}", e)));
             return;
         }
     };
-    let _ = tx.send(Event::Log(format!("Cut segment: {:.1} MB", size as f64 / 1024.0 / 1024.0)));
+    let _ = tx.send(Event::Log(format!("Segment ready: {:.1} MB", size as f64 / 1_048_576.0)));
 
     if job.preview_only {
         let _ = tx.send(Event::Log(format!("Preview file kept at {}", out.display())));
@@ -160,47 +168,39 @@ pub fn run(job: Job, settings: Settings, tx: Sender<Event>) {
     }
 }
 
-/// Cache root for full-video downloads. macOS:
-/// `~/Library/Caches/create_shorts/videos/`. Cross-platform via `dirs`.
-fn cache_root() -> PathBuf {
+/// Where to keep cut segments so an identical `(video_id, start, end)`
+/// re-run skips yt-dlp entirely. macOS:
+/// `~/Library/Caches/create_shorts/segments/`.
+fn segment_cache_dir() -> PathBuf {
     let base = dirs::cache_dir().unwrap_or_else(|| std::env::temp_dir());
-    base.join("create_shorts").join("videos")
+    base.join("create_shorts").join("segments")
 }
 
-fn ensure_full_video_cached(
-    video_id: &str,
+/// Run yt-dlp with `--download-sections` to fetch only the requested
+/// time range — much faster than downloading the full source. Sized
+/// for ~10s segments out of multi-hour videos: 30 MB-ish typical, not
+/// gigabytes.
+fn run_yt_dlp(
     url: &str,
+    start: &str,
+    end: &str,
+    out: &PathBuf,
     settings: &Settings,
     tx: &Sender<Event>,
     segment_secs: f64,
-) -> Result<PathBuf, String> {
-    let dir = cache_root();
-    std::fs::create_dir_all(&dir).map_err(|e| format!("mkdir {}: {}", dir.display(), e))?;
-    let target = dir.join(format!("{}.mp4", video_id));
-    if target.exists() {
-        let _ = tx.send(Event::Log(format!(
-            "Reusing cached full video: {} ({:.1} MB)",
-            target.display(),
-            target.metadata().map(|m| m.len()).unwrap_or(0) as f64 / 1_048_576.0,
-        )));
-        return Ok(target);
-    }
-    let _ = tx.send(Event::Log(format!(
-        "Downloading full video {} → {}",
-        url,
-        target.display(),
-    )));
-    let _ = tx.send(Event::Progress { phase: "Downloading".into(), fraction: 0.0, detail: String::new() });
-
+) -> Result<(), String> {
     let mut cmd = Command::new("yt-dlp");
     cmd.args([
         "-f",
         "bestvideo[height<=2160]+bestaudio/best",
+        "--download-sections",
+        &format!("*{}-{}", start, end),
+        "--force-keyframes-at-cuts",
         "--merge-output-format",
         "mp4",
         "--newline",
         "-o",
-        target.to_str().ok_or("non-utf8 path")?,
+        out.to_str().ok_or("non-utf8 path")?,
     ]);
     if !settings.cookies_browser.is_empty() {
         cmd.arg("--cookies-from-browser").arg(&settings.cookies_browser);
@@ -221,57 +221,7 @@ fn ensure_full_video_cached(
     if let Some(h) = h_o { let _ = h.join(); }
     if let Some(h) = h_e { let _ = h.join(); }
     if !status.success() {
-        // yt-dlp may leave a partial file behind — remove it so a retry
-        // re-downloads cleanly.
-        let _ = std::fs::remove_file(&target);
         return Err(format!("yt-dlp exited with {:?}", status.code()));
-    }
-    Ok(target)
-}
-
-/// Cut [start, end] from `full` into `out` using ffmpeg. Re-encodes for
-/// frame-accurate cuts (since libx264 is fast on a few-minute segment
-/// and the result will be re-encoded by YouTube anyway).
-fn cut_segment(
-    full: &PathBuf,
-    start: &str,
-    end: &str,
-    out: &PathBuf,
-    segment_secs: f64,
-    tx: &Sender<Event>,
-) -> Result<(), String> {
-    let _ = tx.send(Event::Log(format!("Cutting {}-{} from cache", start, end)));
-    let _ = tx.send(Event::Progress { phase: "Encoding segment".into(), fraction: 0.0, detail: String::new() });
-
-    let start_secs = parse_timestamp(start).ok_or("invalid start timestamp")?;
-
-    let mut cmd = Command::new("ffmpeg");
-    cmd.args([
-        "-y",
-        "-ss", &format!("{:.3}", start_secs),
-        "-i", full.to_str().ok_or("non-utf8 input path")?,
-        "-t", &format!("{:.3}", segment_secs.max(0.0)),
-        "-c:v", "libx264",
-        "-preset", "fast",
-        "-crf", "18",
-        "-c:a", "aac",
-        "-b:a", "192k",
-        "-movflags", "+faststart",
-        out.to_str().ok_or("non-utf8 output path")?,
-    ]);
-    cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
-    let mut child = cmd.spawn().map_err(|e| format!("ffmpeg spawn: {}", e))?;
-    let stdout = child.stdout.take();
-    let stderr = child.stderr.take();
-    let tx_o = tx.clone();
-    let tx_e = tx.clone();
-    let h_o = stdout.map(|r| std::thread::spawn(move || stream_progress(r, tx_o, segment_secs)));
-    let h_e = stderr.map(|r| std::thread::spawn(move || stream_progress(r, tx_e, segment_secs)));
-    let status = child.wait().map_err(|e| format!("ffmpeg wait: {}", e))?;
-    if let Some(h) = h_o { let _ = h.join(); }
-    if let Some(h) = h_e { let _ = h.join(); }
-    if !status.success() {
-        return Err(format!("ffmpeg exited with {:?}", status.code()));
     }
     Ok(())
 }
@@ -348,10 +298,3 @@ fn extract_video_id(input: &str) -> String {
     input.to_string()
 }
 
-fn sanitize_filename(s: &str) -> String {
-    s.chars()
-        .map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '_' { c } else { '_' })
-        .collect::<String>()
-        .trim_matches('_')
-        .to_string()
-}
