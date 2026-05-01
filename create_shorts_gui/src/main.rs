@@ -6,6 +6,7 @@
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod browsers;
 mod deps;
 mod oauth;
 mod pipeline;
@@ -103,12 +104,25 @@ struct App {
     update_info: Option<update::UpdateInfo>,
     update_checking: bool,
     update_status_msg: Option<String>,
+    cookies_testing: bool,
+    cookies_test_rx: Option<Receiver<Result<String, String>>>,
+    cookies_status_msg: Option<String>,
+    detected_browsers: Vec<&'static str>,
 }
 
 enum BrewEvent {
     Log(String),
     Done,
     Error(String),
+}
+
+/// "chrome (installed)" if detected, otherwise just the name.
+fn browser_label(name: &str, detected: &[&'static str]) -> String {
+    if detected.iter().any(|d| *d == name) {
+        format!("{} (installed)", name)
+    } else {
+        name.to_string()
+    }
 }
 
 fn spawn_update_check() -> Receiver<Option<update::UpdateInfo>> {
@@ -159,7 +173,16 @@ fn chrono_like_now() -> String {
 
 impl App {
     fn new(cc: &eframe::CreationContext<'_>) -> Self {
-        let settings = Settings::load();
+        let mut settings = Settings::load();
+        let detected_browsers = browsers::detected();
+        // First-launch convenience: if the user hasn't picked a cookie
+        // browser yet, default to the most likely installed one. Saved
+        // to disk only when the user clicks Save in Settings.
+        if settings.cookies_browser.is_empty() {
+            if let Some(first) = detected_browsers.first() {
+                settings.cookies_browser = (*first).to_string();
+            }
+        }
         let signed_in = oauth::load_token().map(|t| !t.refresh_token.is_empty()).unwrap_or(false);
         let show_settings = settings.client_id.is_empty() || settings.client_secret.is_empty();
         let mut initial_log = load_persisted_log();
@@ -200,7 +223,29 @@ impl App {
             update_info: None,
             update_checking: true,
             update_status_msg: None,
+            cookies_testing: false,
+            cookies_test_rx: None,
+            cookies_status_msg: None,
+            detected_browsers,
         }
+    }
+
+    fn start_cookies_test(&mut self) {
+        if self.cookies_testing { return; }
+        let browser = self.settings.cookies_browser.trim().to_string();
+        if browser.is_empty() {
+            self.cookies_status_msg = Some("Pick a browser first.".into());
+            return;
+        }
+        self.cookies_status_msg = Some(format!("Testing {} cookies…", browser));
+        self.cookies_testing = true;
+        let (tx, rx) = unbounded::<Result<String, String>>();
+        self.cookies_test_rx = Some(rx);
+        let b = browser.clone();
+        std::thread::spawn(move || {
+            let result = browsers::test_cookies(&b).map(|()| b.clone());
+            let _ = tx.send(result);
+        });
     }
 
     fn trigger_update_check(&mut self) {
@@ -422,6 +467,17 @@ impl App {
             }
         }
 
+        if let Some(rx) = &self.cookies_test_rx {
+            if let Ok(result) = rx.try_recv() {
+                self.cookies_testing = false;
+                self.cookies_test_rx = None;
+                self.cookies_status_msg = Some(match result {
+                    Ok(b) => format!("✅ {} cookies look good.", b),
+                    Err(e) => format!("❌ {}", e),
+                });
+            }
+        }
+
         if let Some(rx) = &self.brew_rx {
             let mut done = false;
             while let Ok(ev) = rx.try_recv() {
@@ -477,7 +533,7 @@ impl eframe::App for App {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.drain_events();
         self.ensure_icon_texture(ctx);
-        if self.running || self.signing_in || self.brew_installing || self.update_checking {
+        if self.running || self.signing_in || self.brew_installing || self.update_checking || self.cookies_testing {
             ctx.request_repaint_after(std::time::Duration::from_millis(150));
         }
 
@@ -748,17 +804,33 @@ impl App {
                         ui.end_row();
 
                         ui.label("Cookies from browser:");
-                        let mut cb = self.settings.cookies_browser.clone();
-                        egui::ComboBox::from_id_salt("cookies_browser")
-                            .selected_text(if cb.is_empty() { "(none)" } else { cb.as_str() })
-                            .show_ui(ui, |ui| {
-                                for opt in ["", "chrome", "brave", "chromium", "edge", "firefox", "opera", "safari", "vivaldi"] {
-                                    let label = if opt.is_empty() { "(none)" } else { opt };
-                                    ui.selectable_value(&mut cb, opt.to_string(), label);
-                                }
-                            });
-                        self.settings.cookies_browser = cb;
+                        ui.horizontal(|ui| {
+                            let mut cb = self.settings.cookies_browser.clone();
+                            egui::ComboBox::from_id_salt("cookies_browser")
+                                .selected_text(if cb.is_empty() { "(none)".to_string() } else { browser_label(&cb, &self.detected_browsers) })
+                                .show_ui(ui, |ui| {
+                                    for opt in std::iter::once("").chain(browsers::ALL.iter().copied()) {
+                                        let label = if opt.is_empty() { "(none)".to_string() } else { browser_label(opt, &self.detected_browsers) };
+                                        ui.selectable_value(&mut cb, opt.to_string(), label);
+                                    }
+                                });
+                            self.settings.cookies_browser = cb;
+                            let test_label = if self.cookies_testing { "Testing…" } else { "Test" };
+                            if ui.add_enabled(!self.cookies_testing, egui::Button::new(test_label)).clicked() {
+                                self.start_cookies_test();
+                            }
+                        });
                         ui.end_row();
+                        if !self.detected_browsers.is_empty() {
+                            ui.label("");
+                            ui.label(RichText::new(format!("Detected: {}", self.detected_browsers.join(", "))).weak().small());
+                            ui.end_row();
+                        }
+                        if let Some(msg) = &self.cookies_status_msg {
+                            ui.label("");
+                            ui.label(RichText::new(msg).small());
+                            ui.end_row();
+                        }
                     });
 
                 ui.add_space(6.0);
