@@ -1,7 +1,8 @@
 //! Lightweight GitHub-releases update check. Hits the public Releases
 //! API once on startup, finds the newest non-prerelease tag matching
 //! `create-shorts-vX.Y.Z`, and reports it back if it's newer than the
-//! running `APP_VERSION`.
+//! running `APP_VERSION`. Also pulls out the macOS DMG asset URL so
+//! the in-app updater can download it without extra round trips.
 
 use serde::Deserialize;
 
@@ -14,12 +15,24 @@ struct GithubRelease {
     html_url: String,
     #[serde(default)]
     prerelease: bool,
+    #[serde(default)]
+    assets: Vec<GithubAsset>,
+}
+
+#[derive(Deserialize)]
+struct GithubAsset {
+    name: String,
+    browser_download_url: String,
 }
 
 #[derive(Clone, Debug)]
 pub struct UpdateInfo {
     pub version: (u32, u32, u32),
     pub url: String,
+    /// Direct download URL for the notarized macOS universal DMG, when
+    /// the release exposes one. None on release pages that haven't
+    /// finished publishing the DMG yet.
+    pub dmg_url: Option<String>,
 }
 
 impl UpdateInfo {
@@ -36,6 +49,13 @@ pub fn parse_version(s: &str) -> Option<(u32, u32, u32)> {
     let patch_str: String = patch_raw.chars().take_while(|c| c.is_ascii_digit()).collect();
     let patch: u32 = patch_str.parse().ok()?;
     Some((major, minor, patch))
+}
+
+fn find_dmg(assets: &[GithubAsset]) -> Option<String> {
+    assets
+        .iter()
+        .find(|a| a.name.ends_with("-macos-universal.dmg"))
+        .map(|a| a.browser_download_url.clone())
 }
 
 pub fn check_latest(current: &str) -> Option<UpdateInfo> {
@@ -61,7 +81,11 @@ pub fn check_latest(current: &str) -> Option<UpdateInfo> {
         let Some(v) = parse_version(stripped) else { continue };
         if v <= cur { continue; }
         if best.as_ref().map_or(true, |b| v > b.version) {
-            best = Some(UpdateInfo { version: v, url: r.html_url });
+            best = Some(UpdateInfo {
+                version: v,
+                url: r.html_url,
+                dmg_url: find_dmg(&r.assets),
+            });
         }
     }
     best

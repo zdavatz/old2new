@@ -417,7 +417,7 @@ Cross-platform eframe/egui desktop app wrapping the same pipeline as `create_sho
 - **Cookie auto-detect**: the Settings dialog probes for installed browsers (chrome/brave/chromium/edge/firefox/opera/safari/vivaldi) and labels detected ones in the dropdown. A **Test** button verifies the chosen browser actually grants yt-dlp cookie access, useful for age-restricted videos.
 - **Segment cache** at `~/Library/Caches/create_shorts/segments/` reuses identical (video, start, end) re-requests so Preview → Upload doesn't re-download.
 - **Dependency check**: probes `yt-dlp` / `ffmpeg` / `ffprobe` at startup. On macOS, an "Install with Homebrew" button shells out `brew install …` for whatever is missing (ffmpeg covers ffprobe). If Homebrew isn't installed, the banner shows the standard `/bin/bash -c "$(curl …)"` install command. Linux/Windows fall back to apt/scoop hints.
-- **In-app update check** on startup, plus a "Check for updates" button in Settings. New versions show a blue banner linking to the GitHub release page.
+- **In-app update check** on startup, plus a "Check for updates" button in Settings. New versions show a blue banner. On macOS (1.0.10+), if the running binary is inside an `.app` bundle, the banner offers an **Update now** button: it downloads the notarized DMG with a live progress bar, verifies the new bundle's signature, stages it next to the current install, and a tiny detached helper script swaps the bundles + relaunches once the app exits — Sparkle-style, so dyld can't see a replaced executable. Linux/Windows still link out to the GitHub release page.
 - **Persisted across restarts**: log (`<config_dir>/log.txt`, last 5000 lines) + form fields (eframe storage), so closing mid-edit doesn't lose work.
 
 ```bash

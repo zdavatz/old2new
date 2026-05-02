@@ -8,6 +8,7 @@
 
 mod browsers;
 mod deps;
+mod installer;
 mod oauth;
 mod pipeline;
 mod settings;
@@ -108,6 +109,9 @@ struct App {
     cookies_test_rx: Option<Receiver<Result<String, String>>>,
     cookies_status_msg: Option<String>,
     detected_browsers: Vec<&'static str>,
+    installing: bool,
+    install_rx: Option<Receiver<installer::InstallEvent>>,
+    install_progress: Arc<Mutex<ProgressInfo>>,
 }
 
 enum BrewEvent {
@@ -227,7 +231,53 @@ impl App {
             cookies_test_rx: None,
             cookies_status_msg: None,
             detected_browsers,
+            installing: false,
+            install_rx: None,
+            install_progress: Arc::new(Mutex::new(ProgressInfo::default())),
         }
+    }
+
+    fn start_install(&mut self) {
+        if self.installing { return; }
+        let Some(info) = self.update_info.clone() else { return };
+        let Some(dmg_url) = info.dmg_url.clone() else {
+            self.last_error = Some("This release has no macOS DMG attached yet.".into());
+            return;
+        };
+        let Some(app) = installer::current_app_bundle() else {
+            self.last_error = Some(
+                "In-app update is only available when running the installed .app from /Applications. \
+                 Open the release page to download manually.".into()
+            );
+            return;
+        };
+        if let Err(e) = installer::check_writable_parent(&app) {
+            self.last_error = Some(format!(
+                "Cannot install update in place: {}. Quit and reinstall manually from the release page.",
+                e
+            ));
+            return;
+        }
+
+        self.last_error = None;
+        if let Ok(mut p) = self.install_progress.lock() { *p = ProgressInfo::default(); }
+        let (tx, rx) = unbounded::<installer::InstallEvent>();
+        self.install_rx = Some(rx);
+        self.installing = true;
+        self.append_log(format!("Starting in-app update to {}…", info.pretty()));
+
+        std::thread::spawn(move || {
+            match installer::install_macos(&dmg_url, &app, tx.clone()) {
+                Ok(()) => {
+                    // Helper script is detached and waiting for our PID
+                    // to die. Give the user 600 ms to read the success
+                    // line, then exit so the swap can run.
+                    std::thread::sleep(std::time::Duration::from_millis(600));
+                    std::process::exit(0);
+                }
+                Err(e) => { let _ = tx.send(installer::InstallEvent::Error(e)); }
+            }
+        });
     }
 
     fn start_cookies_test(&mut self) {
@@ -478,6 +528,55 @@ impl App {
             }
         }
 
+        if let Some(rx) = &self.install_rx {
+            let mut done = false;
+            while let Ok(ev) = rx.try_recv() {
+                match ev {
+                    installer::InstallEvent::Log(s) => self.append_log(s),
+                    installer::InstallEvent::Phase(phase) => {
+                        if let Ok(mut p) = self.install_progress.lock() {
+                            p.phase = phase;
+                        }
+                    }
+                    installer::InstallEvent::DownloadProgress { bytes, total } => {
+                        if let Ok(mut p) = self.install_progress.lock() {
+                            p.phase = "Downloading update".into();
+                            p.fraction = if total == 0 { 0.0 } else { bytes as f32 / total as f32 };
+                            p.detail = if total == 0 {
+                                format!("{:.1} MB", bytes as f64 / 1_048_576.0)
+                            } else {
+                                format!(
+                                    "{:.1} / {:.1} MB",
+                                    bytes as f64 / 1_048_576.0,
+                                    total as f64 / 1_048_576.0,
+                                )
+                            };
+                        }
+                    }
+                    installer::InstallEvent::Done => {
+                        self.append_log("Update staged. Restarting…".into());
+                        if let Ok(mut p) = self.install_progress.lock() {
+                            p.phase = "Restarting…".into();
+                            p.fraction = 1.0;
+                            p.detail.clear();
+                        }
+                        // The worker thread calls process::exit shortly
+                        // after sending Done; nothing else to do here.
+                    }
+                    installer::InstallEvent::Error(e) => {
+                        self.last_error = Some(e.clone());
+                        self.append_log(format!("Update failed: {}", e));
+                        done = true;
+                    }
+                }
+            }
+            if done {
+                self.installing = false;
+                self.install_rx = None;
+                if let Ok(mut p) = self.install_progress.lock() { *p = ProgressInfo::default(); }
+            }
+        }
+
         if let Some(rx) = &self.brew_rx {
             let mut done = false;
             while let Ok(ev) = rx.try_recv() {
@@ -533,7 +632,7 @@ impl eframe::App for App {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.drain_events();
         self.ensure_icon_texture(ctx);
-        if self.running || self.signing_in || self.brew_installing || self.update_checking || self.cookies_testing {
+        if self.running || self.signing_in || self.brew_installing || self.update_checking || self.cookies_testing || self.installing {
             ctx.request_repaint_after(std::time::Duration::from_millis(150));
         }
 
@@ -568,6 +667,9 @@ impl eframe::App for App {
             ui.add_space(6.0);
 
             if let Some(info) = self.update_info.clone() {
+                let can_in_app_update = cfg!(target_os = "macos")
+                    && info.dmg_url.is_some()
+                    && installer::current_app_bundle().is_some();
                 egui::Frame::none()
                     .fill(egui::Color32::from_rgb(220, 240, 255))
                     .stroke(egui::Stroke::new(1.0, egui::Color32::from_rgb(80, 130, 200)))
@@ -580,14 +682,34 @@ impl eframe::App for App {
                                 format!("⬆ Update available: {} (you have v{})", info.pretty(), APP_VERSION),
                             );
                             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                                if ui.button("Dismiss").clicked() {
-                                    self.update_info = None;
+                                if !self.installing {
+                                    if ui.button("Dismiss").clicked() {
+                                        self.update_info = None;
+                                    }
                                 }
-                                if ui.button("Open release page").clicked() {
+                                if can_in_app_update {
+                                    let label = if self.installing { "Updating…" } else { "Update now" };
+                                    let resp = ui.add_enabled(!self.installing, egui::Button::new(label));
+                                    if resp.clicked() { self.start_install(); }
+                                } else if ui.button("Open release page").clicked() {
                                     let _ = open::that(&info.url);
                                 }
                             });
                         });
+                        if self.installing {
+                            let p = self.install_progress.lock().unwrap().clone();
+                            let bar = if p.fraction > 0.0 {
+                                egui::ProgressBar::new(p.fraction).show_percentage().animate(true)
+                            } else {
+                                egui::ProgressBar::new(0.0).animate(true)
+                            };
+                            let phase_label = if p.phase.is_empty() { "Working".to_string() } else { p.phase.clone() };
+                            ui.add_space(4.0);
+                            ui.add(bar.text(phase_label));
+                            if !p.detail.is_empty() {
+                                ui.label(RichText::new(p.detail).weak().small());
+                            }
+                        }
                     });
                 ui.add_space(6.0);
             }
