@@ -1,0 +1,12 @@
+{
+  "name": "create_shorts_whatsapp",
+  "version": "1.0.0",
+  "description": "WhatsApp helper scripts for create_shorts_gui (Baileys)",
+  "type": "module",
+  "private": true,
+  "dependencies": {
+    "@whiskeysockets/baileys": "^7.0.0-rc.9",
+    "qrcode-terminal": "^0.12.0",
+    "pino": "^9.0.0"
+  }
+}

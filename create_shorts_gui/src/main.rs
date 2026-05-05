@@ -13,6 +13,7 @@ mod oauth;
 mod pipeline;
 mod settings;
 mod update;
+mod whatsapp;
 mod youtube;
 
 use crossbeam_channel::{unbounded, Receiver, Sender};
@@ -112,6 +113,17 @@ struct App {
     installing: bool,
     install_rx: Option<Receiver<installer::InstallEvent>>,
     install_progress: Arc<Mutex<ProgressInfo>>,
+    wa_sending: bool,
+    wa_rx: Option<Receiver<Result<(), String>>>,
+    wa_status_msg: Option<String>,
+    wa_setup_running: bool,
+    wa_setup_rx: Option<Receiver<whatsapp::SetupEvent>>,
+    wa_login_running: bool,
+    wa_login_rx: Option<Receiver<whatsapp::LoginEvent>>,
+    wa_qr: Option<String>,
+    wa_show_qr: bool,
+    wa_provisioned: bool,
+    wa_linked: bool,
 }
 
 enum BrewEvent {
@@ -206,7 +218,7 @@ impl App {
         } else {
             "public".to_string()
         };
-        Self {
+        let mut s = Self {
             form: FormState { privacy, ..saved_form },
             settings,
             log: Arc::new(Mutex::new(initial_log)),
@@ -234,7 +246,101 @@ impl App {
             installing: false,
             install_rx: None,
             install_progress: Arc::new(Mutex::new(ProgressInfo::default())),
+            wa_sending: false,
+            wa_rx: None,
+            wa_status_msg: None,
+            wa_setup_running: false,
+            wa_setup_rx: None,
+            wa_login_running: false,
+            wa_login_rx: None,
+            wa_qr: None,
+            wa_show_qr: false,
+            wa_provisioned: false,
+            wa_linked: false,
+        };
+        s.refresh_wa_status();
+        s
+    }
+
+    fn refresh_wa_status(&mut self) {
+        let dir = self.settings.whatsapp_dir.trim();
+        if dir.is_empty() {
+            self.wa_provisioned = false;
+            self.wa_linked = false;
+            return;
         }
+        let p = std::path::Path::new(dir);
+        self.wa_provisioned = whatsapp::is_provisioned(p);
+        self.wa_linked = whatsapp::is_linked(p);
+    }
+
+    fn start_wa_setup(&mut self) {
+        if self.wa_setup_running { return; }
+        // If user hasn't picked a dir, default to the managed one under config.
+        if self.settings.whatsapp_dir.trim().is_empty() {
+            self.settings.whatsapp_dir = settings::managed_whatsapp_dir().to_string_lossy().into_owned();
+        }
+        let dir = std::path::PathBuf::from(self.settings.whatsapp_dir.trim());
+        // Always (re-)write the bundled scripts so updates land even if
+        // node_modules already exists.
+        if let Err(e) = whatsapp::refresh_scripts(&dir) {
+            // Not fatal — setup will (re-)write them anyway.
+            self.append_log(format!("refresh_scripts: {}", e));
+        }
+        self.append_log(format!("WhatsApp setup → {}", dir.display()));
+        self.wa_status_msg = Some("Setup running…".into());
+        self.wa_setup_running = true;
+        let (tx, rx) = unbounded::<whatsapp::SetupEvent>();
+        self.wa_setup_rx = Some(rx);
+        std::thread::spawn(move || whatsapp::setup(dir, tx));
+    }
+
+    fn start_wa_login(&mut self) {
+        if self.wa_login_running { return; }
+        let dir_str = self.settings.whatsapp_dir.trim().to_string();
+        if dir_str.is_empty() {
+            self.wa_status_msg = Some("Set WhatsApp dir first.".into());
+            return;
+        }
+        let dir = std::path::PathBuf::from(&dir_str);
+        if !whatsapp::is_provisioned(&dir) {
+            self.wa_status_msg = Some("Run 'Setup WhatsApp' first.".into());
+            return;
+        }
+        self.wa_qr = None;
+        self.wa_show_qr = true;
+        self.wa_status_msg = Some("Generating QR code…".into());
+        self.append_log(format!("WhatsApp link → {}", dir.display()));
+        self.wa_login_running = true;
+        let (tx, rx) = unbounded::<whatsapp::LoginEvent>();
+        self.wa_login_rx = Some(rx);
+        std::thread::spawn(move || whatsapp::login(dir, tx));
+    }
+
+    fn start_wa_send(&mut self, url: String) {
+        if self.wa_sending { return; }
+        let title = self.form.title.trim().to_string();
+        let message = if title.is_empty() { url.clone() } else { format!("{}\n{}", title, url) };
+        let dir = self.settings.whatsapp_dir.clone();
+        let recipient = self.settings.whatsapp_recipient.clone();
+        if dir.trim().is_empty() {
+            self.wa_status_msg = Some("WhatsApp dir not set — open Settings.".into());
+            return;
+        }
+        if recipient.trim().is_empty() {
+            self.wa_status_msg = Some("WhatsApp recipient not set — open Settings.".into());
+            return;
+        }
+        self.append_log(format!("Sending YouTube link to WhatsApp recipient {}…", recipient));
+        self.wa_status_msg = Some(format!("Sending to {}…", recipient));
+        self.wa_sending = true;
+        let (tx, rx) = unbounded::<Result<(), String>>();
+        self.wa_rx = Some(rx);
+        std::thread::spawn(move || {
+            let result = whatsapp::send_text(&dir, &recipient, &message)
+                .map_err(|e| e.to_string());
+            let _ = tx.send(result);
+        });
     }
 
     fn start_install(&mut self) {
@@ -577,6 +683,78 @@ impl App {
             }
         }
 
+        if let Some(rx) = &self.wa_rx {
+            if let Ok(result) = rx.try_recv() {
+                self.wa_sending = false;
+                self.wa_rx = None;
+                match result {
+                    Ok(()) => {
+                        self.wa_status_msg = Some("✅ Sent via WhatsApp.".into());
+                        self.append_log("WhatsApp send: ok".into());
+                    }
+                    Err(e) => {
+                        self.wa_status_msg = Some(format!("❌ {}", e));
+                        self.append_log(format!("WhatsApp send failed: {}", e));
+                    }
+                }
+            }
+        }
+
+        if let Some(rx) = &self.wa_setup_rx {
+            let mut done = false;
+            while let Ok(ev) = rx.try_recv() {
+                match ev {
+                    whatsapp::SetupEvent::Log(s) => self.append_log(s),
+                    whatsapp::SetupEvent::Done => {
+                        self.append_log("WhatsApp setup complete.".into());
+                        self.wa_status_msg = Some("✅ Setup complete. Now click 'Link WhatsApp'.".into());
+                        done = true;
+                    }
+                    whatsapp::SetupEvent::Error(e) => {
+                        self.append_log(format!("WhatsApp setup failed: {}", e));
+                        self.wa_status_msg = Some(format!("❌ Setup failed: {}", e));
+                        done = true;
+                    }
+                }
+            }
+            if done {
+                self.wa_setup_running = false;
+                self.wa_setup_rx = None;
+                self.refresh_wa_status();
+            }
+        }
+
+        if let Some(rx) = &self.wa_login_rx {
+            let mut done = false;
+            while let Ok(ev) = rx.try_recv() {
+                match ev {
+                    whatsapp::LoginEvent::Log(s) => self.append_log(s),
+                    whatsapp::LoginEvent::Qr(qr) => {
+                        self.wa_qr = Some(qr);
+                        self.wa_show_qr = true;
+                        self.wa_status_msg = Some("Scan QR with WhatsApp → Linked Devices.".into());
+                    }
+                    whatsapp::LoginEvent::Linked => {
+                        self.append_log("WhatsApp linked.".into());
+                        self.wa_status_msg = Some("✅ Linked!".into());
+                        self.wa_qr = None;
+                        self.wa_show_qr = false;
+                        done = true;
+                    }
+                    whatsapp::LoginEvent::Error(e) => {
+                        self.append_log(format!("WhatsApp link failed: {}", e));
+                        self.wa_status_msg = Some(format!("❌ Link failed: {}", e));
+                        done = true;
+                    }
+                }
+            }
+            if done {
+                self.wa_login_running = false;
+                self.wa_login_rx = None;
+                self.refresh_wa_status();
+            }
+        }
+
         if let Some(rx) = &self.brew_rx {
             let mut done = false;
             while let Ok(ev) = rx.try_recv() {
@@ -632,7 +810,7 @@ impl eframe::App for App {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.drain_events();
         self.ensure_icon_texture(ctx);
-        if self.running || self.signing_in || self.brew_installing || self.update_checking || self.cookies_testing || self.installing {
+        if self.running || self.signing_in || self.brew_installing || self.update_checking || self.cookies_testing || self.installing || self.wa_sending || self.wa_setup_running || self.wa_login_running {
             ctx.request_repaint_after(std::time::Duration::from_millis(150));
         }
 
@@ -815,6 +993,10 @@ impl eframe::App for App {
 
             if let Some(url) = self.last_done_url.clone() {
                 ui.add_space(6.0);
+                let wa_configured = !self.settings.whatsapp_dir.trim().is_empty()
+                    && !self.settings.whatsapp_recipient.trim().is_empty()
+                    && self.wa_provisioned
+                    && self.wa_linked;
                 egui::Frame::none()
                     .fill(egui::Color32::from_rgb(220, 245, 220))
                     .stroke(egui::Stroke::new(1.0, egui::Color32::from_rgb(80, 160, 80)))
@@ -829,6 +1011,7 @@ impl eframe::App for App {
                             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                                 if ui.button("Dismiss").clicked() {
                                     self.last_done_url = None;
+                                    self.wa_status_msg = None;
                                 }
                                 if ui.button("Copy URL").clicked() {
                                     ui.ctx().output_mut(|o| o.copied_text = url.clone());
@@ -836,8 +1019,26 @@ impl eframe::App for App {
                                 if ui.button("Open in browser").clicked() {
                                     let _ = open::that(&url);
                                 }
+                                let label = if self.wa_sending { "Sending…" } else { "Send via WA" };
+                                let tooltip = if wa_configured {
+                                    format!("Send YouTube link to {}", self.settings.whatsapp_recipient)
+                                } else if self.settings.whatsapp_dir.trim().is_empty() || self.settings.whatsapp_recipient.trim().is_empty() {
+                                    "Configure WhatsApp dir + recipient in Settings first".to_string()
+                                } else if !self.wa_provisioned {
+                                    "Click 'Setup WhatsApp' in Settings first".to_string()
+                                } else {
+                                    "Click 'Link WhatsApp' in Settings first".to_string()
+                                };
+                                let resp = ui.add_enabled(
+                                    wa_configured && !self.wa_sending,
+                                    egui::Button::new(label),
+                                ).on_hover_text(tooltip);
+                                if resp.clicked() { self.start_wa_send(url.clone()); }
                             });
                         });
+                        if let Some(msg) = &self.wa_status_msg {
+                            ui.label(RichText::new(msg).small());
+                        }
                     });
             }
 
@@ -881,10 +1082,59 @@ impl eframe::App for App {
         if self.show_settings {
             self.draw_settings(ctx);
         }
+
+        if self.wa_show_qr {
+            self.draw_qr_modal(ctx);
+        }
     }
 }
 
 impl App {
+    fn draw_qr_modal(&mut self, ctx: &egui::Context) {
+        let mut open = self.wa_show_qr;
+        egui::Window::new("Link WhatsApp")
+            .open(&mut open)
+            .collapsible(false)
+            .resizable(false)
+            .default_width(560.0)
+            .show(ctx, |ui| {
+                ui.label("Open WhatsApp on your phone → Settings → Linked Devices → Link a Device, then scan:");
+                ui.add_space(6.0);
+                if let Some(qr) = self.wa_qr.clone() {
+                    egui::Frame::none()
+                        .fill(egui::Color32::WHITE)
+                        .inner_margin(8.0)
+                        .show(ui, |ui| {
+                            ui.add(
+                                egui::Label::new(
+                                    RichText::new(qr)
+                                        .monospace()
+                                        .color(egui::Color32::BLACK),
+                                )
+                                .selectable(false),
+                            );
+                        });
+                } else if self.wa_login_running {
+                    ui.label(RichText::new("Generating QR code…").italics());
+                } else {
+                    ui.label("No QR code yet.");
+                }
+                ui.add_space(8.0);
+                ui.horizontal(|ui| {
+                    if ui.button("Cancel").clicked() {
+                        self.wa_show_qr = false;
+                        // Note: the node child keeps running until it
+                        // times out (5 min) — we just stop showing the
+                        // modal. Could be improved with a kill switch.
+                    }
+                });
+            });
+        // If the user closed the window via the X button, mirror that.
+        if !open {
+            self.wa_show_qr = false;
+        }
+    }
+
     fn draw_settings(&mut self, ctx: &egui::Context) {
         let mut open = self.show_settings;
         egui::Window::new("Settings")
@@ -949,6 +1199,62 @@ impl App {
                             ui.end_row();
                         }
                         if let Some(msg) = &self.cookies_status_msg {
+                            ui.label("");
+                            ui.label(RichText::new(msg).small());
+                            ui.end_row();
+                        }
+
+                        ui.label("WhatsApp dir:");
+                        ui.add(
+                            egui::TextEdit::singleline(&mut self.settings.whatsapp_dir)
+                                .hint_text(settings::managed_whatsapp_dir().to_string_lossy().as_ref())
+                                .desired_width(f32::INFINITY),
+                        );
+                        ui.end_row();
+
+                        ui.label("WhatsApp recipient:");
+                        ui.add(
+                            egui::TextEdit::singleline(&mut self.settings.whatsapp_recipient)
+                                .hint_text("phone (41791234567) or group JID (…@g.us)")
+                                .desired_width(f32::INFINITY),
+                        );
+                        ui.end_row();
+
+                        ui.label("WhatsApp status:");
+                        let status = if self.settings.whatsapp_dir.trim().is_empty() {
+                            "Not configured".to_string()
+                        } else if !self.wa_provisioned {
+                            "Not provisioned — click Setup".to_string()
+                        } else if !self.wa_linked {
+                            "Not linked — click Link".to_string()
+                        } else {
+                            "✅ Provisioned and linked".to_string()
+                        };
+                        ui.label(RichText::new(status).small());
+                        ui.end_row();
+
+                        ui.label("");
+                        ui.horizontal(|ui| {
+                            let setup_label = if self.wa_setup_running { "Setting up…" } else { "Setup WhatsApp" };
+                            let setup_btn = ui.add_enabled(
+                                !self.wa_setup_running && !self.wa_login_running,
+                                egui::Button::new(setup_label),
+                            ).on_hover_text("Write helper scripts and run npm install in the WhatsApp dir");
+                            if setup_btn.clicked() { self.start_wa_setup(); }
+
+                            let link_label = if self.wa_login_running { "Linking…" } else { "Link WhatsApp" };
+                            let link_btn = ui.add_enabled(
+                                self.wa_provisioned && !self.wa_setup_running && !self.wa_login_running,
+                                egui::Button::new(link_label),
+                            ).on_hover_text("Show QR code so you can link this device with WhatsApp on your phone");
+                            if link_btn.clicked() { self.start_wa_login(); }
+
+                            if !self.wa_provisioned {
+                                ui.label(RichText::new("(run Setup first)").weak().small());
+                            }
+                        });
+                        ui.end_row();
+                        if let Some(msg) = &self.wa_status_msg {
                             ui.label("");
                             ui.label(RichText::new(msg).small());
                             ui.end_row();

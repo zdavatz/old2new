@@ -18,6 +18,14 @@ pub struct Settings {
     /// Otherwise one of: chrome, brave, chromium, edge, firefox, opera, safari, vivaldi.
     #[serde(default)]
     pub cookies_browser: String,
+    /// Path to the pegelstand `whatsapp/` directory (provides auth/ + node_modules/).
+    /// Empty = WhatsApp send disabled.
+    #[serde(default)]
+    pub whatsapp_dir: String,
+    /// WhatsApp recipient: phone number (digits only, e.g. 41791234567)
+    /// or full JID (e.g. 1203634XXXX@g.us for groups).
+    #[serde(default)]
+    pub whatsapp_recipient: String,
 }
 
 fn default_privacy() -> String {
@@ -31,8 +39,22 @@ impl Default for Settings {
             client_secret: String::new(),
             default_privacy: default_privacy(),
             cookies_browser: String::new(),
+            whatsapp_dir: default_whatsapp_dir(),
+            whatsapp_recipient: String::new(),
         }
     }
+}
+
+/// Default to a self-contained WhatsApp dir under the app's config dir.
+/// Setup WhatsApp provisions this dir (npm install + scripts) and Link
+/// WhatsApp creates auth/ inside it. Self-contained — no dependency on
+/// other projects.
+fn default_whatsapp_dir() -> String {
+    config_dir().join("whatsapp").to_string_lossy().into_owned()
+}
+
+pub fn managed_whatsapp_dir() -> std::path::PathBuf {
+    config_dir().join("whatsapp")
 }
 
 pub fn config_dir() -> PathBuf {
