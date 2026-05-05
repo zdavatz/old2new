@@ -1,31 +1,31 @@
 #!/usr/bin/env node
-// One-shot WhatsApp linking via Baileys.
+// WhatsApp login via Baileys — port of pegelstand's proven login flow
+// (`~/software/pegelstand/whatsapp/login.mjs`), with two additions for
+// create_shorts_gui:
+//   - QR ASCII is wrapped in QR-CODE-BEGIN/QR-CODE-END markers so the
+//     Rust GUI can pick it up and render it in a modal.
+//   - On success, we print the literal sentinel `LINKED` so the GUI
+//     can transition state without parsing localized strings.
 //
 // Flow:
-//   1. Open socket with auth dir → QR code printed (qrcode-terminal ASCII).
-//   2. User scans on their phone.
-//   3. `creds.update` fires once `state.creds.me.id` is set — that's the
-//      definitive "link succeeded" signal, regardless of subsequent
-//      connection events.
-//   4. WhatsApp servers always close the post-scan socket with status 515
-//      (DisconnectReason.restartRequired) — this is normal, NOT a failure.
-//      We exit cleanly because the creds are already on disk.
-//
-// Stale-auth recovery: if the socket is logged out *before* a QR is shown
-// (statusCode 401, "Logged out"), the auth dir has stale creds from a
-// previous half-finished link. We wipe `auth/` and retry once.
+//   1. Open socket → either `connection: open` or `connection: close`.
+//   2. On `open` → success.
+//   3. On `close` with status 515 (restartRequired) — normal post-pair
+//      restart — reconnect once and wait for `open` again.
+//   4. On `close` with status 401/403 — stale session — wipe `auth/`
+//      and retry once with a fresh QR.
+//   5. Anything else → fail with the status code.
 
-import { rm, mkdir } from "fs/promises";
 import makeWASocket, {
   useMultiFileAuthState,
   makeCacheableSignalKeyStore,
   fetchLatestBaileysVersion,
-  DisconnectReason,
 } from "@whiskeysockets/baileys";
 import qrcode from "qrcode-terminal";
 import pino from "pino";
 import { resolve, dirname } from "path";
 import { fileURLToPath } from "url";
+import { rmSync, existsSync } from "fs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const AUTH_DIR = resolve(__dirname, "auth");
@@ -33,7 +33,7 @@ const logger = pino({ level: "silent" });
 
 console.log(`Auth dir: ${AUTH_DIR}`);
 
-async function attempt({ allowAuthReset }) {
+async function startSocket() {
   const { state, saveCreds } = await useMultiFileAuthState(AUTH_DIR);
   const { version } = await fetchLatestBaileysVersion();
   console.log(`WA version: ${version.join(".")}`);
@@ -45,94 +45,82 @@ async function attempt({ allowAuthReset }) {
     },
     version,
     logger,
-    browser: ["create_shorts", "GUI", "1.0"],
+    browser: ["create_shorts", "Desktop", "1.0"],
     syncFullHistory: false,
     markOnlineOnConnect: false,
   });
 
-  let qrShown = false;
-  let linked = false;
+  sock.ev.on("creds.update", saveCreds);
+  return sock;
+}
 
-  return new Promise((resolvePromise, reject) => {
+async function loginOnce() {
+  const sock = await startSocket();
+
+  return new Promise((resolve) => {
+    let done = false;
+    const finish = (result) => {
+      if (done) return;
+      done = true;
+      clearTimeout(timeout);
+      resolve(result);
+    };
     const timeout = setTimeout(() => {
       try { sock.end(); } catch (_) {}
-      reject(new Error("Link timeout (5 min)"));
+      finish({ ok: false, msg: "Link timeout (5 min)" });
     }, 300000);
 
-    sock.ev.on("creds.update", async () => {
-      await saveCreds();
-      if (!linked && state.creds?.me?.id) {
-        // First creds.update with `me.id` set = QR was scanned successfully.
-        linked = true;
-        console.log("LINKED");
-        clearTimeout(timeout);
-        // Give the server a beat to receive our ack, then exit. The
-        // post-link 515 close that always follows is harmless — auth/
-        // already has everything we need for `send-text.mjs`.
-        setTimeout(() => process.exit(0), 1500);
-      }
-    });
-
     sock.ev.on("connection.update", (update) => {
-      const { connection, lastDisconnect, qr } = update;
+      const { connection, qr, lastDisconnect } = update;
 
       if (qr) {
-        qrShown = true;
         console.log("\nQR-CODE-BEGIN");
         qrcode.generate(qr, { small: true });
         console.log("QR-CODE-END");
         console.log("Scan with WhatsApp → Settings → Linked Devices → Link a Device");
       }
 
+      if (connection === "open") {
+        finish({ ok: true });
+        setTimeout(() => { try { sock.end(); } catch (_) {} }, 500);
+      }
+
       if (connection === "close") {
-        const statusCode = lastDisconnect?.error?.output?.statusCode;
-        // If creds.update has already declared success, the close is the
-        // expected post-link 515 — let the exit timer fire.
-        if (linked) return;
-        clearTimeout(timeout);
-
-        // Stale auth: server rejects creds before showing QR. Wipe and
-        // retry once.
-        if (
-          statusCode === DisconnectReason.loggedOut &&
-          !qrShown &&
-          allowAuthReset
-        ) {
-          console.log("Stale auth detected — clearing and retrying.");
-          rm(AUTH_DIR, { recursive: true, force: true })
-            .then(() => mkdir(AUTH_DIR, { recursive: true }))
-            .then(() => attempt({ allowAuthReset: false }))
-            .then(resolvePromise, reject);
-          return;
-        }
-
-        // Status 515 (restartRequired) without `linked` means creds.update
-        // hasn't fired yet — wait briefly; saveCreds() may still be
-        // flushing. If it doesn't arrive in 2 s, give up.
-        if (statusCode === DisconnectReason.restartRequired) {
-          setTimeout(() => {
-            if (linked) return; // creds.update fired in the meantime
-            if (state.creds?.me?.id) {
-              console.log("LINKED");
-              setTimeout(() => process.exit(0), 500);
-              return;
-            }
-            reject(new Error("Restart required, but no credentials saved (try again)"));
-          }, 2000);
-          return;
-        }
-
-        if (statusCode === DisconnectReason.loggedOut) {
-          reject(new Error("Logged out before scan (clear auth dir and try again)"));
-          return;
-        }
-        reject(new Error(`Connection closed (status ${statusCode ?? "?"})`));
+        const err = lastDisconnect?.error;
+        const code = err?.output?.statusCode;
+        const msg = err?.message || "unknown";
+        finish({ ok: false, code, msg });
       }
     });
   });
 }
 
-attempt({ allowAuthReset: true })
+async function main() {
+  let result = await loginOnce();
+
+  if (!result.ok) {
+    console.log(`Connection closed (code ${result.code ?? "?"}, ${result.msg})`);
+
+    if (result.code === 401 || result.code === 403) {
+      console.log("Stale session — clearing and retrying with fresh QR.");
+      if (existsSync(AUTH_DIR)) {
+        rmSync(AUTH_DIR, { recursive: true, force: true });
+      }
+      result = await loginOnce();
+      if (!result.ok) throw new Error(`Re-login failed: ${result.msg}`);
+    } else if (result.code === 515) {
+      console.log("Restart required — reconnecting…");
+      result = await loginOnce();
+      if (!result.ok) throw new Error(`Reconnect failed: ${result.msg}`);
+    } else {
+      throw new Error(`Connection closed: ${result.msg}`);
+    }
+  }
+
+  console.log("LINKED");
+}
+
+main()
   .then(() => process.exit(0))
   .catch((err) => {
     console.error("Error:", err.message);
