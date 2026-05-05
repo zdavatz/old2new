@@ -214,10 +214,13 @@ fn spawn_swap_helper(current_app: &Path, staging: &Path) -> Result<(), String> {
     );
 
     fs::write(&helper, script).map_err(|e| format!("write helper: {}", e))?;
-    use std::os::unix::fs::PermissionsExt;
-    let mut perms = fs::metadata(&helper).map_err(|e| format!("perms: {}", e))?.permissions();
-    perms.set_mode(0o755);
-    let _ = fs::set_permissions(&helper, perms);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mut perms = fs::metadata(&helper).map_err(|e| format!("perms: {}", e))?.permissions();
+        perms.set_mode(0o755);
+        let _ = fs::set_permissions(&helper, perms);
+    }
 
     Command::new("/bin/bash")
         .arg(&helper)
