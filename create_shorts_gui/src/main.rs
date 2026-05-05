@@ -124,6 +124,12 @@ struct App {
     wa_show_qr: bool,
     wa_provisioned: bool,
     wa_linked: bool,
+    wa_picker_open: bool,
+    wa_picker_loading: bool,
+    wa_picker_items: Vec<whatsapp::Recipient>,
+    wa_picker_error: Option<String>,
+    wa_picker_filter: String,
+    wa_picker_rx: Option<Receiver<Result<Vec<whatsapp::Recipient>, String>>>,
 }
 
 enum BrewEvent {
@@ -257,6 +263,12 @@ impl App {
             wa_show_qr: false,
             wa_provisioned: false,
             wa_linked: false,
+            wa_picker_open: false,
+            wa_picker_loading: false,
+            wa_picker_items: Vec::new(),
+            wa_picker_error: None,
+            wa_picker_filter: String::new(),
+            wa_picker_rx: None,
         };
         s.refresh_wa_status();
         s
@@ -339,6 +351,39 @@ impl App {
         std::thread::spawn(move || {
             let result = whatsapp::send_text(&dir, &recipient, &message)
                 .map_err(|e| e.to_string());
+            let _ = tx.send(result);
+        });
+    }
+
+    fn start_wa_pick_recipient(&mut self) {
+        if self.wa_picker_loading { return; }
+        let dir = self.settings.whatsapp_dir.clone();
+        if dir.trim().is_empty() {
+            self.wa_picker_error = Some("Set WhatsApp dir first.".into());
+            self.wa_picker_open = true;
+            return;
+        }
+        if !self.wa_provisioned {
+            self.wa_picker_error = Some("Run 'Setup WhatsApp' first.".into());
+            self.wa_picker_open = true;
+            return;
+        }
+        if !self.wa_linked {
+            self.wa_picker_error = Some("Click 'Link WhatsApp' first.".into());
+            self.wa_picker_open = true;
+            return;
+        }
+        self.wa_picker_open = true;
+        self.wa_picker_error = None;
+        self.wa_picker_filter.clear();
+        // Show cached items instantly while a fresh fetch runs in the
+        // background.
+        self.wa_picker_items = whatsapp::load_cached_recipients(&dir);
+        self.wa_picker_loading = true;
+        let (tx, rx) = unbounded::<Result<Vec<whatsapp::Recipient>, String>>();
+        self.wa_picker_rx = Some(rx);
+        std::thread::spawn(move || {
+            let result = whatsapp::list_recipients(&dir).map_err(|e| e.to_string());
             let _ = tx.send(result);
         });
     }
@@ -755,6 +800,23 @@ impl App {
             }
         }
 
+        if let Some(rx) = &self.wa_picker_rx {
+            if let Ok(result) = rx.try_recv() {
+                self.wa_picker_loading = false;
+                self.wa_picker_rx = None;
+                match result {
+                    Ok(items) => {
+                        self.append_log(format!("Fetched {} WhatsApp groups.", items.len()));
+                        self.wa_picker_items = items;
+                    }
+                    Err(e) => {
+                        self.append_log(format!("WhatsApp recipient list failed: {}", e));
+                        self.wa_picker_error = Some(e);
+                    }
+                }
+            }
+        }
+
         if let Some(rx) = &self.brew_rx {
             let mut done = false;
             while let Ok(ev) = rx.try_recv() {
@@ -1034,6 +1096,30 @@ impl eframe::App for App {
                                     egui::Button::new(label),
                                 ).on_hover_text(tooltip);
                                 if resp.clicked() { self.start_wa_send(url.clone()); }
+                                let person_btn = ui.button("Send to person…")
+                                    .on_hover_text(
+                                        "Open WhatsApp with the YouTube link pre-filled, \
+                                         then pick the contact yourself (uses wa.me)",
+                                    );
+                                if person_btn.clicked() {
+                                    let title = self.form.title.trim();
+                                    let msg = if title.is_empty() {
+                                        url.clone()
+                                    } else {
+                                        format!("{}\n{}", title, url)
+                                    };
+                                    let share = format!(
+                                        "https://wa.me/?text={}",
+                                        urlencoding::encode(&msg),
+                                    );
+                                    self.append_log(format!("Opening WhatsApp share: {}", share));
+                                    if let Err(e) = open::that(&share) {
+                                        self.last_error = Some(format!(
+                                            "Could not open WhatsApp share URL: {}",
+                                            e
+                                        ));
+                                    }
+                                }
                             });
                         });
                         if let Some(msg) = &self.wa_status_msg {
@@ -1086,6 +1172,10 @@ impl eframe::App for App {
         if self.wa_show_qr {
             self.draw_qr_modal(ctx);
         }
+
+        if self.wa_picker_open {
+            self.draw_recipient_picker(ctx);
+        }
     }
 }
 
@@ -1132,6 +1222,86 @@ impl App {
         // If the user closed the window via the X button, mirror that.
         if !open {
             self.wa_show_qr = false;
+        }
+    }
+
+    fn draw_recipient_picker(&mut self, ctx: &egui::Context) {
+        let mut open = self.wa_picker_open;
+        let mut chosen: Option<String> = None;
+        egui::Window::new("Pick WhatsApp recipient")
+            .open(&mut open)
+            .collapsible(false)
+            .resizable(true)
+            .default_width(420.0)
+            .default_height(360.0)
+            .show(ctx, |ui| {
+                if let Some(err) = &self.wa_picker_error {
+                    ui.colored_label(egui::Color32::from_rgb(220, 80, 80), err);
+                    ui.add_space(6.0);
+                }
+                if self.wa_picker_loading && self.wa_picker_items.is_empty() {
+                    // First-time fetch (no cache yet) — full-screen loader.
+                    ui.horizontal(|ui| {
+                        ui.spinner();
+                        ui.label("Connecting and fetching groups…");
+                    });
+                    return;
+                }
+                if self.wa_picker_items.is_empty() && self.wa_picker_error.is_none() {
+                    ui.label(RichText::new(
+                        "No WhatsApp groups found on this account.\n\
+                         For 1:1 chats, type the phone number (digits only, e.g. 41791234567).",
+                    ).weak());
+                    return;
+                }
+                ui.horizontal(|ui| {
+                    ui.label("Filter:");
+                    ui.add(
+                        egui::TextEdit::singleline(&mut self.wa_picker_filter)
+                            .desired_width(ui.available_width() - 110.0),
+                    );
+                    if self.wa_picker_loading {
+                        ui.spinner();
+                        ui.label(RichText::new("refreshing").weak().small());
+                    }
+                });
+                ui.add_space(4.0);
+                let filter = self.wa_picker_filter.to_lowercase();
+                egui::ScrollArea::vertical()
+                    .auto_shrink([false; 2])
+                    .show(ui, |ui| {
+                        for r in &self.wa_picker_items {
+                            if !filter.is_empty()
+                                && !r.name.to_lowercase().contains(&filter)
+                                && !r.jid.to_lowercase().contains(&filter)
+                            {
+                                continue;
+                            }
+                            let icon = if r.kind == "group" { "👥" } else { "👤" };
+                            let display_name = if r.name.is_empty() {
+                                // For unnamed 1:1 contacts, show the phone
+                                // number portion of the JID as a hint.
+                                r.jid.split('@').next().unwrap_or(&r.jid).to_string()
+                            } else {
+                                r.name.clone()
+                            };
+                            let label = if r.name.is_empty() && r.kind != "group" {
+                                format!("{}  +{}", icon, display_name)
+                            } else {
+                                format!("{}  {}", icon, display_name)
+                            };
+                            if ui.selectable_label(false, label).clicked() {
+                                chosen = Some(r.jid.clone());
+                            }
+                        }
+                    });
+            });
+        if let Some(jid) = chosen {
+            self.settings.whatsapp_recipient = jid;
+            self.wa_picker_open = false;
+        }
+        if !open {
+            self.wa_picker_open = false;
         }
     }
 
@@ -1213,11 +1383,19 @@ impl App {
                         ui.end_row();
 
                         ui.label("WhatsApp recipient:");
-                        ui.add(
-                            egui::TextEdit::singleline(&mut self.settings.whatsapp_recipient)
-                                .hint_text("phone (41791234567) or group JID (…@g.us)")
-                                .desired_width(f32::INFINITY),
-                        );
+                        ui.horizontal(|ui| {
+                            ui.add(
+                                egui::TextEdit::singleline(&mut self.settings.whatsapp_recipient)
+                                    .hint_text("phone (41791234567) or group JID (…@g.us)")
+                                    .desired_width(ui.available_width() - 90.0),
+                            );
+                            let label = if self.wa_picker_loading { "Loading…" } else { "📞 Browse" };
+                            let pick_btn = ui.add_enabled(
+                                self.wa_provisioned && self.wa_linked && !self.wa_picker_loading,
+                                egui::Button::new(label),
+                            ).on_hover_text("Browse linked WhatsApp groups");
+                            if pick_btn.clicked() { self.start_wa_pick_recipient(); }
+                        });
                         ui.end_row();
 
                         ui.label("WhatsApp status:");

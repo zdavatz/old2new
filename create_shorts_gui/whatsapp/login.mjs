@@ -15,6 +15,13 @@
 //   4. On `close` with status 401/403 — stale session — wipe `auth/`
 //      and retry once with a fresh QR.
 //   5. Anything else → fail with the status code.
+//
+// Persistence: Baileys' EventEmitter doesn't await listeners, so a
+// naive `sock.ev.on("creds.update", saveCreds)` fires-and-forgets the
+// write. If we exit too quickly, `creds.json` ends up truncated to 0
+// bytes and the saved session looks unlinked on next launch. We chain
+// saves into a single in-flight promise and `await` it (plus an
+// explicit final saveCreds()) before printing LINKED.
 
 import makeWASocket, {
   useMultiFileAuthState,
@@ -25,13 +32,16 @@ import qrcode from "qrcode-terminal";
 import pino from "pino";
 import { resolve, dirname } from "path";
 import { fileURLToPath } from "url";
-import { rmSync, existsSync } from "fs";
+import { rmSync, existsSync, statSync } from "fs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const AUTH_DIR = resolve(__dirname, "auth");
 const logger = pino({ level: "silent" });
 
 console.log(`Auth dir: ${AUTH_DIR}`);
+
+let lastSavePromise = Promise.resolve();
+let savePromiseRef; // tracks the live `saveCreds` callback for explicit flush
 
 async function startSocket() {
   const { state, saveCreds } = await useMultiFileAuthState(AUTH_DIR);
@@ -50,7 +60,11 @@ async function startSocket() {
     markOnlineOnConnect: false,
   });
 
-  sock.ev.on("creds.update", saveCreds);
+  // Chain saves so we can await the last write before exit.
+  sock.ev.on("creds.update", () => {
+    lastSavePromise = lastSavePromise.then(() => saveCreds()).catch(() => {});
+  });
+  savePromiseRef = saveCreds;
   return sock;
 }
 
@@ -95,6 +109,26 @@ async function loginOnce() {
   });
 }
 
+async function flushCredsToDisk() {
+  // Drain whatever creds.update listeners queued up.
+  await lastSavePromise;
+  // Explicit final write — last in-memory state wins.
+  if (savePromiseRef) {
+    try { await savePromiseRef(); } catch (_) {}
+  }
+  // Verify creds.json actually has content. Some builds of Baileys
+  // emit creds.update *after* `connection: open`, and Node's fsync
+  // path is async — give it up to ~3 s to settle.
+  const credsPath = resolve(AUTH_DIR, "creds.json");
+  for (let i = 0; i < 30; i++) {
+    try {
+      const sz = statSync(credsPath).size;
+      if (sz > 100) return;
+    } catch (_) {}
+    await new Promise((r) => setTimeout(r, 100));
+  }
+}
+
 async function main() {
   let result = await loginOnce();
 
@@ -117,6 +151,7 @@ async function main() {
     }
   }
 
+  await flushCredsToDisk();
   console.log("LINKED");
 }
 
