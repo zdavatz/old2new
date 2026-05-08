@@ -370,12 +370,13 @@ impl App {
     fn start_davaz_post(&mut self, url: String) {
         if self.davaz_posting { return; }
         let token = self.settings.davaz_token.trim().to_string();
-        let tag_color = self.settings.davaz_tag_color.trim().to_string();
         if token.is_empty() {
             self.davaz_status_msg = Some("davaz.com token not set — open Settings.".into());
             return;
         }
-        self.append_log(format!("Posting {} to davaz.com…", url));
+        let tag_color = davaz::detect_tag_color(&self.form.description).to_string();
+        let tag_label = if tag_color.is_empty() { "no tag" } else { tag_color.as_str() };
+        self.append_log(format!("Posting {} to davaz.com (tag: {})…", url, tag_label));
         self.davaz_status_msg = Some("Posting to davaz.com…".into());
         self.davaz_posting = true;
         let (tx, rx) = unbounded::<Result<davaz::PostResponse, String>>();
@@ -1539,15 +1540,14 @@ impl App {
                         ui.end_row();
 
                         ui.label("davaz.com tag color:");
-                        ui.horizontal(|ui| {
-                            for (val, label) in [("", "(none)"), ("yellow", "yellow"), ("purple", "purple")] {
-                                ui.radio_value(
-                                    &mut self.settings.davaz_tag_color,
-                                    val.to_string(),
-                                    label,
-                                );
-                            }
-                        });
+                        ui.label(
+                            RichText::new(
+                                "Auto-detected from description: write 'yellow' or 'purple' \
+                                 anywhere in the description text.",
+                            )
+                            .small()
+                            .weak(),
+                        );
                         ui.end_row();
                     });
 

@@ -31,10 +31,6 @@ pub struct Settings {
     /// the davaz.com server (one token per line).
     #[serde(default)]
     pub davaz_token: String,
-    /// Default tag color when posting to davaz.com. One of "" (no tag),
-    /// "yellow" (gold promoted) or "purple" (violet promoted).
-    #[serde(default)]
-    pub davaz_tag_color: String,
 }
 
 fn default_privacy() -> String {
@@ -51,7 +47,6 @@ impl Default for Settings {
             whatsapp_dir: default_whatsapp_dir(),
             whatsapp_recipient: String::new(),
             davaz_token: String::new(),
-            davaz_tag_color: String::new(),
         }
     }
 }

@@ -12,6 +12,24 @@ use std::time::Duration;
 
 const ENDPOINT: &str = "https://davaz.com/api/videos";
 
+/// Pick the davaz.com tag color from the description text (the same
+/// description that gets uploaded to YouTube). Convention: Jürg writes
+/// the literal word "yellow" or "purple" somewhere in the description
+/// to mark how the tag should appear on davaz.com. Returns "yellow",
+/// "purple", or "" (no tag). If both words appear, whichever is
+/// mentioned first wins.
+pub fn detect_tag_color(description: &str) -> &'static str {
+    let lower = description.to_lowercase();
+    let y = lower.find("yellow");
+    let p = lower.find("purple");
+    match (y, p) {
+        (Some(yi), Some(pi)) => if yi <= pi { "yellow" } else { "purple" },
+        (Some(_), None) => "yellow",
+        (None, Some(_)) => "purple",
+        (None, None) => "",
+    }
+}
+
 #[derive(Clone, Debug, Deserialize)]
 pub struct PostResponse {
     #[serde(default)]
