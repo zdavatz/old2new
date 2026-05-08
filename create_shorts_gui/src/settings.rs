@@ -26,6 +26,15 @@ pub struct Settings {
     /// or full JID (e.g. 1203634XXXX@g.us for groups).
     #[serde(default)]
     pub whatsapp_recipient: String,
+    /// Bearer token for the davaz.com videos API. Empty = Post to
+    /// davaz.com button disabled. Token comes from `etc/api_tokens` on
+    /// the davaz.com server (one token per line).
+    #[serde(default)]
+    pub davaz_token: String,
+    /// Default tag color when posting to davaz.com. One of "" (no tag),
+    /// "yellow" (gold promoted) or "purple" (violet promoted).
+    #[serde(default)]
+    pub davaz_tag_color: String,
 }
 
 fn default_privacy() -> String {
@@ -41,6 +50,8 @@ impl Default for Settings {
             cookies_browser: String::new(),
             whatsapp_dir: default_whatsapp_dir(),
             whatsapp_recipient: String::new(),
+            davaz_token: String::new(),
+            davaz_tag_color: String::new(),
         }
     }
 }

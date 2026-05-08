@@ -7,6 +7,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod browsers;
+mod davaz;
 mod deps;
 mod installer;
 mod oauth;
@@ -130,6 +131,13 @@ struct App {
     wa_picker_error: Option<String>,
     wa_picker_filter: String,
     wa_picker_rx: Option<Receiver<Result<Vec<whatsapp::Recipient>, String>>>,
+    davaz_posting: bool,
+    davaz_rx: Option<Receiver<Result<davaz::PostResponse, String>>>,
+    davaz_status_msg: Option<String>,
+    /// Set once a successful POST has been confirmed for the current
+    /// `last_done_url` so the button can hide and the success line
+    /// stays visible until the user dismisses the banner.
+    davaz_posted: bool,
 }
 
 enum BrewEvent {
@@ -269,6 +277,10 @@ impl App {
             wa_picker_error: None,
             wa_picker_filter: String::new(),
             wa_picker_rx: None,
+            davaz_posting: false,
+            davaz_rx: None,
+            davaz_status_msg: None,
+            davaz_posted: false,
         };
         s.refresh_wa_status();
         s
@@ -350,6 +362,26 @@ impl App {
         self.wa_rx = Some(rx);
         std::thread::spawn(move || {
             let result = whatsapp::send_text(&dir, &recipient, &message)
+                .map_err(|e| e.to_string());
+            let _ = tx.send(result);
+        });
+    }
+
+    fn start_davaz_post(&mut self, url: String) {
+        if self.davaz_posting { return; }
+        let token = self.settings.davaz_token.trim().to_string();
+        let tag_color = self.settings.davaz_tag_color.trim().to_string();
+        if token.is_empty() {
+            self.davaz_status_msg = Some("davaz.com token not set — open Settings.".into());
+            return;
+        }
+        self.append_log(format!("Posting {} to davaz.com…", url));
+        self.davaz_status_msg = Some("Posting to davaz.com…".into());
+        self.davaz_posting = true;
+        let (tx, rx) = unbounded::<Result<davaz::PostResponse, String>>();
+        self.davaz_rx = Some(rx);
+        std::thread::spawn(move || {
+            let result = davaz::post_video(&token, &url, &tag_color)
                 .map_err(|e| e.to_string());
             let _ = tx.send(result);
         });
@@ -604,6 +636,8 @@ impl App {
                     }
                     Event::Done(url) => {
                         self.last_done_url = Some(url.clone());
+                        self.davaz_posted = false;
+                        self.davaz_status_msg = None;
                         self.append_log(format!("DONE: {}", url));
                         still_running = false;
                     }
@@ -745,6 +779,35 @@ impl App {
             }
         }
 
+        if let Some(rx) = &self.davaz_rx {
+            if let Ok(result) = rx.try_recv() {
+                self.davaz_posting = false;
+                self.davaz_rx = None;
+                match result {
+                    Ok(resp) => {
+                        let id = resp.id_str();
+                        let group = resp.artgroup_id.clone().unwrap_or_default();
+                        let title = resp.title.clone().unwrap_or_default();
+                        let summary = if group.is_empty() {
+                            format!("✅ Posted to davaz.com — id={}", id)
+                        } else {
+                            format!("✅ Posted to davaz.com — id={} ({}): {}", id, group, title)
+                        };
+                        self.davaz_posted = true;
+                        self.davaz_status_msg = Some(summary.clone());
+                        self.append_log(summary);
+                        if let Some(tag) = &resp.tag_added {
+                            self.append_log(format!("davaz.com tag added: {}", tag));
+                        }
+                    }
+                    Err(e) => {
+                        self.davaz_status_msg = Some(format!("❌ davaz.com: {}", e));
+                        self.append_log(format!("davaz.com post failed: {}", e));
+                    }
+                }
+            }
+        }
+
         if let Some(rx) = &self.wa_setup_rx {
             let mut done = false;
             while let Ok(ev) = rx.try_recv() {
@@ -872,7 +935,7 @@ impl eframe::App for App {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.drain_events();
         self.ensure_icon_texture(ctx);
-        if self.running || self.signing_in || self.brew_installing || self.update_checking || self.cookies_testing || self.installing || self.wa_sending || self.wa_setup_running || self.wa_login_running {
+        if self.running || self.signing_in || self.brew_installing || self.update_checking || self.cookies_testing || self.installing || self.wa_sending || self.wa_setup_running || self.wa_login_running || self.davaz_posting {
             ctx.request_repaint_after(std::time::Duration::from_millis(150));
         }
 
@@ -1074,6 +1137,8 @@ impl eframe::App for App {
                                 if ui.button("Dismiss").clicked() {
                                     self.last_done_url = None;
                                     self.wa_status_msg = None;
+                                    self.davaz_status_msg = None;
+                                    self.davaz_posted = false;
                                 }
                                 if ui.button("Copy URL").clicked() {
                                     ui.ctx().output_mut(|o| o.copied_text = url.clone());
@@ -1081,6 +1146,24 @@ impl eframe::App for App {
                                 if ui.button("Open in browser").clicked() {
                                     let _ = open::that(&url);
                                 }
+                                let davaz_configured = !self.settings.davaz_token.trim().is_empty();
+                                let davaz_label = if self.davaz_posting {
+                                    "Posting…"
+                                } else if self.davaz_posted {
+                                    "✅ Posted to davaz.com"
+                                } else {
+                                    "Post to davaz.com"
+                                };
+                                let davaz_tooltip = if davaz_configured {
+                                    "Post this YouTube link to davaz.com so it appears on the site".to_string()
+                                } else {
+                                    "Set davaz.com Bearer token in Settings first".to_string()
+                                };
+                                let davaz_btn = ui.add_enabled(
+                                    davaz_configured && !self.davaz_posting && !self.davaz_posted,
+                                    egui::Button::new(davaz_label),
+                                ).on_hover_text(davaz_tooltip);
+                                if davaz_btn.clicked() { self.start_davaz_post(url.clone()); }
                                 let label = if self.wa_sending { "Sending…" } else { "Send via WA" };
                                 let tooltip = if wa_configured {
                                     format!("Send YouTube link to {}", self.settings.whatsapp_recipient)
@@ -1124,6 +1207,14 @@ impl eframe::App for App {
                         });
                         if let Some(msg) = &self.wa_status_msg {
                             ui.label(RichText::new(msg).small());
+                        }
+                        if let Some(msg) = &self.davaz_status_msg {
+                            let color = if msg.starts_with('❌') {
+                                egui::Color32::from_rgb(180, 60, 60)
+                            } else {
+                                egui::Color32::from_rgb(20, 90, 20)
+                            };
+                            ui.colored_label(color, RichText::new(msg).small().strong());
                         }
                     });
             }
@@ -1437,6 +1528,27 @@ impl App {
                             ui.label(RichText::new(msg).small());
                             ui.end_row();
                         }
+
+                        ui.label("davaz.com token:");
+                        ui.add(
+                            egui::TextEdit::singleline(&mut self.settings.davaz_token)
+                                .password(true)
+                                .hint_text("Bearer token from etc/api_tokens on davaz.com")
+                                .desired_width(f32::INFINITY),
+                        );
+                        ui.end_row();
+
+                        ui.label("davaz.com tag color:");
+                        ui.horizontal(|ui| {
+                            for (val, label) in [("", "(none)"), ("yellow", "yellow"), ("purple", "purple")] {
+                                ui.radio_value(
+                                    &mut self.settings.davaz_tag_color,
+                                    val.to_string(),
+                                    label,
+                                );
+                            }
+                        });
+                        ui.end_row();
                     });
 
                 ui.add_space(6.0);
