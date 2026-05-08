@@ -9,6 +9,7 @@
 mod browsers;
 mod davaz;
 mod deps;
+mod history;
 mod installer;
 mod oauth;
 mod pipeline;
@@ -138,6 +139,9 @@ struct App {
     /// `last_done_url` so the button can hide and the success line
     /// stays visible until the user dismisses the banner.
     davaz_posted: bool,
+    show_history: bool,
+    history_filter: String,
+    history_cache: Vec<history::UploadEntry>,
 }
 
 enum BrewEvent {
@@ -281,6 +285,9 @@ impl App {
             davaz_rx: None,
             davaz_status_msg: None,
             davaz_posted: false,
+            show_history: false,
+            history_filter: String::new(),
+            history_cache: Vec::new(),
         };
         s.refresh_wa_status();
         s
@@ -639,6 +646,18 @@ impl App {
                         self.last_done_url = Some(url.clone());
                         self.davaz_posted = false;
                         self.davaz_status_msg = None;
+                        let entry = history::UploadEntry {
+                            timestamp: chrono_like_now(),
+                            url: url.clone(),
+                            title: self.form.title.trim().to_string(),
+                            source: self.form.source.trim().to_string(),
+                            start: self.form.start.trim().to_string(),
+                            end: self.form.end.trim().to_string(),
+                            privacy: self.form.privacy.clone(),
+                        };
+                        if let Err(e) = history::append(&entry) {
+                            self.append_log(format!("history append failed: {}", e));
+                        }
                         self.append_log(format!("DONE: {}", url));
                         still_running = false;
                     }
@@ -946,6 +965,15 @@ impl eframe::App for App {
                 egui::vec2(ui.available_width(), 44.0),
                 egui::Layout::left_to_right(egui::Align::Center),
                 |ui| {
+                    if ui
+                        .button("📜 History")
+                        .on_hover_text("Show all videos uploaded from this app")
+                        .clicked()
+                    {
+                        self.history_cache = history::load_all();
+                        self.history_filter.clear();
+                        self.show_history = true;
+                    }
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         if let Some(tex) = &self.icon_texture {
                             let resp = ui
@@ -1268,10 +1296,100 @@ impl eframe::App for App {
         if self.wa_picker_open {
             self.draw_recipient_picker(ctx);
         }
+
+        if self.show_history {
+            self.draw_history_modal(ctx);
+        }
     }
 }
 
 impl App {
+    fn draw_history_modal(&mut self, ctx: &egui::Context) {
+        let mut open = self.show_history;
+        egui::Window::new("Upload history")
+            .open(&mut open)
+            .collapsible(false)
+            .resizable(true)
+            .default_width(720.0)
+            .default_height(520.0)
+            .show(ctx, |ui| {
+                let total = self.history_cache.len();
+                ui.horizontal(|ui| {
+                    ui.label(format!("{} upload{}", total, if total == 1 { "" } else { "s" }));
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if ui.button("Refresh").clicked() {
+                            self.history_cache = history::load_all();
+                        }
+                        ui.add(
+                            egui::TextEdit::singleline(&mut self.history_filter)
+                                .hint_text("Filter by title or URL")
+                                .desired_width(260.0),
+                        );
+                    });
+                });
+
+                if total == 0 {
+                    ui.add_space(20.0);
+                    ui.vertical_centered(|ui| {
+                        ui.label(
+                            RichText::new("No uploads yet — once you upload a short, it will appear here.")
+                                .weak(),
+                        );
+                    });
+                    ui.add_space(8.0);
+                    ui.label(
+                        RichText::new(format!("File: {}", history::history_path().display()))
+                            .small()
+                            .weak(),
+                    );
+                    return;
+                }
+
+                ui.separator();
+                let filter = self.history_filter.trim().to_lowercase();
+                let entries = self.history_cache.clone();
+                egui::ScrollArea::vertical().auto_shrink([false; 2]).show(ui, |ui| {
+                    for entry in entries.iter() {
+                        if !filter.is_empty() {
+                            let hay = format!("{}\n{}", entry.title.to_lowercase(), entry.url.to_lowercase());
+                            if !hay.contains(&filter) {
+                                continue;
+                            }
+                        }
+                        ui.add_space(2.0);
+                        ui.horizontal_wrapped(|ui| {
+                            ui.label(RichText::new(&entry.timestamp).monospace().small().weak());
+                            ui.add_space(8.0);
+                            let title = if entry.title.is_empty() { "(untitled)" } else { entry.title.as_str() };
+                            if ui
+                                .link(RichText::new(title).strong())
+                                .on_hover_text(format!("Open {} in browser", entry.url))
+                                .clicked()
+                            {
+                                let _ = open::that(&entry.url);
+                            }
+                            if !entry.privacy.is_empty() {
+                                ui.label(RichText::new(format!("[{}]", entry.privacy)).small().weak());
+                            }
+                        });
+                        ui.horizontal_wrapped(|ui| {
+                            ui.add_space(120.0);
+                            ui.label(RichText::new(&entry.url).monospace().small().weak());
+                            if !entry.start.is_empty() || !entry.end.is_empty() {
+                                ui.label(
+                                    RichText::new(format!(" ({}–{})", entry.start, entry.end))
+                                        .small()
+                                        .weak(),
+                                );
+                            }
+                        });
+                        ui.separator();
+                    }
+                });
+            });
+        self.show_history = open;
+    }
+
     fn draw_qr_modal(&mut self, ctx: &egui::Context) {
         let mut open = self.wa_show_qr;
         egui::Window::new("Link WhatsApp")
