@@ -6,9 +6,13 @@ use crate::oauth;
 use crate::settings::Settings;
 use crate::youtube::{upload_video, VideoBody, VideoSnippet, VideoStatus};
 use crossbeam_channel::Sender;
+use std::collections::VecDeque;
 use std::io::Read;
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
+use std::sync::{Arc, Mutex};
+
+type LineBuf = Arc<Mutex<VecDeque<String>>>;
 
 #[derive(Clone)]
 pub enum Event {
@@ -276,22 +280,56 @@ fn run_yt_dlp(
     let stderr = child.stderr.take();
     let tx_o = tx.clone();
     let tx_e = tx.clone();
-    let h_o = stdout.map(|r| std::thread::spawn(move || stream_progress(r, tx_o, segment_secs)));
-    let h_e = stderr.map(|r| std::thread::spawn(move || stream_progress(r, tx_e, segment_secs)));
+    let stderr_capture: LineBuf = Arc::new(Mutex::new(VecDeque::new()));
+    let cap_for_thread = stderr_capture.clone();
+    let h_o = stdout.map(|r| std::thread::spawn(move || stream_progress(r, tx_o, segment_secs, None)));
+    let h_e = stderr.map(|r| std::thread::spawn(move || stream_progress(r, tx_e, segment_secs, Some(cap_for_thread))));
     let status = child.wait().map_err(|e| format!("wait: {}", e))?;
     if let Some(h) = h_o { let _ = h.join(); }
     if let Some(h) = h_e { let _ = h.join(); }
     if !status.success() {
-        return Err(format!("yt-dlp exited with {:?}", status.code()));
+        let detail = summarize_yt_dlp_failure(&stderr_capture);
+        let suffix = if detail.is_empty() { String::new() } else { format!(" — {}", detail) };
+        return Err(format!("exited with {:?}{}", status.code(), suffix));
     }
     Ok(())
+}
+
+/// Pick the most useful stderr lines to surface in the error banner.
+/// Prefers explicit `ERROR:` / `WARNING:` / `HTTP Error` lines so the
+/// user immediately sees *why* yt-dlp gave up; falls back to the last
+/// few non-progress lines if nothing matched.
+fn summarize_yt_dlp_failure(buf: &LineBuf) -> String {
+    let q = buf.lock().unwrap();
+    let errors: Vec<String> = q
+        .iter()
+        .filter(|s| {
+            let t = s.trim_start();
+            t.starts_with("ERROR:")
+                || t.starts_with("WARNING:")
+                || t.contains("HTTP Error")
+                || t.contains("Sign in")
+        })
+        .cloned()
+        .collect();
+    let lines: Vec<String> = if !errors.is_empty() {
+        errors
+    } else {
+        q.iter().rev().take(3).rev().cloned().collect()
+    };
+    lines
+        .into_iter()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .collect::<Vec<_>>()
+        .join(" | ")
 }
 
 /// Reads bytes from yt-dlp/ffmpeg and splits on either `\r` or `\n` so
 /// in-place progress lines (which use carriage-return only) are
 /// captured. yt-dlp `[download] X.X%` and ffmpeg `time=HH:MM:SS` lines
 /// are intercepted as Progress events; everything else goes to Log.
-fn stream_progress<R: Read>(reader: R, tx: Sender<Event>, segment_secs: f64) {
+fn stream_progress<R: Read>(reader: R, tx: Sender<Event>, segment_secs: f64, capture: Option<LineBuf>) {
     let mut br = std::io::BufReader::new(reader);
     let mut buf = Vec::with_capacity(1024);
     let mut byte = [0u8; 1];
@@ -303,7 +341,7 @@ fn stream_progress<R: Read>(reader: R, tx: Sender<Event>, segment_secs: f64) {
                 if b == b'\r' || b == b'\n' {
                     if !buf.is_empty() {
                         let line = String::from_utf8_lossy(&buf).to_string();
-                        emit_line(&line, &tx, segment_secs);
+                        emit_line(&line, &tx, segment_secs, capture.as_ref());
                         buf.clear();
                     }
                 } else {
@@ -315,11 +353,11 @@ fn stream_progress<R: Read>(reader: R, tx: Sender<Event>, segment_secs: f64) {
     }
     if !buf.is_empty() {
         let line = String::from_utf8_lossy(&buf).to_string();
-        emit_line(&line, &tx, segment_secs);
+        emit_line(&line, &tx, segment_secs, capture.as_ref());
     }
 }
 
-fn emit_line(line: &str, tx: &Sender<Event>, segment_secs: f64) {
+fn emit_line(line: &str, tx: &Sender<Event>, segment_secs: f64, capture: Option<&LineBuf>) {
     if let Some(frac) = parse_yt_dlp_pct(line) {
         let _ = tx.send(Event::Progress {
             phase: "Downloading".into(),
@@ -337,6 +375,14 @@ fn emit_line(line: &str, tx: &Sender<Event>, segment_secs: f64) {
                 detail: format!("{:.1}s / {:.1}s", t, segment_secs),
             });
             return;
+        }
+    }
+    if let Some(cap) = capture {
+        if let Ok(mut q) = cap.lock() {
+            if q.len() >= 16 {
+                q.pop_front();
+            }
+            q.push_back(line.to_string());
         }
     }
     let _ = tx.send(Event::Log(line.to_string()));
