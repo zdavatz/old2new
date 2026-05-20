@@ -1560,6 +1560,19 @@ impl App {
                     .show(ui, |ui| {
                         ui.label("Video file:");
                         ui.horizontal(|ui| {
+                            if ui
+                                .button("Choose file…")
+                                .on_hover_text("Open the system file picker")
+                                .clicked()
+                            {
+                                if let Some(path) = rfd::FileDialog::new()
+                                    .add_filter("Video", &["mp4", "mov", "m4v", "mkv", "webm", "avi"])
+                                    .add_filter("Any file", &["*"])
+                                    .pick_file()
+                                {
+                                    self.upload_file = path.to_string_lossy().into_owned();
+                                }
+                            }
                             ui.add(
                                 egui::TextEdit::singleline(&mut self.upload_file)
                                     .hint_text("/path/to/video.mp4  (or drag a file into this window)")
