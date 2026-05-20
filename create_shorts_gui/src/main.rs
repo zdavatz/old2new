@@ -162,6 +162,35 @@ enum BrewEvent {
 }
 
 /// "chrome (installed)" if detected, otherwise just the name.
+/// Detect YouTube's "not a bot" / "Sign in to confirm" rejection in a
+/// yt-dlp error and return a one-line hint pointing the user at the
+/// Settings → Cookies-from-browser dropdown. Returns None for unrelated
+/// errors so we only show the hint when it's actually useful.
+fn bot_detection_hint(err: &str, settings: &Settings) -> Option<String> {
+    let lower = err.to_lowercase();
+    let is_bot_block = lower.contains("not a bot")
+        || lower.contains("sign in to confirm")
+        || lower.contains("confirm you");
+    if !is_bot_block {
+        return None;
+    }
+    let current = settings.cookies_browser.trim();
+    if current.is_empty() {
+        Some(
+            "YouTube wants cookies. Open Settings (app icon top-right) → Cookies from browser, \
+             pick a browser you're signed into YouTube with, then click Test."
+                .into(),
+        )
+    } else {
+        Some(format!(
+            "YouTube wants cookies. Currently set to `{}` but it didn't provide a valid session. \
+             Open Settings → Cookies from browser, click Test, or try another browser \
+             (Chrome/Brave/Firefox are most reliable; Safari needs the keychain unlocked).",
+            current
+        ))
+    }
+}
+
 fn browser_label(name: &str, detected: &[&'static str]) -> String {
     if detected.iter().any(|d| *d == name) {
         format!("{} (installed)", name)
@@ -1387,6 +1416,26 @@ impl eframe::App for App {
 
             if let Some(err) = &self.last_error {
                 ui.colored_label(egui::Color32::from_rgb(220, 80, 80), err);
+                if let Some(hint) = bot_detection_hint(err, &self.settings) {
+                    ui.add_space(4.0);
+                    egui::Frame::none()
+                        .fill(egui::Color32::from_rgb(255, 248, 220))
+                        .stroke(egui::Stroke::new(1.0, egui::Color32::from_rgb(200, 170, 60)))
+                        .inner_margin(8.0)
+                        .rounding(4.0)
+                        .show(ui, |ui| {
+                            ui.horizontal_wrapped(|ui| {
+                                ui.colored_label(
+                                    egui::Color32::from_rgb(110, 80, 0),
+                                    RichText::new(hint).strong(),
+                                );
+                            });
+                            ui.add_space(4.0);
+                            if ui.button("Open Settings").clicked() {
+                                self.show_settings = true;
+                            }
+                        });
+                }
             }
 
             ui.add_space(6.0);
