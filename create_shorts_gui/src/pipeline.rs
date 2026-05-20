@@ -29,6 +29,67 @@ pub struct Job {
     pub preview_only: bool,
 }
 
+pub struct UploadJob {
+    pub file: PathBuf,
+    pub title: String,
+    pub description: String,
+    pub privacy: String,
+}
+
+/// Direct upload of a local video file to YouTube — no yt-dlp, no
+/// segment extraction. Used by the Upload tab.
+pub fn run_upload(job: UploadJob, settings: Settings, tx: Sender<Event>) {
+    let size = match std::fs::metadata(&job.file) {
+        Ok(m) => m.len(),
+        Err(e) => {
+            let _ = tx.send(Event::Error(format!("stat {}: {}", job.file.display(), e)));
+            return;
+        }
+    };
+    let _ = tx.send(Event::Log(format!(
+        "Uploading {} ({:.1} MB)",
+        job.file.display(),
+        size as f64 / 1_048_576.0,
+    )));
+
+    let _ = tx.send(Event::Log("Refreshing YouTube access token…".into()));
+    let access_token = match oauth::refresh_access_token(&settings.client_id, &settings.client_secret) {
+        Ok(t) => t,
+        Err(e) => {
+            let _ = tx.send(Event::Error(format!("auth: {}", e)));
+            return;
+        }
+    };
+
+    let body = VideoBody {
+        snippet: VideoSnippet {
+            title: &job.title,
+            description: &job.description,
+            category_id: "22",
+        },
+        status: VideoStatus {
+            privacy_status: &job.privacy,
+            self_declared_made_for_kids: false,
+        },
+    };
+
+    let progress_tx = tx.clone();
+    let result = upload_video(&access_token, &job.file, &body, |sent, total| {
+        let f = if total == 0 { 0.0 } else { sent as f32 / total as f32 };
+        let detail = format!("{:.1} / {:.1} MB", sent as f64 / 1_048_576.0, total as f64 / 1_048_576.0);
+        let _ = progress_tx.send(Event::Progress { phase: "Uploading".into(), fraction: f, detail });
+    });
+
+    match result {
+        Ok(id) => {
+            let _ = tx.send(Event::Done(format!("https://www.youtube.com/watch?v={}", id)));
+        }
+        Err(e) => {
+            let _ = tx.send(Event::Error(format!("upload: {}", e)));
+        }
+    }
+}
+
 /// Convert "mm:ss", "hh:mm:ss", or a bare seconds value to seconds.
 pub fn parse_timestamp(s: &str) -> Option<f64> {
     let parts: Vec<&str> = s.split(':').collect();

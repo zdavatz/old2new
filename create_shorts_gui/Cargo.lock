@@ -458,7 +458,7 @@ dependencies = [
 
 [[package]]
 name = "create_shorts_gui"
-version = "1.0.18"
+version = "1.0.19"
 dependencies = [
  "chrono",
  "crossbeam-channel",

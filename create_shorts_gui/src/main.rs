@@ -142,6 +142,17 @@ struct App {
     show_history: bool,
     history_filter: String,
     history_cache: Vec<history::UploadEntry>,
+    show_upload: bool,
+    upload_file: String,
+    upload_title: String,
+    upload_description: String,
+    upload_privacy: String,
+    upload_running: bool,
+    upload_rx: Option<Receiver<Event>>,
+    upload_progress: Arc<Mutex<ProgressInfo>>,
+    upload_log: Arc<Mutex<Vec<String>>>,
+    upload_last_done_url: Option<String>,
+    upload_last_error: Option<String>,
 }
 
 enum BrewEvent {
@@ -288,6 +299,17 @@ impl App {
             show_history: false,
             history_filter: String::new(),
             history_cache: Vec::new(),
+            show_upload: false,
+            upload_file: String::new(),
+            upload_title: String::new(),
+            upload_description: String::new(),
+            upload_privacy: "public".to_string(),
+            upload_running: false,
+            upload_rx: None,
+            upload_progress: Arc::new(Mutex::new(ProgressInfo::default())),
+            upload_log: Arc::new(Mutex::new(Vec::new())),
+            upload_last_done_url: None,
+            upload_last_error: None,
         };
         s.refresh_wa_status();
         s
@@ -581,6 +603,56 @@ impl App {
     fn start_job(&mut self) { self.kick_off(false); }
     fn start_preview(&mut self) { self.kick_off(true); }
 
+    fn append_upload_log(&self, line: String) {
+        let _ = append_to_log_file(&line);
+        if let Ok(mut g) = self.upload_log.lock() {
+            g.push(line);
+            if g.len() > MAX_LOG_LINES {
+                let drop = g.len() - MAX_LOG_LINES;
+                g.drain(0..drop);
+            }
+        }
+    }
+
+    fn start_direct_upload(&mut self) {
+        if self.upload_running { return; }
+        let file = self.upload_file.trim().to_string();
+        if file.is_empty() {
+            self.upload_last_error = Some("Pick a video file first".into());
+            return;
+        }
+        let path = std::path::PathBuf::from(&file);
+        if !path.is_file() {
+            self.upload_last_error = Some(format!("File not found: {}", file));
+            return;
+        }
+        if self.upload_title.trim().is_empty() {
+            self.upload_last_error = Some("Title is required".into());
+            return;
+        }
+        if !self.signed_in {
+            self.upload_last_error = Some("Sign in to YouTube first (Settings)".into());
+            return;
+        }
+
+        let (tx, rx): (Sender<Event>, Receiver<Event>) = unbounded();
+        self.upload_rx = Some(rx);
+        self.upload_running = true;
+        self.upload_last_done_url = None;
+        self.upload_last_error = None;
+        if let Ok(mut g) = self.upload_log.lock() { g.clear(); }
+        if let Ok(mut p) = self.upload_progress.lock() { *p = ProgressInfo::default(); }
+
+        let job = pipeline::UploadJob {
+            file: path,
+            title: self.upload_title.trim().to_string(),
+            description: self.upload_description.trim().to_string(),
+            privacy: self.upload_privacy.clone(),
+        };
+        let settings = self.settings.clone();
+        std::thread::spawn(move || pipeline::run_upload(job, settings, tx));
+    }
+
     fn kick_off(&mut self, preview_only: bool) {
         if self.running { return; }
         let missing = self.deps.missing();
@@ -678,6 +750,47 @@ impl App {
             if !still_running {
                 self.running = false;
                 self.rx = None;
+            }
+        }
+
+        if let Some(rx) = &self.upload_rx {
+            let mut still_running = true;
+            while let Ok(ev) = rx.try_recv() {
+                match ev {
+                    Event::Log(s) => self.append_upload_log(s),
+                    Event::Progress { phase, fraction, detail } => {
+                        if let Ok(mut p) = self.upload_progress.lock() {
+                            *p = ProgressInfo { phase, fraction, detail };
+                        }
+                    }
+                    Event::Done(url) => {
+                        self.upload_last_done_url = Some(url.clone());
+                        let entry = history::UploadEntry {
+                            timestamp: chrono_like_now(),
+                            url: url.clone(),
+                            title: self.upload_title.trim().to_string(),
+                            source: self.upload_file.trim().to_string(),
+                            start: String::new(),
+                            end: String::new(),
+                            privacy: self.upload_privacy.clone(),
+                        };
+                        if let Err(e) = history::append(&entry) {
+                            self.append_upload_log(format!("history append failed: {}", e));
+                        }
+                        self.append_upload_log(format!("DONE: {}", url));
+                        still_running = false;
+                    }
+                    Event::Preview(_) => {} // not used in direct upload
+                    Event::Error(e) => {
+                        self.upload_last_error = Some(e.clone());
+                        self.append_upload_log(format!("ERROR: {}", e));
+                        still_running = false;
+                    }
+                }
+            }
+            if !still_running {
+                self.upload_running = false;
+                self.upload_rx = None;
             }
         }
 
@@ -955,7 +1068,7 @@ impl eframe::App for App {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.drain_events();
         self.ensure_icon_texture(ctx);
-        if self.running || self.signing_in || self.brew_installing || self.update_checking || self.cookies_testing || self.installing || self.wa_sending || self.wa_setup_running || self.wa_login_running || self.davaz_posting {
+        if self.running || self.upload_running || self.signing_in || self.brew_installing || self.update_checking || self.cookies_testing || self.installing || self.wa_sending || self.wa_setup_running || self.wa_login_running || self.davaz_posting {
             ctx.request_repaint_after(std::time::Duration::from_millis(150));
         }
 
@@ -973,6 +1086,13 @@ impl eframe::App for App {
                         self.history_cache = history::load_all();
                         self.history_filter.clear();
                         self.show_history = true;
+                    }
+                    if ui
+                        .button("⬆ Upload")
+                        .on_hover_text("Upload a local video file directly to YouTube")
+                        .clicked()
+                    {
+                        self.show_upload = true;
                     }
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         if let Some(tex) = &self.icon_texture {
@@ -1300,6 +1420,10 @@ impl eframe::App for App {
         if self.show_history {
             self.draw_history_modal(ctx);
         }
+
+        if self.show_upload {
+            self.draw_upload_modal(ctx);
+        }
     }
 }
 
@@ -1388,6 +1512,156 @@ impl App {
                 });
             });
         self.show_history = open;
+    }
+
+    fn draw_upload_modal(&mut self, ctx: &egui::Context) {
+        // Accept files dropped anywhere while the modal is open. egui
+        // raises hovered_files first, then dropped_files once the user
+        // releases the mouse. We only care about the latter.
+        let dropped = ctx.input(|i| {
+            i.raw
+                .dropped_files
+                .iter()
+                .find_map(|f| f.path.clone())
+        });
+        if let Some(path) = dropped {
+            self.upload_file = path.to_string_lossy().into_owned();
+        }
+
+        let mut open = self.show_upload;
+        egui::Window::new("Upload to YouTube")
+            .open(&mut open)
+            .collapsible(false)
+            .resizable(true)
+            .default_width(720.0)
+            .default_height(540.0)
+            .show(ctx, |ui| {
+                ui.label(
+                    RichText::new(
+                        "Upload a local video file directly to YouTube. \
+                         No yt-dlp, no segment extraction.",
+                    )
+                    .small()
+                    .weak(),
+                );
+                ui.add_space(6.0);
+
+                if !self.signed_in {
+                    ui.colored_label(
+                        egui::Color32::from_rgb(180, 100, 30),
+                        "⚠ You must sign in to YouTube first — open Settings.",
+                    );
+                    ui.add_space(6.0);
+                }
+
+                egui::Grid::new("upload_form_grid")
+                    .num_columns(2)
+                    .spacing([10.0, 8.0])
+                    .show(ui, |ui| {
+                        ui.label("Video file:");
+                        ui.horizontal(|ui| {
+                            ui.add(
+                                egui::TextEdit::singleline(&mut self.upload_file)
+                                    .hint_text("/path/to/video.mp4  (or drag a file into this window)")
+                                    .desired_width(f32::INFINITY),
+                            );
+                        });
+                        ui.end_row();
+
+                        ui.label("Title:");
+                        ui.add(
+                            egui::TextEdit::singleline(&mut self.upload_title)
+                                .desired_width(f32::INFINITY),
+                        );
+                        ui.end_row();
+
+                        ui.label("Description:");
+                        ui.add(
+                            egui::TextEdit::multiline(&mut self.upload_description)
+                                .desired_rows(4)
+                                .desired_width(f32::INFINITY),
+                        );
+                        ui.end_row();
+
+                        ui.label("Privacy:");
+                        ui.horizontal(|ui| {
+                            for p in ["public", "unlisted", "private"] {
+                                ui.radio_value(&mut self.upload_privacy, p.to_string(), p);
+                            }
+                        });
+                        ui.end_row();
+                    });
+
+                ui.add_space(8.0);
+                ui.horizontal(|ui| {
+                    let label = if self.upload_running { "Uploading…" } else { "Upload to YouTube" };
+                    let btn = ui.add_enabled(
+                        !self.upload_running && self.signed_in,
+                        egui::Button::new(label).min_size(egui::vec2(200.0, 32.0)),
+                    );
+                    if btn.clicked() { self.start_direct_upload(); }
+                });
+
+                if self.upload_running {
+                    let p = self.upload_progress.lock().unwrap().clone();
+                    ui.add_space(6.0);
+                    let bar = if p.fraction > 0.0 {
+                        egui::ProgressBar::new(p.fraction).show_percentage().animate(true)
+                    } else {
+                        egui::ProgressBar::new(0.0).animate(true)
+                    };
+                    let phase_label = if p.phase.is_empty() { "Working".to_string() } else { p.phase.clone() };
+                    ui.add(bar.text(phase_label));
+                    if !p.detail.is_empty() {
+                        ui.label(RichText::new(p.detail).weak().small());
+                    }
+                }
+
+                if let Some(err) = &self.upload_last_error {
+                    ui.colored_label(egui::Color32::from_rgb(220, 80, 80), err);
+                }
+
+                if let Some(url) = self.upload_last_done_url.clone() {
+                    ui.add_space(6.0);
+                    egui::Frame::none()
+                        .fill(egui::Color32::from_rgb(220, 245, 220))
+                        .stroke(egui::Stroke::new(1.0, egui::Color32::from_rgb(80, 160, 80)))
+                        .inner_margin(10.0)
+                        .rounding(4.0)
+                        .show(ui, |ui| {
+                            ui.horizontal(|ui| {
+                                ui.colored_label(
+                                    egui::Color32::from_rgb(20, 90, 20),
+                                    RichText::new(format!("✅ Uploaded: {}", url)).strong(),
+                                );
+                                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                    if ui.button("Copy URL").clicked() {
+                                        ui.ctx().output_mut(|o| o.copied_text = url.clone());
+                                    }
+                                    if ui.button("Open in browser").clicked() {
+                                        let _ = open::that(&url);
+                                    }
+                                });
+                            });
+                        });
+                }
+
+                ui.add_space(8.0);
+                ui.separator();
+                ui.label(RichText::new("Log").strong());
+                egui::ScrollArea::vertical()
+                    .auto_shrink([false; 2])
+                    .stick_to_bottom(true)
+                    .max_height(160.0)
+                    .show(ui, |ui| {
+                        if let Ok(g) = self.upload_log.lock() {
+                            for line in g.iter() {
+                                ui.monospace(line);
+                            }
+                        }
+                    });
+            });
+        self.show_upload = open;
     }
 
     fn draw_qr_modal(&mut self, ctx: &egui::Context) {
