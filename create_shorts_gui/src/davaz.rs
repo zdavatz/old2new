@@ -12,24 +12,6 @@ use std::time::Duration;
 
 const ENDPOINT: &str = "https://davaz.com/api/videos";
 
-/// Pick the davaz.com tag color from the description text (the same
-/// description that gets uploaded to YouTube). Convention: Jürg writes
-/// the literal word "yellow" or "purple" somewhere in the description
-/// to mark how the tag should appear on davaz.com. Returns "yellow",
-/// "purple", or "" (no tag). If both words appear, whichever is
-/// mentioned first wins.
-pub fn detect_tag_color(description: &str) -> &'static str {
-    let lower = description.to_lowercase();
-    let y = lower.find("yellow");
-    let p = lower.find("purple");
-    match (y, p) {
-        (Some(yi), Some(pi)) => if yi <= pi { "yellow" } else { "purple" },
-        (Some(_), None) => "yellow",
-        (None, Some(_)) => "purple",
-        (None, None) => "",
-    }
-}
-
 #[derive(Clone, Debug, Deserialize)]
 pub struct PostResponse {
     #[serde(default)]
@@ -83,11 +65,12 @@ impl std::fmt::Display for PostError {
     }
 }
 
-/// POSTs `{url, tag_color?}` to davaz.com. Blocking. `tag_color` is
-/// passed through only when it's `"yellow"` or `"purple"` — empty
-/// string means "no tag". The server validates the value too, but
-/// filtering on the client keeps the request body tidy.
-pub fn post_video(token: &str, url: &str, tag_color: &str) -> Result<PostResponse, PostError> {
+/// POSTs `{url}` to davaz.com. Blocking. The server picks the tag
+/// color by scanning the YouTube description (which it fetches from
+/// the YouTube API) for a recognized color word — so this client
+/// doesn't need to know the supported colors. Adding a new color is
+/// a server-only change on davaz.com.
+pub fn post_video(token: &str, url: &str) -> Result<PostResponse, PostError> {
     let token = token.trim();
     if token.is_empty() {
         return Err(PostError::NoToken);
@@ -95,10 +78,6 @@ pub fn post_video(token: &str, url: &str, tag_color: &str) -> Result<PostRespons
 
     let mut body = serde_json::Map::new();
     body.insert("url".into(), serde_json::Value::String(url.to_string()));
-    let tag = tag_color.trim();
-    if tag == "yellow" || tag == "purple" {
-        body.insert("tag_color".into(), serde_json::Value::String(tag.to_string()));
-    }
 
     let client = reqwest::blocking::Client::builder()
         .user_agent(format!("create_shorts_gui/{}", env!("CARGO_PKG_VERSION")))

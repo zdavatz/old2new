@@ -432,15 +432,13 @@ impl App {
             self.davaz_status_msg = Some("davaz.com token not set — open Settings.".into());
             return;
         }
-        let tag_color = davaz::detect_tag_color(&self.form.description).to_string();
-        let tag_label = if tag_color.is_empty() { "no tag" } else { tag_color.as_str() };
-        self.append_log(format!("Posting {} to davaz.com (tag: {})…", url, tag_label));
+        self.append_log(format!("Posting {} to davaz.com…", url));
         self.davaz_status_msg = Some("Posting to davaz.com…".into());
         self.davaz_posting = true;
         let (tx, rx) = unbounded::<Result<davaz::PostResponse, String>>();
         self.davaz_rx = Some(rx);
         std::thread::spawn(move || {
-            let result = davaz::post_video(&token, &url, &tag_color)
+            let result = davaz::post_video(&token, &url)
                 .map_err(|e| e.to_string());
             let _ = tx.send(result);
         });
@@ -1996,7 +1994,8 @@ impl App {
                         ui.label("davaz.com tag color:");
                         ui.label(
                             RichText::new(
-                                "Auto-detected from description: write 'yellow' or 'purple' \
+                                "Auto-detected by the server from the YouTube description. \
+                                 Write a recognized color name (e.g. yellow / purple / red) \
                                  anywhere in the description text.",
                             )
                             .small()
