@@ -655,8 +655,9 @@ dependencies = [
 
 [[package]]
 name = "create_shorts_gui"
-version = "1.0.23"
+version = "1.0.24"
 dependencies = [
+ "ab_glyph",
  "chrono",
  "crossbeam-channel",
  "dirs",

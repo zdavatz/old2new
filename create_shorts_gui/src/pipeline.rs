@@ -31,6 +31,8 @@ pub struct Job {
     pub description: String,
     pub privacy: String,
     pub preview_only: bool,
+    pub overlay_title: bool,
+    pub overlay_color: [u8; 3],
 }
 
 pub struct UploadJob {
@@ -181,9 +183,41 @@ pub fn run(job: Job, settings: Settings, tx: Sender<Event>) {
     };
     let _ = tx.send(Event::Log(format!("Segment ready: {:.1} MB", size as f64 / 1_048_576.0)));
 
+    // Optional: burn the title into the bottom-left of the frame for
+    // 3 seconds starting 1 second in. Output is cached separately per
+    // (video_id, segment, title) so Preview → Upload of the same title
+    // doesn't re-encode.
+    let final_out = if job.overlay_title {
+        let overlay_path = cache_dir.join(format!(
+            "{}_{}_titled_{}_{:02x}{:02x}{:02x}.mp4",
+            video_id,
+            stamp,
+            short_title_hash(&job.title),
+            job.overlay_color[0],
+            job.overlay_color[1],
+            job.overlay_color[2],
+        ));
+        if overlay_path.exists() {
+            let _ = tx.send(Event::Log(format!(
+                "Reusing cached titled segment {}",
+                overlay_path.display()
+            )));
+        } else {
+            let _ = tx.send(Event::Log("Burning title overlay…".into()));
+            if let Err(e) = apply_title_overlay(&out, &job.title, job.overlay_color, &overlay_path, &tx, segment_secs) {
+                let _ = std::fs::remove_file(&overlay_path);
+                let _ = tx.send(Event::Error(format!("title overlay: {}", e)));
+                return;
+            }
+        }
+        overlay_path
+    } else {
+        out.clone()
+    };
+
     if job.preview_only {
-        let _ = tx.send(Event::Log(format!("Preview file kept at {}", out.display())));
-        let _ = tx.send(Event::Preview(out));
+        let _ = tx.send(Event::Log(format!("Preview file kept at {}", final_out.display())));
+        let _ = tx.send(Event::Preview(final_out));
         return;
     }
 
@@ -213,15 +247,19 @@ pub fn run(job: Job, settings: Settings, tx: Sender<Event>) {
         },
     };
 
-    let _ = tx.send(Event::Log(format!("Uploading {:.1} MB…", size as f64 / 1024.0 / 1024.0)));
+    let upload_size = std::fs::metadata(&final_out).map(|m| m.len()).unwrap_or(size);
+    let _ = tx.send(Event::Log(format!("Uploading {:.1} MB…", upload_size as f64 / 1024.0 / 1024.0)));
     let progress_tx = tx.clone();
-    let result = upload_video(&access_token, &out, &body, |sent, total| {
+    let result = upload_video(&access_token, &final_out, &body, |sent, total| {
         let f = if total == 0 { 0.0 } else { sent as f32 / total as f32 };
         let detail = format!("{:.1} / {:.1} MB", sent as f64 / 1_048_576.0, total as f64 / 1_048_576.0);
         let _ = progress_tx.send(Event::Progress { phase: "Uploading".into(), fraction: f, detail });
     });
 
-    let _ = std::fs::remove_file(&out);
+    let _ = std::fs::remove_file(&final_out);
+    if final_out != out {
+        let _ = std::fs::remove_file(&out);
+    }
 
     match result {
         Ok(id) => {
@@ -386,6 +424,275 @@ fn emit_line(line: &str, tx: &Sender<Event>, segment_secs: f64, capture: Option<
         }
     }
     let _ = tx.send(Event::Log(line.to_string()));
+}
+
+/// Short stable hash of the title — used as part of the overlay cache
+/// filename so two different titles for the same segment produce
+/// distinct cached files. std::hash::DefaultHasher is fine here; we
+/// don't need cryptographic strength.
+fn short_title_hash(title: &str) -> String {
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash, Hasher};
+    let mut h = DefaultHasher::new();
+    title.hash(&mut h);
+    format!("{:016x}", h.finish())
+}
+
+/// Probe a single video stream's pixel dimensions via ffprobe. Used to
+/// size the rendered title PNG to the exact video resolution so the
+/// overlay composite is pixel-perfect (no scaling artifacts).
+fn probe_video_size(input: &std::path::Path) -> Result<(u32, u32), String> {
+    let output = Command::new("ffprobe")
+        .args([
+            "-v", "error",
+            "-select_streams", "v:0",
+            "-show_entries", "stream=width,height",
+            "-of", "csv=p=0",
+            input.to_str().ok_or("non-utf8 input path")?,
+        ])
+        .output()
+        .map_err(|e| format!("ffprobe spawn ({}): install ffmpeg/ffprobe", e))?;
+    if !output.status.success() {
+        return Err(format!(
+            "ffprobe exit {:?}: {}",
+            output.status.code(),
+            String::from_utf8_lossy(&output.stderr).trim(),
+        ));
+    }
+    let line = String::from_utf8_lossy(&output.stdout);
+    let trimmed = line.trim();
+    let parts: Vec<&str> = trimmed.split(',').collect();
+    if parts.len() < 2 {
+        return Err(format!("ffprobe unexpected output: {:?}", trimmed));
+    }
+    let w: u32 = parts[0]
+        .parse()
+        .map_err(|e| format!("width parse '{}': {}", parts[0], e))?;
+    let h: u32 = parts[1]
+        .parse()
+        .map_err(|e| format!("height parse '{}': {}", parts[1], e))?;
+    Ok((w, h))
+}
+
+/// Render the title as a transparent RGBA PNG sized to the video
+/// frame, with the text painted in the bottom-left corner inside a
+/// translucent black box. Using a frame-sized PNG keeps the ffmpeg
+/// overlay invocation trivial (overlay defaults to 0:0). The font is
+/// bundled into the binary so we don't depend on any system fonts.
+fn render_title_png(
+    title: &str,
+    fill_color: [u8; 3],
+    video_w: u32,
+    video_h: u32,
+    output: &std::path::Path,
+) -> Result<(), String> {
+    use ab_glyph::{Font, FontRef, PxScale, ScaleFont};
+    use image::{ImageBuffer, Rgba};
+
+    static FONT_BYTES: &[u8] = include_bytes!("../assets/DejaVuSans.ttf");
+    let font = FontRef::try_from_slice(FONT_BYTES)
+        .map_err(|e| format!("bundled font load: {}", e))?;
+
+    let font_size = (video_h as f32 / 22.0).max(18.0);
+    let scale = PxScale::from(font_size);
+    let scaled = font.as_scaled(scale);
+    let ascent = scaled.ascent();
+    let _ = scaled.height(); // line height unused; bottom-left placement uses ascent/descent
+
+    // Measure full title width.
+    let measure = |s: &str| -> f32 {
+        let mut x = 0.0;
+        let mut prev: Option<ab_glyph::GlyphId> = None;
+        for c in s.chars() {
+            let g = scaled.scaled_glyph(c);
+            if let Some(p) = prev {
+                x += scaled.kern(p, g.id);
+            }
+            x += scaled.h_advance(g.id);
+            prev = Some(g.id);
+        }
+        x
+    };
+
+    // If the title would overflow ~85% of the video width, truncate it
+    // with an ellipsis. Simple char-by-char shrink; titles are short so
+    // we don't need anything smarter.
+    let max_text_w = video_w as f32 * 0.85;
+    let mut display = title.to_string();
+    if measure(&display) > max_text_w {
+        let ellipsis = "…";
+        let mut chars: Vec<char> = display.chars().collect();
+        while chars.len() > 1 {
+            chars.pop();
+            let candidate: String = chars.iter().collect::<String>() + ellipsis;
+            if measure(&candidate) <= max_text_w {
+                display = candidate;
+                break;
+            }
+        }
+    }
+
+    let descent = scaled.descent();
+    let text_height = ascent - descent;
+
+    // Bottom-left text placement: margins from the edges, baseline
+    // positioned so the visible text bottom sits at video_h - margin.
+    let margin_left = (video_h as f32 / 40.0).round();
+    let margin_bottom = (video_h as f32 / 30.0).round();
+    let text_origin_x = margin_left;
+    let text_origin_y = video_h as f32 - margin_bottom - text_height + ascent;
+
+    // Outline radius scales with font size — thin halo at 720p, more
+    // substantial at 4K. Keeps the glyph readable over any video frame
+    // without making the text look stroked.
+    let outline_radius = ((font_size / 24.0).round() as i32).max(2);
+    let mut offsets: Vec<(i32, i32)> = Vec::new();
+    let r2 = outline_radius * outline_radius;
+    for dy in -outline_radius..=outline_radius {
+        for dx in -outline_radius..=outline_radius {
+            if dx == 0 && dy == 0 { continue; }
+            if dx * dx + dy * dy <= r2 {
+                offsets.push((dx, dy));
+            }
+        }
+    }
+
+    // Transparent frame-sized canvas. Nothing else is painted — the
+    // final composite shows only text + outline over the live video.
+    let mut img: ImageBuffer<Rgba<u8>, Vec<u8>> =
+        ImageBuffer::from_pixel(video_w, video_h, Rgba([0, 0, 0, 0]));
+
+    // Source-over alpha composite onto the canvas. The canvas starts
+    // fully transparent; we paint black outline pixels first then the
+    // white fill on top so the outline always wraps the glyph cleanly.
+    let blend = |img: &mut ImageBuffer<Rgba<u8>, Vec<u8>>, px: i32, py: i32, rgb: [u8; 3], coverage: f32| {
+        if px < 0 || py < 0 || (px as u32) >= video_w || (py as u32) >= video_h {
+            return;
+        }
+        let a_src = (coverage * 255.0).clamp(0.0, 255.0) as u16;
+        if a_src == 0 { return; }
+        let pix = img.get_pixel_mut(px as u32, py as u32);
+        let inv = 255 - a_src;
+        let bg_r = pix[0] as u16;
+        let bg_g = pix[1] as u16;
+        let bg_b = pix[2] as u16;
+        let bg_a = pix[3] as u16;
+        let new_r = (rgb[0] as u16 * a_src + bg_r * inv) / 255;
+        let new_g = (rgb[1] as u16 * a_src + bg_g * inv) / 255;
+        let new_b = (rgb[2] as u16 * a_src + bg_b * inv) / 255;
+        let new_a = bg_a + ((255 - bg_a) * a_src) / 255;
+        *pix = Rgba([new_r as u8, new_g as u8, new_b as u8, new_a as u8]);
+    };
+
+    // Lay out once; render outline pass + fill pass per glyph so we
+    // don't have to clone OutlinedGlyph or walk the layout twice.
+    let mut x = text_origin_x;
+    let mut prev: Option<ab_glyph::GlyphId> = None;
+    for c in display.chars() {
+        let mut g = scaled.scaled_glyph(c);
+        if let Some(p) = prev {
+            x += scaled.kern(p, g.id);
+        }
+        prev = Some(g.id);
+        g.position = ab_glyph::point(x, text_origin_y);
+        let advance = scaled.h_advance(g.id);
+        if let Some(outlined) = font.outline_glyph(g) {
+            let bounds = outlined.px_bounds();
+            let bx = bounds.min.x as i32;
+            let by = bounds.min.y as i32;
+
+            // Outline: rasterize the glyph N times at small offsets in
+            // black so the visible halo wraps the eventual white fill.
+            for (ox, oy) in &offsets {
+                outlined.draw(|gx, gy, coverage| {
+                    blend(&mut img, bx + gx as i32 + ox, by + gy as i32 + oy, [0, 0, 0], coverage);
+                });
+            }
+            // Fill: chosen text color on top of the black halo.
+            outlined.draw(|gx, gy, coverage| {
+                blend(&mut img, bx + gx as i32, by + gy as i32, fill_color, coverage);
+            });
+        }
+        x += advance;
+    }
+
+    img.save(output)
+        .map_err(|e| format!("write {}: {}", output.display(), e))?;
+    Ok(())
+}
+
+/// Re-encode `input` with a title overlay drawn in the bottom-left of
+/// every frame for 3 seconds, starting 1 second in. Implementation:
+/// render the title in Rust to a frame-sized transparent PNG, then
+/// composite it via ffmpeg's `overlay` filter (which is always present,
+/// unlike `drawtext` which needs ffmpeg built with libfreetype).
+fn apply_title_overlay(
+    input: &std::path::Path,
+    title: &str,
+    color: [u8; 3],
+    output: &std::path::Path,
+    tx: &Sender<Event>,
+    segment_secs: f64,
+) -> Result<(), String> {
+    let (video_w, video_h) = probe_video_size(input)?;
+    let _ = tx.send(Event::Log(format!(
+        "Rendering title overlay ({}×{}) color #{:02x}{:02x}{:02x} for {:?}",
+        video_w, video_h, color[0], color[1], color[2], title
+    )));
+
+    let png_path = std::env::temp_dir()
+        .join(format!("create_shorts_title_{}.png", std::process::id()));
+    render_title_png(title, color, video_w, video_h, &png_path)?;
+
+    let _ = tx.send(Event::Progress {
+        phase: "Burning title overlay".into(),
+        fraction: 0.0,
+        detail: String::new(),
+    });
+
+    let filter = "[0:v][1:v]overlay=0:0:enable='between(t,1,4)'";
+    let mut cmd = Command::new("ffmpeg");
+    cmd.args([
+        "-y",
+        "-i",
+        input.to_str().ok_or("non-utf8 input path")?,
+        "-i",
+        png_path.to_str().ok_or("non-utf8 png path")?,
+        "-filter_complex",
+        filter,
+        "-c:a",
+        "copy",
+        "-c:v",
+        "libx264",
+        "-preset",
+        "veryfast",
+        "-crf",
+        "20",
+        "-movflags",
+        "+faststart",
+        output.to_str().ok_or("non-utf8 output path")?,
+    ]);
+    cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
+
+    let mut child = cmd.spawn().map_err(|e| format!("ffmpeg spawn ({}): install ffmpeg", e))?;
+    let stdout = child.stdout.take();
+    let stderr = child.stderr.take();
+    let tx_o = tx.clone();
+    let tx_e = tx.clone();
+    let stderr_capture: LineBuf = Arc::new(Mutex::new(VecDeque::new()));
+    let cap_for_thread = stderr_capture.clone();
+    let h_o = stdout.map(|r| std::thread::spawn(move || stream_progress(r, tx_o, segment_secs, None)));
+    let h_e = stderr.map(|r| std::thread::spawn(move || stream_progress(r, tx_e, segment_secs, Some(cap_for_thread))));
+    let status = child.wait().map_err(|e| format!("wait: {}", e))?;
+    if let Some(h) = h_o { let _ = h.join(); }
+    if let Some(h) = h_e { let _ = h.join(); }
+    let _ = std::fs::remove_file(&png_path);
+    if !status.success() {
+        let detail = summarize_yt_dlp_failure(&stderr_capture);
+        let suffix = if detail.is_empty() { String::new() } else { format!(" — {}", detail) };
+        return Err(format!("ffmpeg overlay exited with {:?}{}", status.code(), suffix));
+    }
+    Ok(())
 }
 
 fn extract_video_id(input: &str) -> String {

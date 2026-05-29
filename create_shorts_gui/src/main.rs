@@ -77,7 +77,7 @@ fn main() -> eframe::Result<()> {
     )
 }
 
-#[derive(Default, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
 struct FormState {
     #[serde(default)] source: String,
     #[serde(default)] start: String,
@@ -85,6 +85,25 @@ struct FormState {
     #[serde(default)] title: String,
     #[serde(default)] description: String,
     #[serde(default)] privacy: String,
+    #[serde(default)] overlay_title: bool,
+    #[serde(default = "default_overlay_color")] overlay_color: [u8; 3],
+}
+
+fn default_overlay_color() -> [u8; 3] { [255, 255, 255] }
+
+impl Default for FormState {
+    fn default() -> Self {
+        Self {
+            source: String::new(),
+            start: String::new(),
+            end: String::new(),
+            title: String::new(),
+            description: String::new(),
+            privacy: String::new(),
+            overlay_title: false,
+            overlay_color: default_overlay_color(),
+        }
+    }
 }
 
 struct App {
@@ -725,6 +744,8 @@ impl App {
             description: self.form.description.trim().to_string(),
             privacy: self.form.privacy.clone(),
             preview_only,
+            overlay_title: self.form.overlay_title,
+            overlay_color: self.form.overlay_color,
         };
         let settings = self.settings.clone();
         std::thread::spawn(move || pipeline::run(job, settings, tx));
@@ -1270,6 +1291,28 @@ impl eframe::App for App {
                     ui.horizontal(|ui| {
                         for p in ["public", "unlisted", "private"] {
                             ui.radio_value(&mut self.form.privacy, p.to_string(), p);
+                        }
+                    });
+                    ui.end_row();
+
+                    ui.label("Title overlay:");
+                    ui.horizontal(|ui| {
+                        ui.checkbox(
+                            &mut self.form.overlay_title,
+                            "Burn title into video (bottom-left, 1s–4s)",
+                        ).on_hover_text(
+                            "Re-encodes the segment with the title text shown for 3 seconds, starting 1 second in. Applies to both Preview and Upload.",
+                        );
+                        ui.add_space(12.0);
+                        ui.label("Color:");
+                        ui.color_edit_button_srgb(&mut self.form.overlay_color)
+                            .on_hover_text("Click to pick the text color. Double-click anywhere to close the picker. A thin black outline is added automatically for legibility over any background.");
+                        // egui's color picker stays open until you click
+                        // outside the popup area — annoying when the user is
+                        // done picking. Double-click closes whichever popup
+                        // is currently open (no-op if none).
+                        if ui.input(|i| i.pointer.button_double_clicked(egui::PointerButton::Primary)) {
+                            ui.memory_mut(|mem| mem.close_popup());
                         }
                     });
                     ui.end_row();
