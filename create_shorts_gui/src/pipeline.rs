@@ -189,7 +189,7 @@ pub fn run(job: Job, settings: Settings, tx: Sender<Event>) {
     // doesn't re-encode.
     let final_out = if job.overlay_title {
         let overlay_path = cache_dir.join(format!(
-            "{}_{}_titled_{}_{:02x}{:02x}{:02x}.mp4",
+            "{}_{}_titled_v2_{}_{:02x}{:02x}{:02x}.mp4",
             video_id,
             stamp,
             short_title_hash(&job.title),
@@ -493,7 +493,7 @@ fn render_title_png(
     let font = FontRef::try_from_slice(FONT_BYTES)
         .map_err(|e| format!("bundled font load: {}", e))?;
 
-    let font_size = (video_h as f32 / 22.0).max(18.0);
+    let font_size = (video_h as f32 / 16.92).max(23.4);
     let scale = PxScale::from(font_size);
     let scaled = font.as_scaled(scale);
     let ascent = scaled.ascent();
@@ -650,7 +650,7 @@ fn apply_title_overlay(
         detail: String::new(),
     });
 
-    let filter = "[0:v][1:v]overlay=0:0:enable='between(t,1,4)'";
+    let filter = "[0:v][1:v]overlay=0:0:enable='between(t,1,5)'";
     let mut cmd = Command::new("ffmpeg");
     cmd.args([
         "-y",
