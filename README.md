@@ -478,7 +478,27 @@ Rust binary (`tk_push`) using TikTok Content Posting API. OAuth2 PKCE auth (S256
 ./li_push_rs/target/release/li_push video.mp4 --title "My Video" --visibility CONNECTIONS
 ```
 
-Rust binary (`li_push`) using LinkedIn Videos API + Posts API. OAuth2 auth with OpenID Connect (person ID from JWT id_token). Local callback on port 8092. 4-step upload: initialize → chunked upload (4MB parts with ETags) → finalize → create post. Supports YouTube URL/ID as input — auto-downloads via yt-dlp with title/description. Pre-checks duration (max 30 min) and filesize (max 500MB). `--low-quality` for 1080p fallback. Shows post URL after publish. Upload log in `~/li_push_log.jsonl` prevents duplicate uploads. `--random-short` picks a random unuploaded short from `csv/davaz_enhanced_list.csv` (54 shorts). `--list` shows all previous uploads. Credentials in `linkedin_credentials.json`, token in `linkedin_token.json`. Writes PID to `~/li_push.pid`.
+Rust binary (`li_push`) using LinkedIn Videos API + Posts API. OAuth2 auth with OpenID Connect (person ID from JWT id_token). Local callback on port 8092. 4-step upload: initialize → chunked upload (4MB parts with ETags) → finalize → create post. Supports YouTube URL/ID as input — auto-downloads via yt-dlp with title/description. Pre-checks duration (max 30 min) and filesize (max 500MB). `--low-quality` for 1080p fallback. Shows post URL after publish. Upload log in `~/li_push_log.jsonl` prevents duplicate uploads. `--random-short` picks a random unuploaded short from `csv/davaz_enhanced_list.csv` (54 shorts). `--list` shows all previous uploads. Credentials in `linkedin_credentials.json`, token in `linkedin_token.json`. Writes PID to `~/li_push.pid`. Every post also links the **original** (pre-enhancement) video — sourced from the CSV `Original` column for `--random-short`, or parsed from the short's YouTube description (`Original: <url>`) for direct-URL inputs — appended to the LinkedIn commentary.
+
+### X / Twitter Upload
+
+The same binary also posts to X / Twitter (native video, with a frame-image + link fallback). Register an app at https://developer.x.com as a **Web App (confidential client)** with **app permissions = Read and write** and redirect URI `http://localhost:8092/callback`. Put the OAuth 2.0 Client ID + Secret in `twitter_credentials.json` (gitignored): `{"client_id": "...", "client_secret": "..."}`.
+
+```bash
+# First time: authenticate with X (opens browser for OAuth2 + PKCE)
+./li_push_rs/target/release/li_push --auth-twitter
+
+# Post a random Enhanced 4K short to X only
+./li_push_rs/target/release/li_push --random-short --twitter-only
+
+# Post a specific video to X only
+./li_push_rs/target/release/li_push "https://www.youtube.com/watch?v=VIDEO_ID" --twitter-only
+
+# Post to BOTH LinkedIn and X
+./li_push_rs/target/release/li_push video.mp4 --title "My Video" --twitter
+```
+
+OAuth 2.0 Authorization-Code-with-PKCE flow (`--auth-twitter`), token in `twitter_token.json`, scopes `tweet.read tweet.write users.read media.write offline.access`. Posts **native video** via X's v2 chunked media upload (`/2/media/upload/initialize` → `/{id}/append` → `/{id}/finalize` → poll `STATUS`). Because X rejects video above **1920×1200** (the Da Vaz sources are Enhanced 4K), it first ffmpeg-transcodes to an X-friendly spec (H.264 High / yuv420p, longest edge ≤1280, 30 fps, AAC); if native upload still fails it falls back to a representative JPEG frame + the video link. The tweet caption is `title` + the original-video link (capped to 280 chars). Separate dedup log at `~/li_push_twitter_log.jsonl` so `--random-short --twitter-only` tracks X posts independently of LinkedIn.
 
 The batch-of-N anti-pattern (`wait` for all 4 GPUs, then start next 4) wastes GPU time — fast-finishing GPUs sit idle waiting for the slowest one. On a 4x RTX 5090 instance at $1.35/hr, this caused 3 GPUs to idle for 2+ hours (~$2.70 wasted). The flock-based queue keeps all GPUs busy continuously.
 
