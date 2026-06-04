@@ -8,6 +8,8 @@
 //! Requires: client_id + client_secret in linkedin_credentials.json
 //! Token saved to linkedin_token.json
 
+mod twitter;
+
 use base64::Engine;
 use clap::Parser;
 use serde::{Deserialize, Serialize};
@@ -41,6 +43,26 @@ struct Cli {
     /// Run OAuth2 auth flow to get token
     #[arg(long)]
     auth: bool,
+
+    /// Run the X / Twitter OAuth2 (PKCE) auth flow to get a token
+    #[arg(long)]
+    auth_twitter: bool,
+
+    /// Also post the video to X / Twitter (in addition to LinkedIn)
+    #[arg(long)]
+    twitter: bool,
+
+    /// Post ONLY to X / Twitter (skip LinkedIn)
+    #[arg(long)]
+    twitter_only: bool,
+
+    /// X / Twitter credentials file (client_id + client_secret)
+    #[arg(long, default_value = "twitter_credentials.json")]
+    twitter_credentials: String,
+
+    /// X / Twitter token file
+    #[arg(long, default_value = "twitter_token.json")]
+    twitter_token: String,
 
     /// Pick a random short Da Vaz video (Enhanced 4K, under 5 min) and upload
     #[arg(long)]
@@ -149,6 +171,44 @@ fn append_upload_log(youtube_id: &str, title: &str, post_id: &str, post_url: &st
     writeln!(file, "{}", entry).expect("write upload log");
 }
 
+fn twitter_log_path() -> PathBuf {
+    let home = env::var("HOME").unwrap_or_else(|_| "/root".to_string());
+    PathBuf::from(home).join("li_push_twitter_log.jsonl")
+}
+
+fn load_twitter_uploaded_ids() -> std::collections::HashSet<String> {
+    let mut ids = std::collections::HashSet::new();
+    if let Ok(data) = fs::read_to_string(twitter_log_path()) {
+        for line in data.lines() {
+            if let Ok(entry) = serde_json::from_str::<serde_json::Value>(line) {
+                if let Some(yt_id) = entry["youtube_id"].as_str() {
+                    if !yt_id.is_empty() {
+                        ids.insert(yt_id.to_string());
+                    }
+                }
+            }
+        }
+    }
+    ids
+}
+
+fn append_twitter_log(youtube_id: &str, title: &str, tweet_url: &str) {
+    let path = twitter_log_path();
+    let entry = serde_json::json!({
+        "youtube_id": youtube_id,
+        "title": title,
+        "tweet_url": tweet_url,
+        "timestamp": chrono_now(),
+    });
+    let mut file = fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)
+        .expect("open twitter log");
+    use std::io::Write;
+    writeln!(file, "{}", entry).expect("write twitter log");
+}
+
 fn chrono_now() -> String {
     // Simple ISO timestamp without chrono dependency
     let output = std::process::Command::new("date")
@@ -201,6 +261,62 @@ fn extract_youtube_id(input: &str) -> Option<String> {
     }
 }
 
+/// Find YouTube URLs in free text (whitespace/bracket separated, trailing
+/// punctuation trimmed).
+fn find_youtube_urls(text: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    for raw in text.split(|c: char| c.is_whitespace() || matches!(c, '(' | ')' | '<' | '>' | '[' | ']' | '"')) {
+        let t = raw.trim_end_matches(|c: char| matches!(c, '.' | ',' | ';' | ':' | '!' | '?'));
+        if t.contains("youtube.com/watch") || t.contains("youtu.be/") {
+            out.push(t.to_string());
+        }
+    }
+    out
+}
+
+/// Extract the original-video link from a short's description. Prefers a URL on
+/// a line mentioning "original"; otherwise the first YouTube URL that isn't the
+/// short itself.
+fn extract_original_link(description: &str, short_id: &str) -> Option<String> {
+    for line in description.lines() {
+        if line.to_lowercase().contains("original") {
+            if let Some(url) = find_youtube_urls(line)
+                .into_iter()
+                .find(|u| extract_youtube_id(u).as_deref() != Some(short_id))
+            {
+                return Some(url);
+            }
+        }
+    }
+    find_youtube_urls(description)
+        .into_iter()
+        .find(|u| extract_youtube_id(u).as_deref() != Some(short_id))
+}
+
+/// Build a tweet caption: title, optionally with a link on a new line, capped to
+/// the 280-character limit.
+fn build_tweet_caption(title: &str, link: Option<&str>) -> String {
+    match link {
+        Some(l) if !l.is_empty() => {
+            let suffix = format!("\n{}", l);
+            let max_title = 280usize.saturating_sub(suffix.chars().count());
+            let title_part = if title.chars().count() > max_title {
+                format!("{}…", title.chars().take(max_title.saturating_sub(1)).collect::<String>())
+            } else {
+                title.to_string()
+            };
+            format!("{}{}", title_part, suffix)
+        }
+        _ => {
+            if title.chars().count() > 280 {
+                format!("{}…", title.chars().take(279).collect::<String>())
+            } else {
+                title.to_string()
+            }
+        }
+    }
+}
+
 #[tokio::main]
 async fn main() {
     // Write PID file
@@ -218,12 +334,40 @@ async fn main() {
         return;
     }
 
+    if cli.auth_twitter {
+        let creds = twitter::load_credentials(&cli.twitter_credentials).unwrap_or_else(|e| {
+            eprintln!("ERROR: {}", e);
+            eprintln!("Create {} with:", cli.twitter_credentials);
+            eprintln!(r#"  {{"client_id": "...", "client_secret": "..."}}"#);
+            std::process::exit(1);
+        });
+        if let Err(e) = twitter::auth_flow(&creds, &cli.twitter_token).await {
+            eprintln!("ERROR: {}", e);
+            std::process::exit(1);
+        }
+        return;
+    }
+
     if cli.list {
         list_uploads();
         return;
     }
 
-    let uploaded_ids = load_uploaded_ids();
+    let do_twitter = cli.twitter || cli.twitter_only;
+    let do_linkedin = !cli.twitter_only;
+
+    // Dedup set: in twitter-only mode dedup against the X log, otherwise the
+    // LinkedIn log (the primary gate for the combined / LinkedIn-only flows).
+    let uploaded_ids = if cli.twitter_only {
+        load_twitter_uploaded_ids()
+    } else {
+        load_uploaded_ids()
+    };
+
+    // Link to the original (pre-enhancement) video, surfaced on every post.
+    // Source order: CSV "Original" column (--random-short) → the short's
+    // YouTube description.
+    let mut original_link: Option<String> = None;
 
     // --random-short: pick a random Enhanced 4K short from CSV
     let video_input = if cli.random_short {
@@ -249,11 +393,12 @@ async fn main() {
         });
 
         // Parse CSV: Title,Original,Enhanced 4K,Duration (s),Short
-        let mut candidates: Vec<(String, String, u64)> = Vec::new(); // (id, title, duration)
+        let mut candidates: Vec<(String, String, u64, String)> = Vec::new(); // (id, title, duration, original_url)
         for line in csv_data.lines().skip(1) {
             let fields: Vec<&str> = line.splitn(5, ',').collect();
             if fields.len() >= 5 && fields[4].trim() == "yes" {
                 let title = fields[0].to_string();
+                let original_url = fields[1].trim().to_string();
                 let enhanced_url = fields[2];
                 let duration: u64 = fields[3].trim().parse().unwrap_or(0);
 
@@ -265,7 +410,7 @@ async fn main() {
                     .to_string();
 
                 if !id.is_empty() && !uploaded_ids.contains(&id) {
-                    candidates.push((id, title, duration));
+                    candidates.push((id, title, duration, original_url));
                 }
             }
         }
@@ -284,9 +429,13 @@ async fn main() {
                 .subsec_nanos() as usize;
             seed % candidates.len()
         };
-        let (id, title, duration) = &candidates[idx];
+        let (id, title, duration, original_url) = &candidates[idx];
         eprintln!("Selected: {} — {} ({}s)", id, title, duration);
         eprintln!("({} shorts available, {} already uploaded)", candidates.len(), uploaded_ids.len());
+        if !original_url.is_empty() {
+            eprintln!("Original video: {}", original_url);
+            original_link = Some(original_url.clone());
+        }
         format!("https://www.youtube.com/watch?v={}", id)
     } else {
         match &cli.video_file {
@@ -410,6 +559,88 @@ async fn main() {
         p
     };
 
+    // Fallback: if we don't have the original link from the CSV, look for it in
+    // the short's YouTube description (create_short appends "Original: <url>").
+    if original_link.is_none() && !yt_description.is_empty() {
+        let short_id = extract_youtube_id(&video_input).unwrap_or_default();
+        original_link = extract_original_link(&yt_description, &short_id);
+        if let Some(ref l) = original_link {
+            eprintln!("Original video (from description): {}", l);
+        }
+    }
+
+    let file_size = fs::metadata(&video_path).expect("stat file").len();
+    let file_size_mb = file_size as f64 / (1024.0 * 1024.0);
+
+    // Title priority: --title flag > YouTube title > filename
+    let title = cli.title.clone().unwrap_or_else(|| {
+        if !yt_title.is_empty() {
+            yt_title.clone()
+        } else {
+            video_path
+                .file_stem()
+                .unwrap_or_default()
+                .to_string_lossy()
+                .to_string()
+        }
+    });
+
+    // Description: --description flag > YouTube description > title
+    let description = cli.description.clone().unwrap_or_else(|| {
+        if !yt_description.is_empty() {
+            // Truncate to first 1000 chars for LinkedIn
+            yt_description.chars().take(1000).collect()
+        } else {
+            title.clone()
+        }
+    });
+
+    let visibility = match cli.visibility.to_uppercase().as_str() {
+        "CONNECTIONS" | "FRIENDS" => "CONNECTIONS",
+        _ => "PUBLIC",
+    };
+
+    eprintln!("Uploading: {} ({:.1} MB)", video_path.display(), file_size_mb);
+    eprintln!("Title: {}", title);
+
+    if do_linkedin {
+        upload_to_linkedin(
+            &cli,
+            &video_path,
+            &video_input,
+            &title,
+            &description,
+            visibility,
+            file_size,
+            file_size_mb,
+            original_link.as_deref(),
+        )
+        .await;
+    }
+
+    if do_twitter {
+        post_to_twitter(&cli, &video_path, &video_input, &title, original_link.as_deref()).await;
+    }
+
+    // Clean up temp file if downloaded from YouTube
+    if let Some(tmp) = temp_file {
+        let _ = fs::remove_file(&tmp);
+        eprintln!("Cleaned up temp file: {}", tmp.display());
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn upload_to_linkedin(
+    cli: &Cli,
+    video_path: &Path,
+    video_input: &str,
+    title: &str,
+    description: &str,
+    visibility: &str,
+    file_size: u64,
+    file_size_mb: f64,
+    original_link: Option<&str>,
+) {
     let creds = load_credentials(&cli.credentials).unwrap_or_else(|e| {
         eprintln!("ERROR: {}", e);
         std::process::exit(1);
@@ -428,39 +659,6 @@ async fn main() {
     // Refresh token if we have a refresh_token
     let token = refresh_token(&creds, &token, &cli.token).await;
 
-    let file_size = fs::metadata(&video_path).expect("stat file").len();
-    let file_size_mb = file_size as f64 / (1024.0 * 1024.0);
-
-    // Title priority: --title flag > YouTube title > filename
-    let title = cli.title.unwrap_or_else(|| {
-        if !yt_title.is_empty() {
-            yt_title.clone()
-        } else {
-            video_path
-                .file_stem()
-                .unwrap_or_default()
-                .to_string_lossy()
-                .to_string()
-        }
-    });
-
-    // Description: --description flag > YouTube description > title
-    let description = cli.description.unwrap_or_else(|| {
-        if !yt_description.is_empty() {
-            // Truncate to first 1000 chars for LinkedIn
-            yt_description.chars().take(1000).collect()
-        } else {
-            title.clone()
-        }
-    });
-
-    let visibility = match cli.visibility.to_uppercase().as_str() {
-        "CONNECTIONS" | "FRIENDS" => "CONNECTIONS",
-        _ => "PUBLIC",
-    };
-
-    eprintln!("Uploading: {} ({:.1} MB)", video_path.display(), file_size_mb);
-    eprintln!("Title: {}", title);
     eprintln!("Visibility: {}", visibility);
 
     let client = reqwest::Client::new();
@@ -618,9 +816,16 @@ async fn main() {
 
     // Step 4: Create Post
     eprintln!("Creating LinkedIn post...");
+    // Surface the original-video link in the post text.
+    let commentary = match original_link {
+        Some(link) if !link.is_empty() && !description.contains(link) => {
+            format!("{}\n\nOriginal: {}", description, link)
+        }
+        _ => description.to_string(),
+    };
     let post_body = serde_json::json!({
         "author": owner,
-        "commentary": description,
+        "commentary": commentary,
         "visibility": visibility,
         "distribution": {
             "feedDistribution": "MAIN_FEED",
@@ -670,8 +875,8 @@ async fn main() {
     let post_url = format!("https://www.linkedin.com/feed/update/{}/", post_id);
 
     // Log the upload
-    let yt_id = extract_youtube_id(&video_input).unwrap_or_default();
-    append_upload_log(&yt_id, &title, post_id, &post_url);
+    let yt_id = extract_youtube_id(video_input).unwrap_or_default();
+    append_upload_log(&yt_id, title, post_id, &post_url);
 
     eprintln!("Video published to LinkedIn!");
     eprintln!("  Post ID: {}", post_id);
@@ -679,12 +884,137 @@ async fn main() {
     eprintln!("  Title: {}", title);
     eprintln!("  Size: {:.1} MB", file_size_mb);
     eprintln!("  Visibility: {}", visibility);
+}
 
-    // Clean up temp file if downloaded from YouTube
-    if let Some(tmp) = temp_file {
-        let _ = fs::remove_file(&tmp);
-        eprintln!("Cleaned up temp file: {}", tmp.display());
+async fn post_to_twitter(
+    cli: &Cli,
+    video_path: &Path,
+    video_input: &str,
+    title: &str,
+    original_link: Option<&str>,
+) {
+    let creds = twitter::load_credentials(&cli.twitter_credentials).unwrap_or_else(|e| {
+        eprintln!("ERROR (twitter): {}", e);
+        eprintln!(
+            "Create {} with client_id + client_secret, then run 'li_push --auth-twitter'.",
+            cli.twitter_credentials
+        );
+        std::process::exit(1);
+    });
+
+    let token = twitter::load_token(&cli.twitter_token).unwrap_or_else(|e| {
+        eprintln!("ERROR (twitter): {}. Run 'li_push --auth-twitter' first.", e);
+        std::process::exit(1);
+    });
+
+    let token = twitter::refresh_token(&creds, &token, &cli.twitter_token).await;
+
+    let yt_id = extract_youtube_id(video_input).unwrap_or_default();
+    let enhanced_link = if !yt_id.is_empty() {
+        format!("https://www.youtube.com/watch?v={}", yt_id)
+    } else {
+        video_input.to_string()
+    };
+    // Prefer linking the original video; fall back to the short itself.
+    let post_link: &str = original_link.unwrap_or(enhanced_link.as_str());
+
+    // First try a native video tweet — caption is title + original link.
+    let video_caption = build_tweet_caption(title, Some(post_link));
+
+    // X rejects video above 1920x1200 (these are Enhanced 4K sources), and is
+    // picky about codecs, so transcode to an X-friendly spec first: H.264 High /
+    // yuv420p, longest edge <= 1280, even dimensions, 30 fps, AAC audio.
+    let x_video_path = env::temp_dir().join(format!("li_push_x_video_{}.mp4", std::process::id()));
+    eprintln!("Transcoding to an X-compatible video...");
+    let tr = std::process::Command::new("ffmpeg")
+        .args([
+            "-y",
+            "-i", video_path.to_str().unwrap_or_default(),
+            "-vf", "scale='min(1280,iw)':'min(1280,ih)':force_original_aspect_ratio=decrease,scale=trunc(iw/2)*2:trunc(ih/2)*2",
+            "-c:v", "libx264",
+            "-profile:v", "high",
+            "-pix_fmt", "yuv420p",
+            "-r", "30",
+            "-preset", "veryfast",
+            "-crf", "23",
+            "-c:a", "aac",
+            "-b:a", "128k",
+            "-movflags", "+faststart",
+            x_video_path.to_str().unwrap_or_default(),
+        ])
+        .output();
+    let upload_path: PathBuf = if matches!(&tr, Ok(o) if o.status.success()) && x_video_path.exists() {
+        x_video_path.clone()
+    } else {
+        eprintln!("WARNING: transcode failed; uploading the original file.");
+        video_path.to_path_buf()
+    };
+
+    eprintln!("Posting to X / Twitter (native video)...");
+    let video_result = twitter::publish_video(&token.access_token, &upload_path, &video_caption).await;
+    let _ = fs::remove_file(&x_video_path);
+    match video_result {
+        Ok(url) => {
+            append_twitter_log(&yt_id, title, &url);
+            eprintln!("Video published to X!");
+            eprintln!("  Tweet: {}", url);
+            eprintln!("  Link: {}", post_link);
+            eprintln!("  Title: {}", title);
+            return;
+        }
+        Err(e) => {
+            eprintln!("WARNING: native video post failed: {}", e);
+            eprintln!("Falling back to a frame image + link...");
+        }
     }
+
+    // Fallback: post a representative frame (1s in) + the video link.
+    let frame_path = env::temp_dir().join(format!("li_push_x_frame_{}.jpg", std::process::id()));
+    let ff = std::process::Command::new("ffmpeg")
+        .args([
+            "-y",
+            "-ss", "1",
+            "-i", video_path.to_str().unwrap_or_default(),
+            "-frames:v", "1",
+            "-q:v", "2",
+            frame_path.to_str().unwrap_or_default(),
+        ])
+        .output();
+    let frame_ok = matches!(&ff, Ok(o) if o.status.success() && frame_path.exists());
+    if !frame_ok {
+        let _ = std::process::Command::new("ffmpeg")
+            .args([
+                "-y",
+                "-i", video_path.to_str().unwrap_or_default(),
+                "-frames:v", "1",
+                "-q:v", "2",
+                frame_path.to_str().unwrap_or_default(),
+            ])
+            .output();
+    }
+    if !frame_path.exists() {
+        eprintln!("ERROR: Could not extract a frame for the X image (is ffmpeg installed?).");
+        std::process::exit(1);
+    }
+
+    // Image caption: title + link (original preferred), capped to 280 chars.
+    let caption = build_tweet_caption(title, Some(post_link));
+
+    match twitter::publish_image(&token.access_token, &frame_path, &caption).await {
+        Ok(url) => {
+            append_twitter_log(&yt_id, title, &url);
+            eprintln!("Posted to X (frame + link)!");
+            eprintln!("  Tweet: {}", url);
+            eprintln!("  Link: {}", post_link);
+            eprintln!("  Title: {}", title);
+        }
+        Err(e) => {
+            let _ = fs::remove_file(&frame_path);
+            eprintln!("ERROR: X post failed: {}", e);
+            std::process::exit(1);
+        }
+    }
+    let _ = fs::remove_file(&frame_path);
 }
 
 async fn auth_flow(cli: &Cli) {
