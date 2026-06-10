@@ -34,6 +34,7 @@ pub struct Job {
     pub overlay_title: bool,
     pub overlay_color: [u8; 3],
     pub fade_out: bool,
+    pub fade_secs: u32,
 }
 
 pub struct UploadJob {
@@ -216,21 +217,25 @@ pub fn run(job: Job, settings: Settings, tx: Sender<Event>) {
         out.clone()
     };
 
-    // Always (when enabled): freeze the last frame for 10 seconds and
-    // fade it — picture and sound — to black/silence. Applied last so it
+    // Always (when enabled): freeze the last frame for `fade_secs` seconds
+    // and fade it — picture and sound — to black/silence. Applied last so it
     // wraps whatever we deliver (raw segment or titled segment). Cached
-    // next to its input as `<stem>_fade10.mp4` so Preview → Upload of the
-    // same short doesn't re-encode.
+    // next to its input as `<stem>_fade<secs>.mp4` so Preview → Upload of the
+    // same short (and same duration) doesn't re-encode.
+    let fade_secs = job.fade_secs.max(1);
     let delivered = if job.fade_out {
-        let fade_path = fade_output_path(&final_out);
+        let fade_path = fade_output_path(&final_out, fade_secs);
         if fade_path.exists() {
             let _ = tx.send(Event::Log(format!(
                 "Reusing cached fade-out segment {}",
                 fade_path.display()
             )));
         } else {
-            let _ = tx.send(Event::Log("Adding 10s freeze-frame fade-out…".into()));
-            if let Err(e) = apply_fade_out(&final_out, &fade_path, &tx, segment_secs) {
+            let _ = tx.send(Event::Log(format!(
+                "Adding {}s freeze-frame fade-out…",
+                fade_secs
+            )));
+            if let Err(e) = apply_fade_out(&final_out, &fade_path, &tx, segment_secs, fade_secs) {
                 let _ = std::fs::remove_file(&fade_path);
                 let _ = tx.send(Event::Error(format!("fade-out: {}", e)));
                 return;
@@ -724,16 +729,18 @@ fn apply_title_overlay(
 }
 
 /// Cache path for the faded variant of a segment: same directory and
-/// stem as the input, with a `_fade10` suffix. Keying on the input
+/// stem as the input, with a `_fade<secs>` suffix. Keying on the input
 /// filename means a titled segment and a plain segment get distinct
-/// faded caches, and Preview → Upload of the same short reuses the file.
-fn fade_output_path(input: &std::path::Path) -> PathBuf {
+/// faded caches; keying on the duration means changing the fade length
+/// re-encodes rather than serving a stale cache. Preview → Upload of the
+/// same short and same duration reuses the file.
+fn fade_output_path(input: &std::path::Path, fade_secs: u32) -> PathBuf {
     let parent = input.parent().unwrap_or_else(|| std::path::Path::new("."));
     let stem = input
         .file_stem()
         .and_then(|s| s.to_str())
         .unwrap_or("segment");
-    parent.join(format!("{}_fade10.mp4", stem))
+    parent.join(format!("{}_fade{}.mp4", stem, fade_secs))
 }
 
 /// Probe the container duration in seconds.
@@ -769,36 +776,37 @@ fn probe_has_audio(input: &std::path::Path) -> bool {
         .unwrap_or(false)
 }
 
-/// Append a 10-second freeze-frame fade-out to the end of `input`:
-/// `tpad=stop_mode=clone:stop_duration=10` clones the last frame for
-/// 10 seconds, then `fade=t=out` ramps those 10 seconds to black. Audio
-/// (when present) is padded with 10 s of silence and faded out in
-/// lockstep. The result is 10 seconds longer than the input.
+/// Append a `fade_secs`-second freeze-frame fade-out to the end of `input`:
+/// `tpad=stop_mode=clone:stop_duration=N` clones the last frame for
+/// N seconds, then `fade=t=out` ramps those N seconds to black. Audio
+/// (when present) is padded with N s of silence and faded out in
+/// lockstep. The result is N seconds longer than the input.
 fn apply_fade_out(
     input: &std::path::Path,
     output: &std::path::Path,
     tx: &Sender<Event>,
     segment_secs: f64,
+    fade_secs: u32,
 ) -> Result<(), String> {
-    const FADE: f64 = 10.0;
+    let fade: f64 = fade_secs.max(1) as f64;
     let dur = probe_duration(input).unwrap_or(segment_secs);
     let fade_start = if dur > 0.0 { dur } else { segment_secs.max(0.0) };
     let has_audio = probe_has_audio(input);
     let _ = tx.send(Event::Log(format!(
         "Freeze-frame fade-out: holding last frame {:.1}s–{:.1}s (audio: {})",
         fade_start,
-        fade_start + FADE,
+        fade_start + fade,
         if has_audio { "yes" } else { "none" },
     )));
 
     let vf = format!(
         "tpad=stop_mode=clone:stop_duration={fade},fade=t=out:st={start:.3}:d={fade}",
-        fade = FADE,
+        fade = fade,
         start = fade_start,
     );
     let af = format!(
         "apad=pad_dur={fade},afade=t=out:st={start:.3}:d={fade}",
-        fade = FADE,
+        fade = fade,
         start = fade_start,
     );
 
@@ -833,7 +841,7 @@ fn apply_fade_out(
 
     // Progress is measured against the padded total length so the bar
     // reaches 100% at the real end of the encode.
-    let total = fade_start + FADE;
+    let total = fade_start + fade;
     let mut child = cmd.spawn().map_err(|e| format!("ffmpeg spawn ({}): install ffmpeg", e))?;
     let stdout = child.stdout.take();
     let stderr = child.stderr.take();

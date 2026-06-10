@@ -88,10 +88,12 @@ struct FormState {
     #[serde(default)] overlay_title: bool,
     #[serde(default = "default_overlay_color")] overlay_color: [u8; 3],
     #[serde(default = "default_fade_out")] fade_out: bool,
+    #[serde(default = "default_fade_secs")] fade_secs: u32,
 }
 
 fn default_overlay_color() -> [u8; 3] { [255, 255, 255] }
 fn default_fade_out() -> bool { true }
+fn default_fade_secs() -> u32 { 10 }
 
 impl Default for FormState {
     fn default() -> Self {
@@ -105,6 +107,7 @@ impl Default for FormState {
             overlay_title: false,
             overlay_color: default_overlay_color(),
             fade_out: default_fade_out(),
+            fade_secs: default_fade_secs(),
         }
     }
 }
@@ -750,6 +753,7 @@ impl App {
             overlay_title: self.form.overlay_title,
             overlay_color: self.form.overlay_color,
             fade_out: self.form.fade_out,
+            fade_secs: self.form.fade_secs,
         };
         let settings = self.settings.clone();
         std::thread::spawn(move || pipeline::run(job, settings, tx));
@@ -1322,12 +1326,22 @@ impl eframe::App for App {
                     ui.end_row();
 
                     ui.label("Fade-out:");
-                    ui.checkbox(
-                        &mut self.form.fade_out,
-                        "Freeze last frame and fade to black (10s) at the end",
-                    ).on_hover_text(
-                        "Holds the last frame for 10 seconds and fades it — picture and sound — to black/silence. The short ends up 10 seconds longer. Applies to both Preview and Upload.",
-                    );
+                    ui.horizontal(|ui| {
+                        ui.checkbox(
+                            &mut self.form.fade_out,
+                            "Freeze last frame and fade to black at the end",
+                        ).on_hover_text(
+                            "Holds the last frame and fades it — picture and sound — to black/silence. The short ends up that many seconds longer. Applies to both Preview and Upload.",
+                        );
+                        ui.add_enabled_ui(self.form.fade_out, |ui| {
+                            ui.add(
+                                egui::DragValue::new(&mut self.form.fade_secs)
+                                    .speed(1.0)
+                                    .range(1..=60)
+                                    .suffix(" s"),
+                            ).on_hover_text("Fade-out duration in seconds (1–60).");
+                        });
+                    });
                     ui.end_row();
                 });
 
