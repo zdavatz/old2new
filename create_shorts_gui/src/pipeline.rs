@@ -33,6 +33,7 @@ pub struct Job {
     pub preview_only: bool,
     pub overlay_title: bool,
     pub overlay_color: [u8; 3],
+    pub fade_out: bool,
 }
 
 pub struct UploadJob {
@@ -215,9 +216,34 @@ pub fn run(job: Job, settings: Settings, tx: Sender<Event>) {
         out.clone()
     };
 
+    // Always (when enabled): freeze the last frame for 10 seconds and
+    // fade it — picture and sound — to black/silence. Applied last so it
+    // wraps whatever we deliver (raw segment or titled segment). Cached
+    // next to its input as `<stem>_fade10.mp4` so Preview → Upload of the
+    // same short doesn't re-encode.
+    let delivered = if job.fade_out {
+        let fade_path = fade_output_path(&final_out);
+        if fade_path.exists() {
+            let _ = tx.send(Event::Log(format!(
+                "Reusing cached fade-out segment {}",
+                fade_path.display()
+            )));
+        } else {
+            let _ = tx.send(Event::Log("Adding 10s freeze-frame fade-out…".into()));
+            if let Err(e) = apply_fade_out(&final_out, &fade_path, &tx, segment_secs) {
+                let _ = std::fs::remove_file(&fade_path);
+                let _ = tx.send(Event::Error(format!("fade-out: {}", e)));
+                return;
+            }
+        }
+        fade_path
+    } else {
+        final_out.clone()
+    };
+
     if job.preview_only {
-        let _ = tx.send(Event::Log(format!("Preview file kept at {}", final_out.display())));
-        let _ = tx.send(Event::Preview(final_out));
+        let _ = tx.send(Event::Log(format!("Preview file kept at {}", delivered.display())));
+        let _ = tx.send(Event::Preview(delivered));
         return;
     }
 
@@ -247,18 +273,20 @@ pub fn run(job: Job, settings: Settings, tx: Sender<Event>) {
         },
     };
 
-    let upload_size = std::fs::metadata(&final_out).map(|m| m.len()).unwrap_or(size);
+    let upload_size = std::fs::metadata(&delivered).map(|m| m.len()).unwrap_or(size);
     let _ = tx.send(Event::Log(format!("Uploading {:.1} MB…", upload_size as f64 / 1024.0 / 1024.0)));
     let progress_tx = tx.clone();
-    let result = upload_video(&access_token, &final_out, &body, |sent, total| {
+    let result = upload_video(&access_token, &delivered, &body, |sent, total| {
         let f = if total == 0 { 0.0 } else { sent as f32 / total as f32 };
         let detail = format!("{:.1} / {:.1} MB", sent as f64 / 1_048_576.0, total as f64 / 1_048_576.0);
         let _ = progress_tx.send(Event::Progress { phase: "Uploading".into(), fraction: f, detail });
     });
 
-    let _ = std::fs::remove_file(&final_out);
-    if final_out != out {
-        let _ = std::fs::remove_file(&out);
+    // Remove the delivered file plus any distinct intermediates
+    // (titled overlay, raw segment) so the cache dir doesn't accumulate.
+    // Removing the same path twice is a harmless ignored error.
+    for f in [&delivered, &final_out, &out] {
+        let _ = std::fs::remove_file(f);
     }
 
     match result {
@@ -691,6 +719,137 @@ fn apply_title_overlay(
         let detail = summarize_yt_dlp_failure(&stderr_capture);
         let suffix = if detail.is_empty() { String::new() } else { format!(" — {}", detail) };
         return Err(format!("ffmpeg overlay exited with {:?}{}", status.code(), suffix));
+    }
+    Ok(())
+}
+
+/// Cache path for the faded variant of a segment: same directory and
+/// stem as the input, with a `_fade10` suffix. Keying on the input
+/// filename means a titled segment and a plain segment get distinct
+/// faded caches, and Preview → Upload of the same short reuses the file.
+fn fade_output_path(input: &std::path::Path) -> PathBuf {
+    let parent = input.parent().unwrap_or_else(|| std::path::Path::new("."));
+    let stem = input
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("segment");
+    parent.join(format!("{}_fade10.mp4", stem))
+}
+
+/// Probe the container duration in seconds.
+fn probe_duration(input: &std::path::Path) -> Option<f64> {
+    let output = Command::new("ffprobe")
+        .args([
+            "-v", "error",
+            "-show_entries", "format=duration",
+            "-of", "csv=p=0",
+            input.to_str()?,
+        ])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    String::from_utf8_lossy(&output.stdout).trim().parse().ok()
+}
+
+/// True if the input has at least one audio stream. Determines whether
+/// we pad+fade the audio tail or just drop audio for the freeze frame.
+fn probe_has_audio(input: &std::path::Path) -> bool {
+    Command::new("ffprobe")
+        .args([
+            "-v", "error",
+            "-select_streams", "a:0",
+            "-show_entries", "stream=codec_type",
+            "-of", "csv=p=0",
+            input.to_str().unwrap_or(""),
+        ])
+        .output()
+        .map(|o| String::from_utf8_lossy(&o.stdout).contains("audio"))
+        .unwrap_or(false)
+}
+
+/// Append a 10-second freeze-frame fade-out to the end of `input`:
+/// `tpad=stop_mode=clone:stop_duration=10` clones the last frame for
+/// 10 seconds, then `fade=t=out` ramps those 10 seconds to black. Audio
+/// (when present) is padded with 10 s of silence and faded out in
+/// lockstep. The result is 10 seconds longer than the input.
+fn apply_fade_out(
+    input: &std::path::Path,
+    output: &std::path::Path,
+    tx: &Sender<Event>,
+    segment_secs: f64,
+) -> Result<(), String> {
+    const FADE: f64 = 10.0;
+    let dur = probe_duration(input).unwrap_or(segment_secs);
+    let fade_start = if dur > 0.0 { dur } else { segment_secs.max(0.0) };
+    let has_audio = probe_has_audio(input);
+    let _ = tx.send(Event::Log(format!(
+        "Freeze-frame fade-out: holding last frame {:.1}s–{:.1}s (audio: {})",
+        fade_start,
+        fade_start + FADE,
+        if has_audio { "yes" } else { "none" },
+    )));
+
+    let vf = format!(
+        "tpad=stop_mode=clone:stop_duration={fade},fade=t=out:st={start:.3}:d={fade}",
+        fade = FADE,
+        start = fade_start,
+    );
+    let af = format!(
+        "apad=pad_dur={fade},afade=t=out:st={start:.3}:d={fade}",
+        fade = FADE,
+        start = fade_start,
+    );
+
+    let _ = tx.send(Event::Progress {
+        phase: "Adding fade-out".into(),
+        fraction: 0.0,
+        detail: String::new(),
+    });
+
+    let mut cmd = Command::new("ffmpeg");
+    cmd.arg("-y")
+        .arg("-i")
+        .arg(input.to_str().ok_or("non-utf8 input path")?)
+        .arg("-vf")
+        .arg(&vf);
+    if has_audio {
+        cmd.arg("-af").arg(&af);
+    } else {
+        cmd.arg("-an");
+    }
+    cmd.args([
+        "-c:v", "libx264",
+        "-preset", "veryfast",
+        "-crf", "20",
+    ]);
+    if has_audio {
+        cmd.args(["-c:a", "aac"]);
+    }
+    cmd.args(["-movflags", "+faststart"]);
+    cmd.arg(output.to_str().ok_or("non-utf8 output path")?);
+    cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
+
+    // Progress is measured against the padded total length so the bar
+    // reaches 100% at the real end of the encode.
+    let total = fade_start + FADE;
+    let mut child = cmd.spawn().map_err(|e| format!("ffmpeg spawn ({}): install ffmpeg", e))?;
+    let stdout = child.stdout.take();
+    let stderr = child.stderr.take();
+    let tx_o = tx.clone();
+    let tx_e = tx.clone();
+    let stderr_capture: LineBuf = Arc::new(Mutex::new(VecDeque::new()));
+    let cap_for_thread = stderr_capture.clone();
+    let h_o = stdout.map(|r| std::thread::spawn(move || stream_progress(r, tx_o, total, None)));
+    let h_e = stderr.map(|r| std::thread::spawn(move || stream_progress(r, tx_e, total, Some(cap_for_thread))));
+    let status = child.wait().map_err(|e| format!("wait: {}", e))?;
+    if let Some(h) = h_o { let _ = h.join(); }
+    if let Some(h) = h_e { let _ = h.join(); }
+    if !status.success() {
+        let detail = summarize_yt_dlp_failure(&stderr_capture);
+        let suffix = if detail.is_empty() { String::new() } else { format!(" — {}", detail) };
+        return Err(format!("ffmpeg fade-out exited with {:?}{}", status.code(), suffix));
     }
     Ok(())
 }
