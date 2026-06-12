@@ -33,6 +33,8 @@ pub struct Job {
     pub preview_only: bool,
     pub overlay_title: bool,
     pub overlay_color: [u8; 3],
+    pub stretch: bool,
+    pub stretch_secs: u32,
     pub fade_out: bool,
     pub fade_secs: u32,
     pub fade_in: bool,
@@ -187,15 +189,50 @@ pub fn run(job: Job, settings: Settings, tx: Sender<Event>) {
     };
     let _ = tx.send(Event::Log(format!("Segment ready: {:.1} MB", size as f64 / 1_048_576.0)));
 
+    // Optional: time-stretch (slow down) the core clip so it lasts
+    // `stretch_secs` seconds longer. Applied to the raw segment *before*
+    // the title overlay and fades, so those keep their own independent
+    // durations — only the movie content is stretched. Cached as
+    // `<video_id>_<stamp>_stretch<secs>.mp4`.
+    let stretch_secs = job.stretch_secs.max(1);
+    let base = if job.stretch {
+        let stretch_path = cache_dir.join(format!("{}_{}_stretch{}.mp4", video_id, stamp, stretch_secs));
+        if stretch_path.exists() {
+            let _ = tx.send(Event::Log(format!(
+                "Reusing cached stretched segment {}",
+                stretch_path.display()
+            )));
+        } else {
+            let _ = tx.send(Event::Log(format!("Stretching clip by {}s…", stretch_secs)));
+            if let Err(e) = apply_stretch(&out, &stretch_path, &tx, segment_secs, stretch_secs) {
+                let _ = std::fs::remove_file(&stretch_path);
+                let _ = tx.send(Event::Error(format!("stretch: {}", e)));
+                return;
+            }
+        }
+        stretch_path
+    } else {
+        out.clone()
+    };
+
+    // The core clip's duration after the optional stretch — used to drive
+    // the progress bars of the downstream (title/fade) re-encodes.
+    let core_secs = if job.stretch { segment_secs + stretch_secs as f64 } else { segment_secs };
+
+    // Tag the titled cache filename with the stretch so toggling stretch
+    // on/off doesn't serve a stale titled clip.
+    let stretch_tag = if job.stretch { format!("_stretch{}", stretch_secs) } else { String::new() };
+
     // Optional: burn the title into the bottom-left of the frame for
     // 3 seconds starting 1 second in. Output is cached separately per
     // (video_id, segment, title) so Preview → Upload of the same title
     // doesn't re-encode.
     let final_out = if job.overlay_title {
         let overlay_path = cache_dir.join(format!(
-            "{}_{}_titled_v2_{}_{:02x}{:02x}{:02x}.mp4",
+            "{}_{}{}_titled_v2_{}_{:02x}{:02x}{:02x}.mp4",
             video_id,
             stamp,
+            stretch_tag,
             short_title_hash(&job.title),
             job.overlay_color[0],
             job.overlay_color[1],
@@ -208,7 +245,7 @@ pub fn run(job: Job, settings: Settings, tx: Sender<Event>) {
             )));
         } else {
             let _ = tx.send(Event::Log("Burning title overlay…".into()));
-            if let Err(e) = apply_title_overlay(&out, &job.title, job.overlay_color, &overlay_path, &tx, segment_secs) {
+            if let Err(e) = apply_title_overlay(&base, &job.title, job.overlay_color, &overlay_path, &tx, core_secs) {
                 let _ = std::fs::remove_file(&overlay_path);
                 let _ = tx.send(Event::Error(format!("title overlay: {}", e)));
                 return;
@@ -216,7 +253,7 @@ pub fn run(job: Job, settings: Settings, tx: Sender<Event>) {
         }
         overlay_path
     } else {
-        out.clone()
+        base.clone()
     };
 
     // Optional (when enabled): freeze the FIRST frame for `fade_in_secs`
@@ -237,7 +274,7 @@ pub fn run(job: Job, settings: Settings, tx: Sender<Event>) {
                 "Adding {}s freeze-frame fade-in…",
                 fade_in_secs
             )));
-            if let Err(e) = apply_fade_in(&final_out, &fin_path, &tx, segment_secs, fade_in_secs) {
+            if let Err(e) = apply_fade_in(&final_out, &fin_path, &tx, core_secs, fade_in_secs) {
                 let _ = std::fs::remove_file(&fin_path);
                 let _ = tx.send(Event::Error(format!("fade-in: {}", e)));
                 return;
@@ -266,7 +303,7 @@ pub fn run(job: Job, settings: Settings, tx: Sender<Event>) {
                 "Adding {}s freeze-frame fade-out…",
                 fade_secs
             )));
-            if let Err(e) = apply_fade_out(&after_fade_in, &fade_path, &tx, segment_secs, fade_secs) {
+            if let Err(e) = apply_fade_out(&after_fade_in, &fade_path, &tx, core_secs, fade_secs) {
                 let _ = std::fs::remove_file(&fade_path);
                 let _ = tx.send(Event::Error(format!("fade-out: {}", e)));
                 return;
@@ -322,7 +359,7 @@ pub fn run(job: Job, settings: Settings, tx: Sender<Event>) {
     // (fade-out, fade-in, titled overlay, raw segment) so the cache dir
     // doesn't accumulate. Removing the same path twice is a harmless
     // ignored error.
-    for f in [&delivered, &after_fade_in, &final_out, &out] {
+    for f in [&delivered, &after_fade_in, &final_out, &base, &out] {
         let _ = std::fs::remove_file(f);
     }
 
@@ -990,6 +1027,96 @@ fn apply_fade_in(
         let detail = summarize_yt_dlp_failure(&stderr_capture);
         let suffix = if detail.is_empty() { String::new() } else { format!(" — {}", detail) };
         return Err(format!("ffmpeg fade-in exited with {:?}{}", status.code(), suffix));
+    }
+    Ok(())
+}
+
+/// Build an `atempo` filter chain that slows audio to `ratio` (<1.0).
+/// A single `atempo` instance only accepts 0.5–2.0, so to reach a ratio
+/// below 0.5 we chain `atempo=0.5` stages until what's left is in range.
+/// e.g. ratio 0.2 → `atempo=0.5,atempo=0.4` (0.5 × 0.4 = 0.2).
+fn atempo_chain(mut ratio: f64) -> String {
+    let mut parts: Vec<String> = Vec::new();
+    while ratio < 0.5 {
+        parts.push("atempo=0.5".to_string());
+        ratio *= 2.0;
+    }
+    parts.push(format!("atempo={:.6}", ratio));
+    parts.join(",")
+}
+
+/// Time-stretch `input` so it lasts `stretch_secs` seconds longer: slow
+/// the video by multiplying the presentation timestamps (`setpts`) and
+/// slow the audio with an `atempo` chain by the same factor, so picture
+/// and sound stay in sync — only playback speed changes. No frames are
+/// dropped or added; the existing frames just play back slower.
+fn apply_stretch(
+    input: &std::path::Path,
+    output: &std::path::Path,
+    tx: &Sender<Event>,
+    segment_secs: f64,
+    stretch_secs: u32,
+) -> Result<(), String> {
+    let extra = stretch_secs.max(1) as f64;
+    let dur = probe_duration(input).unwrap_or(segment_secs).max(0.001);
+    let target = dur + extra;
+    let pts_factor = target / dur; // > 1 → slower video
+    let atempo = dur / target; // < 1 → slower audio
+    let has_audio = probe_has_audio(input);
+    let _ = tx.send(Event::Log(format!(
+        "Stretching {:.1}s → {:.1}s (×{:.3} slower, audio: {})",
+        dur,
+        target,
+        pts_factor,
+        if has_audio { "yes" } else { "none" },
+    )));
+
+    let vf = format!("setpts={:.6}*PTS", pts_factor);
+    let af = atempo_chain(atempo);
+
+    let _ = tx.send(Event::Progress {
+        phase: "Stretching clip".into(),
+        fraction: 0.0,
+        detail: String::new(),
+    });
+
+    let mut cmd = Command::new("ffmpeg");
+    cmd.arg("-y")
+        .arg("-i")
+        .arg(input.to_str().ok_or("non-utf8 input path")?)
+        .arg("-vf")
+        .arg(&vf);
+    if has_audio {
+        cmd.arg("-af").arg(&af);
+    } else {
+        cmd.arg("-an");
+    }
+    cmd.args(["-c:v", "libx264", "-preset", "veryfast", "-crf", "20"]);
+    if has_audio {
+        cmd.args(["-c:a", "aac"]);
+    }
+    cmd.args(["-movflags", "+faststart"]);
+    cmd.arg(output.to_str().ok_or("non-utf8 output path")?);
+    cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
+
+    // Progress against the stretched (target) length so the bar reaches
+    // 100% at the real end of the encode.
+    let mut child = cmd.spawn().map_err(|e| format!("ffmpeg spawn ({}): install ffmpeg", e))?;
+    let stdout = child.stdout.take();
+    let stderr = child.stderr.take();
+    let tx_o = tx.clone();
+    let tx_e = tx.clone();
+    let stderr_capture: LineBuf = Arc::new(Mutex::new(VecDeque::new()));
+    let cap_for_thread = stderr_capture.clone();
+    let h_o = stdout.map(|r| std::thread::spawn(move || stream_progress(r, tx_o, target, None)));
+    let h_e = stderr.map(|r| std::thread::spawn(move || stream_progress(r, tx_e, target, Some(cap_for_thread))));
+    let status = child.wait().map_err(|e| format!("wait: {}", e))?;
+    if let Some(h) = h_o { let _ = h.join(); }
+    if let Some(h) = h_e { let _ = h.join(); }
+    if !status.success() {
+        let detail = summarize_yt_dlp_failure(&stderr_capture);
+        let suffix = if detail.is_empty() { String::new() } else { format!(" — {}", detail) };
+        return Err(format!("ffmpeg stretch exited with {:?}{}", status.code(), suffix));
     }
     Ok(())
 }

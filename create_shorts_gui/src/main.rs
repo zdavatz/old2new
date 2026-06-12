@@ -87,6 +87,8 @@ struct FormState {
     #[serde(default)] privacy: String,
     #[serde(default)] overlay_title: bool,
     #[serde(default = "default_overlay_color")] overlay_color: [u8; 3],
+    #[serde(default)] stretch: bool,
+    #[serde(default = "default_stretch_secs")] stretch_secs: u32,
     #[serde(default = "default_fade_out")] fade_out: bool,
     #[serde(default = "default_fade_secs")] fade_secs: u32,
     #[serde(default)] fade_in: bool,
@@ -96,6 +98,7 @@ struct FormState {
 fn default_overlay_color() -> [u8; 3] { [255, 255, 255] }
 fn default_fade_out() -> bool { true }
 fn default_fade_secs() -> u32 { 10 }
+fn default_stretch_secs() -> u32 { 5 }
 
 impl Default for FormState {
     fn default() -> Self {
@@ -108,6 +111,8 @@ impl Default for FormState {
             privacy: String::new(),
             overlay_title: false,
             overlay_color: default_overlay_color(),
+            stretch: false,
+            stretch_secs: default_stretch_secs(),
             fade_out: default_fade_out(),
             fade_secs: default_fade_secs(),
             fade_in: false,
@@ -756,6 +761,8 @@ impl App {
             preview_only,
             overlay_title: self.form.overlay_title,
             overlay_color: self.form.overlay_color,
+            stretch: self.form.stretch,
+            stretch_secs: self.form.stretch_secs,
             fade_out: self.form.fade_out,
             fade_secs: self.form.fade_secs,
             fade_in: self.form.fade_in,
@@ -1328,6 +1335,25 @@ impl eframe::App for App {
                         if ui.input(|i| i.pointer.button_double_clicked(egui::PointerButton::Primary)) {
                             ui.memory_mut(|mem| mem.close_popup());
                         }
+                    });
+                    ui.end_row();
+
+                    ui.label("Stretch:");
+                    ui.horizontal(|ui| {
+                        ui.checkbox(
+                            &mut self.form.stretch,
+                            "Slow the clip down to make it longer",
+                        ).on_hover_text(
+                            "Time-stretches (slows down) the selected clip so it lasts this many seconds longer. Picture and sound stay in sync. Fade-in and fade-out durations are unaffected. Applies to both Preview and Upload.",
+                        );
+                        ui.add_enabled_ui(self.form.stretch, |ui| {
+                            ui.add(
+                                egui::DragValue::new(&mut self.form.stretch_secs)
+                                    .speed(1.0)
+                                    .range(1..=120)
+                                    .suffix(" s"),
+                            ).on_hover_text("Number of seconds to add to the clip's length (1–120).");
+                        });
                     });
                     ui.end_row();
 
