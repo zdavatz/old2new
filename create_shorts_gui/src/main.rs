@@ -89,6 +89,8 @@ struct FormState {
     #[serde(default = "default_overlay_color")] overlay_color: [u8; 3],
     #[serde(default = "default_fade_out")] fade_out: bool,
     #[serde(default = "default_fade_secs")] fade_secs: u32,
+    #[serde(default)] fade_in: bool,
+    #[serde(default = "default_fade_secs")] fade_in_secs: u32,
 }
 
 fn default_overlay_color() -> [u8; 3] { [255, 255, 255] }
@@ -108,6 +110,8 @@ impl Default for FormState {
             overlay_color: default_overlay_color(),
             fade_out: default_fade_out(),
             fade_secs: default_fade_secs(),
+            fade_in: false,
+            fade_in_secs: default_fade_secs(),
         }
     }
 }
@@ -754,6 +758,8 @@ impl App {
             overlay_color: self.form.overlay_color,
             fade_out: self.form.fade_out,
             fade_secs: self.form.fade_secs,
+            fade_in: self.form.fade_in,
+            fade_in_secs: self.form.fade_in_secs,
         };
         let settings = self.settings.clone();
         std::thread::spawn(move || pipeline::run(job, settings, tx));
@@ -1322,6 +1328,25 @@ impl eframe::App for App {
                         if ui.input(|i| i.pointer.button_double_clicked(egui::PointerButton::Primary)) {
                             ui.memory_mut(|mem| mem.close_popup());
                         }
+                    });
+                    ui.end_row();
+
+                    ui.label("Fade-in:");
+                    ui.horizontal(|ui| {
+                        ui.checkbox(
+                            &mut self.form.fade_in,
+                            "Freeze first frame and fade in from black at the start",
+                        ).on_hover_text(
+                            "Holds the first frame and fades it — picture and sound — in from black/silence, then the movie starts from that frame. The short ends up that many seconds longer. Applies to both Preview and Upload.",
+                        );
+                        ui.add_enabled_ui(self.form.fade_in, |ui| {
+                            ui.add(
+                                egui::DragValue::new(&mut self.form.fade_in_secs)
+                                    .speed(1.0)
+                                    .range(1..=60)
+                                    .suffix(" s"),
+                            ).on_hover_text("Fade-in duration in seconds (1–60).");
+                        });
                     });
                     ui.end_row();
 

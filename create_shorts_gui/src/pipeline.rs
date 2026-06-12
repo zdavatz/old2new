@@ -35,6 +35,8 @@ pub struct Job {
     pub overlay_color: [u8; 3],
     pub fade_out: bool,
     pub fade_secs: u32,
+    pub fade_in: bool,
+    pub fade_in_secs: u32,
 }
 
 pub struct UploadJob {
@@ -217,14 +219,43 @@ pub fn run(job: Job, settings: Settings, tx: Sender<Event>) {
         out.clone()
     };
 
+    // Optional (when enabled): freeze the FIRST frame for `fade_in_secs`
+    // seconds and fade it — picture and sound — in from black/silence, so the
+    // short opens on a held first frame that fades up and then starts playing.
+    // Applied before the fade-out so the two wrap the movie symmetrically.
+    // Cached next to its input as `<stem>_fadein<secs>.mp4`.
+    let fade_in_secs = job.fade_in_secs.max(1);
+    let after_fade_in = if job.fade_in {
+        let fin_path = fade_in_output_path(&final_out, fade_in_secs);
+        if fin_path.exists() {
+            let _ = tx.send(Event::Log(format!(
+                "Reusing cached fade-in segment {}",
+                fin_path.display()
+            )));
+        } else {
+            let _ = tx.send(Event::Log(format!(
+                "Adding {}s freeze-frame fade-in…",
+                fade_in_secs
+            )));
+            if let Err(e) = apply_fade_in(&final_out, &fin_path, &tx, segment_secs, fade_in_secs) {
+                let _ = std::fs::remove_file(&fin_path);
+                let _ = tx.send(Event::Error(format!("fade-in: {}", e)));
+                return;
+            }
+        }
+        fin_path
+    } else {
+        final_out.clone()
+    };
+
     // Always (when enabled): freeze the last frame for `fade_secs` seconds
     // and fade it — picture and sound — to black/silence. Applied last so it
-    // wraps whatever we deliver (raw segment or titled segment). Cached
-    // next to its input as `<stem>_fade<secs>.mp4` so Preview → Upload of the
-    // same short (and same duration) doesn't re-encode.
+    // wraps whatever we deliver (raw segment, titled, or faded-in segment).
+    // Cached next to its input as `<stem>_fade<secs>.mp4` so Preview → Upload
+    // of the same short (and same duration) doesn't re-encode.
     let fade_secs = job.fade_secs.max(1);
     let delivered = if job.fade_out {
-        let fade_path = fade_output_path(&final_out, fade_secs);
+        let fade_path = fade_output_path(&after_fade_in, fade_secs);
         if fade_path.exists() {
             let _ = tx.send(Event::Log(format!(
                 "Reusing cached fade-out segment {}",
@@ -235,7 +266,7 @@ pub fn run(job: Job, settings: Settings, tx: Sender<Event>) {
                 "Adding {}s freeze-frame fade-out…",
                 fade_secs
             )));
-            if let Err(e) = apply_fade_out(&final_out, &fade_path, &tx, segment_secs, fade_secs) {
+            if let Err(e) = apply_fade_out(&after_fade_in, &fade_path, &tx, segment_secs, fade_secs) {
                 let _ = std::fs::remove_file(&fade_path);
                 let _ = tx.send(Event::Error(format!("fade-out: {}", e)));
                 return;
@@ -243,7 +274,7 @@ pub fn run(job: Job, settings: Settings, tx: Sender<Event>) {
         }
         fade_path
     } else {
-        final_out.clone()
+        after_fade_in.clone()
     };
 
     if job.preview_only {
@@ -288,9 +319,10 @@ pub fn run(job: Job, settings: Settings, tx: Sender<Event>) {
     });
 
     // Remove the delivered file plus any distinct intermediates
-    // (titled overlay, raw segment) so the cache dir doesn't accumulate.
-    // Removing the same path twice is a harmless ignored error.
-    for f in [&delivered, &final_out, &out] {
+    // (fade-out, fade-in, titled overlay, raw segment) so the cache dir
+    // doesn't accumulate. Removing the same path twice is a harmless
+    // ignored error.
+    for f in [&delivered, &after_fade_in, &final_out, &out] {
         let _ = std::fs::remove_file(f);
     }
 
@@ -743,6 +775,19 @@ fn fade_output_path(input: &std::path::Path, fade_secs: u32) -> PathBuf {
     parent.join(format!("{}_fade{}.mp4", stem, fade_secs))
 }
 
+/// Cache path for the faded-in variant of a segment: same directory and
+/// stem as the input, with a `_fadein<secs>` suffix. Distinct from the
+/// fade-out suffix so a clip can be faded in, faded out, or both and each
+/// stage gets its own cache.
+fn fade_in_output_path(input: &std::path::Path, fade_secs: u32) -> PathBuf {
+    let parent = input.parent().unwrap_or_else(|| std::path::Path::new("."));
+    let stem = input
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("segment");
+    parent.join(format!("{}_fadein{}.mp4", stem, fade_secs))
+}
+
 /// Probe the container duration in seconds.
 fn probe_duration(input: &std::path::Path) -> Option<f64> {
     let output = Command::new("ffprobe")
@@ -858,6 +903,93 @@ fn apply_fade_out(
         let detail = summarize_yt_dlp_failure(&stderr_capture);
         let suffix = if detail.is_empty() { String::new() } else { format!(" — {}", detail) };
         return Err(format!("ffmpeg fade-out exited with {:?}{}", status.code(), suffix));
+    }
+    Ok(())
+}
+
+/// Prepend a `fade_secs`-second freeze-frame fade-in to the start of `input`:
+/// `tpad=start_mode=clone:start_duration=N` clones the first frame for N
+/// seconds, then `fade=t=in:st=0:d=N` ramps that opening from black up to the
+/// picture, after which the movie plays from that same first frame. Audio
+/// (when present) is delayed by N s of silence and faded in over the movie's
+/// first N seconds. The result is N seconds longer than the input.
+fn apply_fade_in(
+    input: &std::path::Path,
+    output: &std::path::Path,
+    tx: &Sender<Event>,
+    segment_secs: f64,
+    fade_secs: u32,
+) -> Result<(), String> {
+    let fade: f64 = fade_secs.max(1) as f64;
+    let dur = probe_duration(input).unwrap_or(segment_secs);
+    let has_audio = probe_has_audio(input);
+    let _ = tx.send(Event::Log(format!(
+        "Freeze-frame fade-in: holding first frame 0.0s–{:.1}s (audio: {})",
+        fade,
+        if has_audio { "yes" } else { "none" },
+    )));
+
+    let vf = format!(
+        "tpad=start_mode=clone:start_duration={fade},fade=t=in:st=0:d={fade}",
+        fade = fade,
+    );
+    // Delay the movie's audio by `fade` s (silence under the held first frame),
+    // then fade it in over the first `fade` s once playback starts.
+    let delay_ms = (fade * 1000.0).round() as u64;
+    let af = format!(
+        "adelay={ms}:all=1,afade=t=in:st={fade:.3}:d={fade}",
+        ms = delay_ms,
+        fade = fade,
+    );
+
+    let _ = tx.send(Event::Progress {
+        phase: "Adding fade-in".into(),
+        fraction: 0.0,
+        detail: String::new(),
+    });
+
+    let mut cmd = Command::new("ffmpeg");
+    cmd.arg("-y")
+        .arg("-i")
+        .arg(input.to_str().ok_or("non-utf8 input path")?)
+        .arg("-vf")
+        .arg(&vf);
+    if has_audio {
+        cmd.arg("-af").arg(&af);
+    } else {
+        cmd.arg("-an");
+    }
+    cmd.args([
+        "-c:v", "libx264",
+        "-preset", "veryfast",
+        "-crf", "20",
+    ]);
+    if has_audio {
+        cmd.args(["-c:a", "aac"]);
+    }
+    cmd.args(["-movflags", "+faststart"]);
+    cmd.arg(output.to_str().ok_or("non-utf8 output path")?);
+    cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
+
+    // Progress against the padded total length so the bar reaches 100% at the
+    // real end of the encode.
+    let total = if dur > 0.0 { dur + fade } else { segment_secs.max(0.0) + fade };
+    let mut child = cmd.spawn().map_err(|e| format!("ffmpeg spawn ({}): install ffmpeg", e))?;
+    let stdout = child.stdout.take();
+    let stderr = child.stderr.take();
+    let tx_o = tx.clone();
+    let tx_e = tx.clone();
+    let stderr_capture: LineBuf = Arc::new(Mutex::new(VecDeque::new()));
+    let cap_for_thread = stderr_capture.clone();
+    let h_o = stdout.map(|r| std::thread::spawn(move || stream_progress(r, tx_o, total, None)));
+    let h_e = stderr.map(|r| std::thread::spawn(move || stream_progress(r, tx_e, total, Some(cap_for_thread))));
+    let status = child.wait().map_err(|e| format!("wait: {}", e))?;
+    if let Some(h) = h_o { let _ = h.join(); }
+    if let Some(h) = h_e { let _ = h.join(); }
+    if !status.success() {
+        let detail = summarize_yt_dlp_failure(&stderr_capture);
+        let suffix = if detail.is_empty() { String::new() } else { format!(" — {}", detail) };
+        return Err(format!("ffmpeg fade-in exited with {:?}{}", status.code(), suffix));
     }
     Ok(())
 }
