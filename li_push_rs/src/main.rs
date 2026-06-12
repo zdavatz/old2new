@@ -393,25 +393,52 @@ async fn main() {
         });
 
         // Parse CSV: Title,Original,Enhanced 4K,Duration (s),Short
+        // Helper: pull the YouTube video ID out of an Enhanced 4K URL field.
+        let id_of = |enhanced_url: &str| -> String {
+            enhanced_url
+                .split("v=").nth(1)
+                .and_then(|s| s.split('&').next())
+                .unwrap_or("")
+                .to_string()
+        };
+
+        // First pass: collect the IDs of every NON-short (full-length) row.
+        // Some short rows in the CSV mistakenly reuse a full video's ID (the
+        // "the OTHER EYE" / "🌝oo🌚" bug — a 15s short pointing at a 30-min,
+        // 1.4 GB upload that can never fit LinkedIn's 500 MB limit). Skip any
+        // short whose Enhanced ID is also a full-length row so the picker
+        // never hands us an unpostable entry, even if the CSV regresses.
+        let mut full_video_ids: std::collections::HashSet<String> = std::collections::HashSet::new();
+        for line in csv_data.lines().skip(1) {
+            let fields: Vec<&str> = line.splitn(5, ',').collect();
+            if fields.len() >= 5 && fields[4].trim() != "yes" {
+                let id = id_of(fields[2]);
+                if !id.is_empty() {
+                    full_video_ids.insert(id);
+                }
+            }
+        }
+
         let mut candidates: Vec<(String, String, u64, String)> = Vec::new(); // (id, title, duration, original_url)
         for line in csv_data.lines().skip(1) {
             let fields: Vec<&str> = line.splitn(5, ',').collect();
             if fields.len() >= 5 && fields[4].trim() == "yes" {
                 let title = fields[0].to_string();
                 let original_url = fields[1].trim().to_string();
-                let enhanced_url = fields[2];
                 let duration: u64 = fields[3].trim().parse().unwrap_or(0);
+                let id = id_of(fields[2]);
 
-                // Extract video ID from Enhanced 4K URL
-                let id = enhanced_url
-                    .split("v=").nth(1)
-                    .and_then(|s| s.split('&').next())
-                    .unwrap_or("")
-                    .to_string();
-
-                if !id.is_empty() && !uploaded_ids.contains(&id) {
-                    candidates.push((id, title, duration, original_url));
+                if id.is_empty() || uploaded_ids.contains(&id) {
+                    continue;
                 }
+                if full_video_ids.contains(&id) {
+                    eprintln!(
+                        "Skipping '{}' ({}): Enhanced ID {} is a full-length video, not a real short",
+                        title.trim(), id, id
+                    );
+                    continue;
+                }
+                candidates.push((id, title, duration, original_url));
             }
         }
 
@@ -420,14 +447,21 @@ async fn main() {
             std::process::exit(0);
         }
 
-        // Pick random
+        // Pick random. subsec_nanos() alone was a weak seed — low-resolution
+        // clocks and modulo bias made it land on the same index run after run.
+        // Mix the full nanosecond count with the PID through splitmix64 for a
+        // well-distributed index across separate process invocations.
         let idx = {
             use std::time::SystemTime;
-            let seed = SystemTime::now()
+            let nanos = SystemTime::now()
                 .duration_since(SystemTime::UNIX_EPOCH)
                 .unwrap_or_default()
-                .subsec_nanos() as usize;
-            seed % candidates.len()
+                .as_nanos() as u64;
+            let mut z = nanos ^ (std::process::id() as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15);
+            z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+            z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+            z ^= z >> 31;
+            (z % candidates.len() as u64) as usize
         };
         let (id, title, duration, original_url) = &candidates[idx];
         eprintln!("Selected: {} — {} ({}s)", id, title, duration);
