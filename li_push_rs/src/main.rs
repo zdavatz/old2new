@@ -136,6 +136,41 @@ fn upload_log_path() -> PathBuf {
     PathBuf::from(home).join("li_push_log.jsonl")
 }
 
+/// Parse one CSV line into fields, honoring double-quoted fields that may
+/// contain commas (RFC4180-style). A naive `split(',')` mis-parses titles
+/// like `"ACCORDION LESSON, DPRK"` — the comma inside the quotes shifts every
+/// later field, so the trailing `yes` marker lands in the wrong column and the
+/// short becomes invisible to --random-short. Doubled quotes (`""`) are an
+/// escaped literal quote.
+fn parse_csv_line(line: &str) -> Vec<String> {
+    let mut fields = Vec::new();
+    let mut cur = String::new();
+    let mut in_quotes = false;
+    let mut chars = line.chars().peekable();
+    while let Some(c) = chars.next() {
+        if in_quotes {
+            if c == '"' {
+                if chars.peek() == Some(&'"') {
+                    cur.push('"');
+                    chars.next();
+                } else {
+                    in_quotes = false;
+                }
+            } else {
+                cur.push(c);
+            }
+        } else {
+            match c {
+                '"' => in_quotes = true,
+                ',' => fields.push(std::mem::take(&mut cur)),
+                _ => cur.push(c),
+            }
+        }
+    }
+    fields.push(cur);
+    fields
+}
+
 fn load_uploaded_ids() -> std::collections::HashSet<String> {
     let path = upload_log_path();
     let mut ids = std::collections::HashSet::new();
@@ -410,9 +445,9 @@ async fn main() {
         // never hands us an unpostable entry, even if the CSV regresses.
         let mut full_video_ids: std::collections::HashSet<String> = std::collections::HashSet::new();
         for line in csv_data.lines().skip(1) {
-            let fields: Vec<&str> = line.splitn(5, ',').collect();
+            let fields = parse_csv_line(line);
             if fields.len() >= 5 && fields[4].trim() != "yes" {
-                let id = id_of(fields[2]);
+                let id = id_of(&fields[2]);
                 if !id.is_empty() {
                     full_video_ids.insert(id);
                 }
@@ -421,12 +456,12 @@ async fn main() {
 
         let mut candidates: Vec<(String, String, u64, String)> = Vec::new(); // (id, title, duration, original_url)
         for line in csv_data.lines().skip(1) {
-            let fields: Vec<&str> = line.splitn(5, ',').collect();
+            let fields = parse_csv_line(line);
             if fields.len() >= 5 && fields[4].trim() == "yes" {
                 let title = fields[0].to_string();
                 let original_url = fields[1].trim().to_string();
                 let duration: u64 = fields[3].trim().parse().unwrap_or(0);
-                let id = id_of(fields[2]);
+                let id = id_of(&fields[2]);
 
                 if id.is_empty() || uploaded_ids.contains(&id) {
                     continue;
