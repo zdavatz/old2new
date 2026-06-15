@@ -858,13 +858,13 @@ fn probe_has_audio(input: &std::path::Path) -> bool {
         .unwrap_or(false)
 }
 
-/// Append a `fade_secs`-second freeze-frame fade-out to the end of `input`:
-/// `tpad=stop_mode=clone:stop_duration=N` clones the last frame for
-/// N seconds, then `fade=t=out` ramps those N seconds to black. Audio
-/// (when present) fades out over the last N seconds of real sound (ending
-/// where the freeze begins) and is then padded with N s of silence to fill
-/// the held, fading-to-black frame. The result is N seconds longer than the
-/// input.
+/// Fade the last `fade_secs` seconds of `input` to black, with the sound
+/// playing the whole time and getting quieter in lockstep. The clip keeps
+/// playing normally — `fade=t=out` ramps the real picture down to black over
+/// its final N seconds and `afade=t=out` (when audio is present) ramps the
+/// real music down over the exact same window. The clip length is unchanged
+/// (no held frame, no appended silence — earlier versions froze the last
+/// frame and padded silence, which killed the music during the fade).
 fn apply_fade_out(
     input: &std::path::Path,
     output: &std::path::Path,
@@ -874,29 +874,30 @@ fn apply_fade_out(
 ) -> Result<(), String> {
     let fade: f64 = fade_secs.max(1) as f64;
     let dur = probe_duration(input).unwrap_or(segment_secs);
-    let fade_start = if dur > 0.0 { dur } else { segment_secs.max(0.0) };
+    let total = if dur > 0.0 { dur } else { segment_secs.max(0.0) };
+    // Clamp the fade window to the clip length so it reaches full black/
+    // silence exactly at the end even on clips shorter than `fade`.
+    let eff_fade = fade.min(total).max(0.001);
+    let fade_start = (total - eff_fade).max(0.0);
     let has_audio = probe_has_audio(input);
     let _ = tx.send(Event::Log(format!(
-        "Freeze-frame fade-out: holding last frame {:.1}s–{:.1}s (sound fade-out: {})",
+        "Fade-out: dimming picture {:.1}s–{:.1}s, music fades down with it (audio: {})",
         fade_start,
-        fade_start + fade,
+        fade_start + eff_fade,
         if has_audio { "yes" } else { "no audio track" },
     )));
 
     let vf = format!(
-        "tpad=stop_mode=clone:stop_duration={fade},fade=t=out:st={start:.3}:d={fade}",
-        fade = fade,
+        "fade=t=out:st={start:.3}:d={fade:.3}",
+        fade = eff_fade,
         start = fade_start,
     );
-    // Fade the *real* audio's last `fade` seconds (ending where the freeze
-    // begins), then pad with `fade` seconds of silence to match the held,
-    // fading-to-black frame. Padding first and fading the appended silence
-    // (the old behaviour) just faded silence and left an abrupt audio cut.
-    let audio_fade_start = (fade_start - fade).max(0.0);
+    // Fade the real music down over the same window the picture dims — the
+    // sound keeps playing, it just gets quieter as the image goes to black.
     let af = format!(
-        "afade=t=out:st={afstart:.3}:d={fade},apad=pad_dur={fade}",
-        fade = fade,
-        afstart = audio_fade_start,
+        "afade=t=out:st={start:.3}:d={fade:.3}",
+        fade = eff_fade,
+        start = fade_start,
     );
 
     let _ = tx.send(Event::Progress {
@@ -928,9 +929,8 @@ fn apply_fade_out(
     cmd.arg(output.to_str().ok_or("non-utf8 output path")?);
     cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
 
-    // Progress is measured against the padded total length so the bar
+    // Progress is measured against the (unchanged) clip length so the bar
     // reaches 100% at the real end of the encode.
-    let total = fade_start + fade;
     let mut child = cmd.spawn().map_err(|e| format!("ffmpeg spawn ({}): install ffmpeg", e))?;
     let stdout = child.stdout.take();
     let stderr = child.stderr.take();
