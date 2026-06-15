@@ -33,6 +33,9 @@ pub struct Job {
     pub preview_only: bool,
     pub overlay_title: bool,
     pub overlay_color: [u8; 3],
+    /// Normalized title position [x, y] in 0.0..=1.0 (0,0 = top-left,
+    /// 1,1 = bottom-right). [0,1] = bottom-left (the original placement).
+    pub overlay_pos: [f32; 2],
     pub stretch: bool,
     pub stretch_secs: u32,
     pub fade_out: bool,
@@ -229,7 +232,7 @@ pub fn run(job: Job, settings: Settings, tx: Sender<Event>) {
     // doesn't re-encode.
     let final_out = if job.overlay_title {
         let overlay_path = cache_dir.join(format!(
-            "{}_{}{}_titled_v2_{}_{:02x}{:02x}{:02x}.mp4",
+            "{}_{}{}_titled_v3_{}_{:02x}{:02x}{:02x}_p{:02}{:02}.mp4",
             video_id,
             stamp,
             stretch_tag,
@@ -237,6 +240,8 @@ pub fn run(job: Job, settings: Settings, tx: Sender<Event>) {
             job.overlay_color[0],
             job.overlay_color[1],
             job.overlay_color[2],
+            (job.overlay_pos[0].clamp(0.0, 1.0) * 99.0).round() as u32,
+            (job.overlay_pos[1].clamp(0.0, 1.0) * 99.0).round() as u32,
         ));
         if overlay_path.exists() {
             let _ = tx.send(Event::Log(format!(
@@ -245,7 +250,7 @@ pub fn run(job: Job, settings: Settings, tx: Sender<Event>) {
             )));
         } else {
             let _ = tx.send(Event::Log("Burning title overlay…".into()));
-            if let Err(e) = apply_title_overlay(&base, &job.title, job.overlay_color, &overlay_path, &tx, core_secs) {
+            if let Err(e) = apply_title_overlay(&base, &job.title, job.overlay_color, job.overlay_pos, &overlay_path, &tx, core_secs) {
                 let _ = std::fs::remove_file(&overlay_path);
                 let _ = tx.send(Event::Error(format!("title overlay: {}", e)));
                 return;
@@ -690,6 +695,7 @@ fn probe_video_size(input: &std::path::Path) -> Result<(u32, u32), String> {
 fn render_title_png(
     title: &str,
     fill_color: [u8; 3],
+    pos: [f32; 2],
     video_w: u32,
     video_h: u32,
     output: &std::path::Path,
@@ -742,13 +748,22 @@ fn render_title_png(
 
     let descent = scaled.descent();
     let text_height = ascent - descent;
+    let text_width = measure(&display);
 
-    // Bottom-left text placement: margins from the edges, baseline
-    // positioned so the visible text bottom sits at video_h - margin.
-    let margin_left = (video_h as f32 / 40.0).round();
-    let margin_bottom = (video_h as f32 / 30.0).round();
-    let text_origin_x = margin_left;
-    let text_origin_y = video_h as f32 - margin_bottom - text_height + ascent;
+    // Place the text block according to the normalized position. The handle's
+    // relative position in the picker maps to the text block's relative
+    // position in the frame: x=0 → left margin, x=1 → flush right; y=0 → top,
+    // y=1 → bottom. The available travel is the frame minus the text size and
+    // a margin on each side, so the text never clips off-screen.
+    let margin = (video_h as f32 / 40.0).round();
+    let nx = pos[0].clamp(0.0, 1.0);
+    let ny = pos[1].clamp(0.0, 1.0);
+    let avail_x = (video_w as f32 - text_width - 2.0 * margin).max(0.0);
+    let avail_y = (video_h as f32 - text_height - 2.0 * margin).max(0.0);
+    let text_origin_x = margin + nx * avail_x;
+    let text_top = margin + ny * avail_y;
+    // ab_glyph positions glyphs by baseline; baseline = top + ascent.
+    let text_origin_y = text_top + ascent;
 
     // Outline radius scales with font size — thin halo at 720p, more
     // substantial at 4K. Keeps the glyph readable over any video frame
@@ -838,19 +853,20 @@ fn apply_title_overlay(
     input: &std::path::Path,
     title: &str,
     color: [u8; 3],
+    pos: [f32; 2],
     output: &std::path::Path,
     tx: &Sender<Event>,
     segment_secs: f64,
 ) -> Result<(), String> {
     let (video_w, video_h) = probe_video_size(input)?;
     let _ = tx.send(Event::Log(format!(
-        "Rendering title overlay ({}×{}) color #{:02x}{:02x}{:02x} for {:?}",
-        video_w, video_h, color[0], color[1], color[2], title
+        "Rendering title overlay ({}×{}) color #{:02x}{:02x}{:02x} at x{:.0}%/y{:.0}% for {:?}",
+        video_w, video_h, color[0], color[1], color[2], pos[0] * 100.0, pos[1] * 100.0, title
     )));
 
     let png_path = std::env::temp_dir()
         .join(format!("create_shorts_title_{}.png", std::process::id()));
-    render_title_png(title, color, video_w, video_h, &png_path)?;
+    render_title_png(title, color, pos, video_w, video_h, &png_path)?;
 
     let _ = tx.send(Event::Progress {
         phase: "Burning title overlay".into(),

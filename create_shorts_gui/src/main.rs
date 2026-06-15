@@ -87,6 +87,10 @@ struct FormState {
     #[serde(default)] privacy: String,
     #[serde(default)] overlay_title: bool,
     #[serde(default = "default_overlay_color")] overlay_color: [u8; 3],
+    // Normalized title position: [x, y] in 0.0..=1.0 (0,0 = top-left,
+    // 1,1 = bottom-right). Drives where the title block is placed in the
+    // frame. Default [0,1] = bottom-left, matching the original overlay.
+    #[serde(default = "default_overlay_pos")] overlay_pos: [f32; 2],
     #[serde(default)] stretch: bool,
     #[serde(default = "default_stretch_secs")] stretch_secs: u32,
     #[serde(default = "default_fade_out")] fade_out: bool,
@@ -96,6 +100,7 @@ struct FormState {
 }
 
 fn default_overlay_color() -> [u8; 3] { [255, 255, 255] }
+fn default_overlay_pos() -> [f32; 2] { [0.0, 1.0] }
 fn default_fade_out() -> bool { true }
 fn default_fade_secs() -> u32 { 10 }
 fn default_stretch_secs() -> u32 { 5 }
@@ -111,6 +116,7 @@ impl Default for FormState {
             privacy: String::new(),
             overlay_title: false,
             overlay_color: default_overlay_color(),
+            overlay_pos: default_overlay_pos(),
             stretch: false,
             stretch_secs: default_stretch_secs(),
             fade_out: default_fade_out(),
@@ -200,6 +206,67 @@ enum BrewEvent {
 /// yt-dlp error and return a one-line hint pointing the user at the
 /// Settings → Cookies-from-browser dropdown. Returns None for unrelated
 /// errors so we only show the hint when it's actually useful.
+/// A 2D position picker: a 16:9 frame with a draggable mini-box. The box's
+/// relative position inside the frame becomes the normalized title position
+/// `[x, y]` (0,0 = top-left … 1,1 = bottom-right) written back into `pos`.
+fn title_position_picker(ui: &mut egui::Ui, pos: &mut [f32; 2], enabled: bool) {
+    // 16:9 to match the typical video frame so placement reads intuitively.
+    let size = egui::vec2(160.0, 90.0);
+    let sense = if enabled { egui::Sense::click_and_drag() } else { egui::Sense::hover() };
+    let (rect, response) = ui.allocate_exact_size(size, sense);
+
+    // Drag/click moves the handle (only when the row is enabled).
+    if enabled && (response.dragged() || response.clicked()) {
+        if let Some(p) = response.interact_pointer_pos() {
+            pos[0] = ((p.x - rect.left()) / rect.width()).clamp(0.0, 1.0);
+            pos[1] = ((p.y - rect.top()) / rect.height()).clamp(0.0, 1.0);
+        }
+    }
+
+    let visuals = ui.visuals();
+    let painter = ui.painter();
+    // Frame.
+    let bg = if enabled { visuals.extreme_bg_color } else { visuals.faint_bg_color };
+    painter.rect_filled(rect, 4.0, bg);
+    painter.rect_stroke(rect, 4.0, visuals.widgets.noninteractive.bg_stroke);
+    // Center cross-hairs as a light guide.
+    let guide = egui::Stroke::new(1.0, visuals.weak_text_color().linear_multiply(0.4));
+    painter.line_segment(
+        [egui::pos2(rect.center().x, rect.top()), egui::pos2(rect.center().x, rect.bottom())],
+        guide,
+    );
+    painter.line_segment(
+        [egui::pos2(rect.left(), rect.center().y), egui::pos2(rect.right(), rect.center().y)],
+        guide,
+    );
+
+    // Handle (the mini "title" box).
+    let handle_center = egui::pos2(
+        rect.left() + pos[0] * rect.width(),
+        rect.top() + pos[1] * rect.height(),
+    );
+    let handle = egui::Rect::from_center_size(handle_center, egui::vec2(34.0, 16.0));
+    let handle = handle.translate(egui::vec2(
+        // Keep the handle visually inside the frame at the extremes.
+        (rect.left() - handle.left()).max(0.0) + (rect.right() - handle.right()).min(0.0),
+        (rect.top() - handle.top()).max(0.0) + (rect.bottom() - handle.bottom()).min(0.0),
+    ));
+    let accent = if enabled { visuals.selection.bg_fill } else { visuals.widgets.inactive.bg_fill };
+    painter.rect_filled(handle, 2.0, accent);
+    painter.rect_stroke(handle, 2.0, egui::Stroke::new(1.0, visuals.strong_text_color()));
+    painter.text(
+        handle.center(),
+        egui::Align2::CENTER_CENTER,
+        "Title",
+        egui::FontId::proportional(10.0),
+        visuals.strong_text_color(),
+    );
+
+    if response.hovered() {
+        response.on_hover_text("Drag to place the title. Left/right sets horizontal, up/down sets vertical position.");
+    }
+}
+
 fn bot_detection_hint(err: &str, settings: &Settings) -> Option<String> {
     let lower = err.to_lowercase();
     let is_bot_block = lower.contains("not a bot")
@@ -761,6 +828,7 @@ impl App {
             preview_only,
             overlay_title: self.form.overlay_title,
             overlay_color: self.form.overlay_color,
+            overlay_pos: self.form.overlay_pos,
             stretch: self.form.stretch,
             stretch_secs: self.form.stretch_secs,
             fade_out: self.form.fade_out,
@@ -1320,9 +1388,9 @@ impl eframe::App for App {
                     ui.horizontal(|ui| {
                         ui.checkbox(
                             &mut self.form.overlay_title,
-                            "Burn title into video (bottom-left, 1s–4s)",
+                            "Burn title into video (1s–4s)",
                         ).on_hover_text(
-                            "Re-encodes the segment with the title text shown for 3 seconds, starting 1 second in. Applies to both Preview and Upload.",
+                            "Re-encodes the segment with the title text shown for 3 seconds, starting 1 second in. Use the position box below to place it. Applies to both Preview and Upload.",
                         );
                         ui.add_space(12.0);
                         ui.label("Color:");
@@ -1334,6 +1402,36 @@ impl eframe::App for App {
                         // is currently open (no-op if none).
                         if ui.input(|i| i.pointer.button_double_clicked(egui::PointerButton::Primary)) {
                             ui.memory_mut(|mem| mem.close_popup());
+                        }
+                    });
+                    ui.end_row();
+
+                    let overlay_on = self.form.overlay_title;
+                    ui.label("Title position:");
+                    // Render the picker as a *direct* grid cell (like the
+                    // multiline description above) so the Grid grows the row to
+                    // its full height. Wrapping it in a horizontal/vertical
+                    // layout stopped the 90px height from bubbling up, which
+                    // made the rows below overlap it.
+                    title_position_picker(ui, &mut self.form.overlay_pos, overlay_on);
+                    ui.end_row();
+
+                    ui.label("");
+                    ui.horizontal(|ui| {
+                        ui.label(
+                            egui::RichText::new(format!(
+                                "Drag the box above to place the title — x: {:.0}%  y: {:.0}%",
+                                self.form.overlay_pos[0] * 100.0,
+                                self.form.overlay_pos[1] * 100.0,
+                            ))
+                            .weak(),
+                        );
+                        ui.add_space(8.0);
+                        if ui
+                            .add_enabled(overlay_on, egui::Button::new("Reset to bottom-left").small())
+                            .clicked()
+                        {
+                            self.form.overlay_pos = default_overlay_pos();
                         }
                     });
                     ui.end_row();
