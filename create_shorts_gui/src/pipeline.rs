@@ -861,8 +861,10 @@ fn probe_has_audio(input: &std::path::Path) -> bool {
 /// Append a `fade_secs`-second freeze-frame fade-out to the end of `input`:
 /// `tpad=stop_mode=clone:stop_duration=N` clones the last frame for
 /// N seconds, then `fade=t=out` ramps those N seconds to black. Audio
-/// (when present) is padded with N s of silence and faded out in
-/// lockstep. The result is N seconds longer than the input.
+/// (when present) fades out over the last N seconds of real sound (ending
+/// where the freeze begins) and is then padded with N s of silence to fill
+/// the held, fading-to-black frame. The result is N seconds longer than the
+/// input.
 fn apply_fade_out(
     input: &std::path::Path,
     output: &std::path::Path,
@@ -875,10 +877,10 @@ fn apply_fade_out(
     let fade_start = if dur > 0.0 { dur } else { segment_secs.max(0.0) };
     let has_audio = probe_has_audio(input);
     let _ = tx.send(Event::Log(format!(
-        "Freeze-frame fade-out: holding last frame {:.1}s–{:.1}s (audio: {})",
+        "Freeze-frame fade-out: holding last frame {:.1}s–{:.1}s (sound fade-out: {})",
         fade_start,
         fade_start + fade,
-        if has_audio { "yes" } else { "none" },
+        if has_audio { "yes" } else { "no audio track" },
     )));
 
     let vf = format!(
@@ -886,10 +888,15 @@ fn apply_fade_out(
         fade = fade,
         start = fade_start,
     );
+    // Fade the *real* audio's last `fade` seconds (ending where the freeze
+    // begins), then pad with `fade` seconds of silence to match the held,
+    // fading-to-black frame. Padding first and fading the appended silence
+    // (the old behaviour) just faded silence and left an abrupt audio cut.
+    let audio_fade_start = (fade_start - fade).max(0.0);
     let af = format!(
-        "apad=pad_dur={fade},afade=t=out:st={start:.3}:d={fade}",
+        "afade=t=out:st={afstart:.3}:d={fade},apad=pad_dur={fade}",
         fade = fade,
-        start = fade_start,
+        afstart = audio_fade_start,
     );
 
     let _ = tx.send(Event::Progress {
