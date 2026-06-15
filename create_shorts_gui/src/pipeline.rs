@@ -285,11 +285,12 @@ pub fn run(job: Job, settings: Settings, tx: Sender<Event>) {
         final_out.clone()
     };
 
-    // Always (when enabled): freeze the last frame for `fade_secs` seconds
-    // and fade it — picture and sound — to black/silence. Applied last so it
-    // wraps whatever we deliver (raw segment, titled, or faded-in segment).
-    // Cached next to its input as `<stem>_fade<secs>.mp4` so Preview → Upload
-    // of the same short (and same duration) doesn't re-encode.
+    // Always (when enabled): hold the last frame for `fade_secs` seconds and
+    // fade it to black (prolong), with the source's audio continuing under the
+    // held frame and fading out with it. Applied last so it wraps whatever we
+    // deliver (raw segment, titled, or faded-in segment). Cached next to its
+    // input as `<stem>_fadeout<secs>.mp4` so Preview → Upload of the same short
+    // (and same duration) doesn't re-encode.
     let fade_secs = job.fade_secs.max(1);
     let delivered = if job.fade_out {
         let fade_path = fade_output_path(&after_fade_in, fade_secs);
@@ -299,11 +300,57 @@ pub fn run(job: Job, settings: Settings, tx: Sender<Event>) {
                 fade_path.display()
             )));
         } else {
+            // Fetch the few seconds of source audio that follow the cut so the
+            // held last frame fades out over *real* continuing sound instead of
+            // silence. Cached per (video_id, end, fade_secs); best-effort — if
+            // there's no audio after the cut we fall back to a silent hold.
+            let tail_audio: Option<PathBuf> = if let Some(end_secs) = parse_timestamp(&job.end) {
+                let tail_path = cache_dir.join(format!(
+                    "{}_tail_{}_{}.m4a",
+                    video_id,
+                    job.end.replace(':', "_"),
+                    fade_secs
+                ));
+                if tail_path.exists() {
+                    let _ = tx.send(Event::Log(format!(
+                        "Reusing cached fade-out audio tail {}",
+                        tail_path.display()
+                    )));
+                    Some(tail_path)
+                } else {
+                    let _ = tx.send(Event::Log(format!(
+                        "Fetching {}s of audio after the cut for the fade-out…",
+                        fade_secs
+                    )));
+                    match download_tail_audio(&url, end_secs, fade_secs, &tail_path, &settings, &tx) {
+                        Ok(()) if tail_path.exists() => Some(tail_path),
+                        Ok(()) => None,
+                        Err(e) => {
+                            let _ = std::fs::remove_file(&tail_path);
+                            let _ = tx.send(Event::Log(format!(
+                                "No continuing audio for fade-out ({}); the held frame fades out then holds silent.",
+                                e
+                            )));
+                            None
+                        }
+                    }
+                }
+            } else {
+                None
+            };
+
             let _ = tx.send(Event::Log(format!(
                 "Adding {}s freeze-frame fade-out…",
                 fade_secs
             )));
-            if let Err(e) = apply_fade_out(&after_fade_in, &fade_path, &tx, core_secs, fade_secs) {
+            if let Err(e) = apply_fade_out(
+                &after_fade_in,
+                &fade_path,
+                &tx,
+                core_secs,
+                fade_secs,
+                tail_audio.as_deref(),
+            ) {
                 let _ = std::fs::remove_file(&fade_path);
                 let _ = tx.send(Event::Error(format!("fade-out: {}", e)));
                 return;
@@ -424,6 +471,65 @@ fn run_yt_dlp(
     let cap_for_thread = stderr_capture.clone();
     let h_o = stdout.map(|r| std::thread::spawn(move || stream_progress(r, tx_o, segment_secs, None)));
     let h_e = stderr.map(|r| std::thread::spawn(move || stream_progress(r, tx_e, segment_secs, Some(cap_for_thread))));
+    let status = child.wait().map_err(|e| format!("wait: {}", e))?;
+    if let Some(h) = h_o { let _ = h.join(); }
+    if let Some(h) = h_e { let _ = h.join(); }
+    if !status.success() {
+        let detail = summarize_yt_dlp_failure(&stderr_capture);
+        let suffix = if detail.is_empty() { String::new() } else { format!(" — {}", detail) };
+        return Err(format!("exited with {:?}{}", status.code(), suffix));
+    }
+    Ok(())
+}
+
+/// Download just the audio of the `fade_secs` seconds that follow the cut
+/// point (`end_secs`..`end_secs + fade_secs`) so the freeze-frame fade-out can
+/// keep playing real source sound under the held frame. Audio-only, tiny.
+/// Best-effort: returns an error (which the caller logs and tolerates) if
+/// there's nothing after the cut.
+fn download_tail_audio(
+    url: &str,
+    end_secs: f64,
+    fade_secs: u32,
+    out: &PathBuf,
+    settings: &Settings,
+    tx: &Sender<Event>,
+) -> Result<(), String> {
+    let stop = end_secs + fade_secs as f64;
+    let mut cmd = Command::new("yt-dlp");
+    cmd.args([
+        "-f",
+        "bestaudio/best",
+        "--download-sections",
+        &format!("*{:.3}-{:.3}", end_secs, stop),
+        // Without forced keyframe cuts yt-dlp keeps everything from the start
+        // of the stream up to `stop` instead of just the requested window.
+        "--force-keyframes-at-cuts",
+        "-x",
+        "--audio-format",
+        "m4a",
+        "--newline",
+        "-o",
+        out.to_str().ok_or("non-utf8 path")?,
+    ]);
+    if !settings.cookies_browser.is_empty() {
+        cmd.arg("--cookies-from-browser").arg(&settings.cookies_browser);
+    }
+    cmd.arg(url);
+    cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
+
+    let mut child = cmd
+        .spawn()
+        .map_err(|e| format!("yt-dlp not found ({})", e))?;
+    let stdout = child.stdout.take();
+    let stderr = child.stderr.take();
+    let tx_o = tx.clone();
+    let tx_e = tx.clone();
+    let stderr_capture: LineBuf = Arc::new(Mutex::new(VecDeque::new()));
+    let cap_for_thread = stderr_capture.clone();
+    let secs = fade_secs as f64;
+    let h_o = stdout.map(|r| std::thread::spawn(move || stream_progress(r, tx_o, secs, None)));
+    let h_e = stderr.map(|r| std::thread::spawn(move || stream_progress(r, tx_e, secs, Some(cap_for_thread))));
     let status = child.wait().map_err(|e| format!("wait: {}", e))?;
     if let Some(h) = h_o { let _ = h.join(); }
     if let Some(h) = h_e { let _ = h.join(); }
@@ -798,7 +904,7 @@ fn apply_title_overlay(
 }
 
 /// Cache path for the faded variant of a segment: same directory and
-/// stem as the input, with a `_fade<secs>` suffix. Keying on the input
+/// stem as the input, with a `_fadeout<secs>` suffix. Keying on the input
 /// filename means a titled segment and a plain segment get distinct
 /// faded caches; keying on the duration means changing the fade length
 /// re-encodes rather than serving a stale cache. Preview → Upload of the
@@ -809,7 +915,7 @@ fn fade_output_path(input: &std::path::Path, fade_secs: u32) -> PathBuf {
         .file_stem()
         .and_then(|s| s.to_str())
         .unwrap_or("segment");
-    parent.join(format!("{}_fade{}.mp4", stem, fade_secs))
+    parent.join(format!("{}_fadeout{}.mp4", stem, fade_secs))
 }
 
 /// Cache path for the faded-in variant of a segment: same directory and
@@ -858,46 +964,51 @@ fn probe_has_audio(input: &std::path::Path) -> bool {
         .unwrap_or(false)
 }
 
-/// Fade the last `fade_secs` seconds of `input` to black, with the sound
-/// playing the whole time and getting quieter in lockstep. The clip keeps
-/// playing normally — `fade=t=out` ramps the real picture down to black over
-/// its final N seconds and `afade=t=out` (when audio is present) ramps the
-/// real music down over the exact same window. The clip length is unchanged
-/// (no held frame, no appended silence — earlier versions froze the last
-/// frame and padded silence, which killed the music during the fade).
+/// Hold the last frame of `input` for `fade_secs` seconds and fade that held
+/// frame to black ("prolong"), so the short ends up N seconds longer. The
+/// **sound keeps running underneath the held frame and fades out with it**:
+/// `tail_audio` (a clip of the source's audio from the cut point onward,
+/// fetched by the caller) is concatenated after the input's own audio and the
+/// whole thing fades out over the held window. If no continuing audio is
+/// available (cut at the end of the source, or the input has no audio) we fall
+/// back to fading the input's own last N s of sound and holding silence.
 fn apply_fade_out(
     input: &std::path::Path,
     output: &std::path::Path,
     tx: &Sender<Event>,
     segment_secs: f64,
     fade_secs: u32,
+    tail_audio: Option<&std::path::Path>,
 ) -> Result<(), String> {
     let fade: f64 = fade_secs.max(1) as f64;
     let dur = probe_duration(input).unwrap_or(segment_secs);
-    let total = if dur > 0.0 { dur } else { segment_secs.max(0.0) };
-    // Clamp the fade window to the clip length so it reaches full black/
-    // silence exactly at the end even on clips shorter than `fade`.
-    let eff_fade = fade.min(total).max(0.001);
-    let fade_start = (total - eff_fade).max(0.0);
+    let freeze_start = if dur > 0.0 { dur } else { segment_secs.max(0.0) };
     let has_audio = probe_has_audio(input);
+    // Use the continuing audio only if the input has sound to follow it and
+    // the tail actually exists with an audio stream.
+    let use_tail = has_audio
+        && tail_audio
+            .map(|p| p.exists() && probe_has_audio(p))
+            .unwrap_or(false);
     let _ = tx.send(Event::Log(format!(
-        "Fade-out: dimming picture {:.1}s–{:.1}s, music fades down with it (audio: {})",
-        fade_start,
-        fade_start + eff_fade,
-        if has_audio { "yes" } else { "no audio track" },
+        "Freeze-frame fade-out: holding last frame {:.1}s–{:.1}s ({})",
+        freeze_start,
+        freeze_start + fade,
+        if use_tail {
+            "sound keeps playing from the source and fades out"
+        } else if has_audio {
+            "no continuing source audio — sound fades out then holds silent"
+        } else {
+            "no audio track"
+        },
     )));
 
+    // Video: clone the last frame for `fade` seconds, then fade that held tail
+    // to black over the same window.
     let vf = format!(
-        "fade=t=out:st={start:.3}:d={fade:.3}",
-        fade = eff_fade,
-        start = fade_start,
-    );
-    // Fade the real music down over the same window the picture dims — the
-    // sound keeps playing, it just gets quieter as the image goes to black.
-    let af = format!(
-        "afade=t=out:st={start:.3}:d={fade:.3}",
-        fade = eff_fade,
-        start = fade_start,
+        "tpad=stop_mode=clone:stop_duration={fade},fade=t=out:st={start:.3}:d={fade}",
+        fade = fade,
+        start = freeze_start,
     );
 
     let _ = tx.send(Event::Progress {
@@ -909,13 +1020,36 @@ fn apply_fade_out(
     let mut cmd = Command::new("ffmpeg");
     cmd.arg("-y")
         .arg("-i")
-        .arg(input.to_str().ok_or("non-utf8 input path")?)
-        .arg("-vf")
-        .arg(&vf);
-    if has_audio {
-        cmd.arg("-af").arg(&af);
+        .arg(input.to_str().ok_or("non-utf8 input path")?);
+    if use_tail {
+        cmd.arg("-i")
+            .arg(tail_audio.unwrap().to_str().ok_or("non-utf8 tail path")?);
+        // Normalize both audio streams to a common format so concat accepts
+        // them, glue the continuing source audio after the input's own audio,
+        // then fade the whole thing out over the held window.
+        let fc = format!(
+            "[0:v]{vf}[v];\
+             [0:a]aresample=async=1,aformat=sample_rates=48000:channel_layouts=stereo[a0];\
+             [1:a]aresample=async=1,aformat=sample_rates=48000:channel_layouts=stereo[a1];\
+             [a0][a1]concat=n=2:v=0:a=1[acat];\
+             [acat]afade=t=out:st={start:.3}:d={fade}[a]",
+            vf = vf,
+            start = freeze_start,
+            fade = fade,
+        );
+        cmd.arg("-filter_complex").arg(&fc).args(["-map", "[v]", "-map", "[a]"]);
+    } else if has_audio {
+        // No continuation: fade the input's own last N s of sound, then pad
+        // silence to fill the held frame.
+        let afade_start = (freeze_start - fade).max(0.0);
+        let af = format!(
+            "afade=t=out:st={s:.3}:d={fade},apad=pad_dur={fade}",
+            s = afade_start,
+            fade = fade,
+        );
+        cmd.arg("-vf").arg(&vf).arg("-af").arg(&af);
     } else {
-        cmd.arg("-an");
+        cmd.arg("-vf").arg(&vf).arg("-an");
     }
     cmd.args([
         "-c:v", "libx264",
@@ -929,8 +1063,9 @@ fn apply_fade_out(
     cmd.arg(output.to_str().ok_or("non-utf8 output path")?);
     cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
 
-    // Progress is measured against the (unchanged) clip length so the bar
-    // reaches 100% at the real end of the encode.
+    // Progress is measured against the held total length so the bar reaches
+    // 100% at the real end of the encode.
+    let total = freeze_start + fade;
     let mut child = cmd.spawn().map_err(|e| format!("ffmpeg spawn ({}): install ffmpeg", e))?;
     let stdout = child.stdout.take();
     let stderr = child.stderr.take();
