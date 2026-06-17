@@ -192,6 +192,12 @@ pub fn run(job: Job, settings: Settings, tx: Sender<Event>) {
     };
     let _ = tx.send(Event::Log(format!("Segment ready: {:.1} MB", size as f64 / 1_048_576.0)));
 
+    // Guard against the yt-dlp merge desync that leaves the segment's audio
+    // shorter than its video (sound stops early; the fade-out plays silent).
+    // Re-fetches and remuxes aligned audio in place when a shortfall is found,
+    // then purges the stale derived caches. No-op for healthy segments.
+    repair_segment_audio(&out, &url, &job.start, &job.end, &cache_dir, &video_id, &stamp, &settings, &tx);
+
     // Optional: time-stretch (slow down) the core clip so it lasts
     // `stretch_secs` seconds longer. Applied to the raw segment *before*
     // the title overlay and fades, so those keep their own independent
@@ -544,6 +550,166 @@ fn download_tail_audio(
         return Err(format!("exited with {:?}{}", status.code(), suffix));
     }
     Ok(())
+}
+
+/// Download just the audio for the `start`..`end` window as a standalone m4a.
+/// yt-dlp's `bestaudio` section download comes out correctly aligned to the
+/// requested span (unlike the `bestvideo+bestaudio` *merge*, which can leave
+/// the muxed audio truncated). Used by `repair_segment_audio`.
+fn download_section_audio(
+    url: &str,
+    start: &str,
+    end: &str,
+    out: &PathBuf,
+    settings: &Settings,
+    tx: &Sender<Event>,
+    secs: f64,
+) -> Result<(), String> {
+    let mut cmd = Command::new("yt-dlp");
+    cmd.args([
+        "-f",
+        "bestaudio/best",
+        "--download-sections",
+        &format!("*{}-{}", start, end),
+        "--force-keyframes-at-cuts",
+        "-x",
+        "--audio-format",
+        "m4a",
+        "--newline",
+        "-o",
+        out.to_str().ok_or("non-utf8 path")?,
+    ]);
+    if !settings.cookies_browser.is_empty() {
+        cmd.arg("--cookies-from-browser").arg(&settings.cookies_browser);
+    }
+    cmd.arg(url);
+    cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
+
+    let mut child = cmd.spawn().map_err(|e| format!("yt-dlp not found ({})", e))?;
+    let stdout = child.stdout.take();
+    let stderr = child.stderr.take();
+    let tx_o = tx.clone();
+    let tx_e = tx.clone();
+    let stderr_capture: LineBuf = Arc::new(Mutex::new(VecDeque::new()));
+    let cap_for_thread = stderr_capture.clone();
+    let h_o = stdout.map(|r| std::thread::spawn(move || stream_progress(r, tx_o, secs, None)));
+    let h_e = stderr.map(|r| std::thread::spawn(move || stream_progress(r, tx_e, secs, Some(cap_for_thread))));
+    let status = child.wait().map_err(|e| format!("wait: {}", e))?;
+    if let Some(h) = h_o { let _ = h.join(); }
+    if let Some(h) = h_e { let _ = h.join(); }
+    if !status.success() {
+        let detail = summarize_yt_dlp_failure(&stderr_capture);
+        let suffix = if detail.is_empty() { String::new() } else { format!(" — {}", detail) };
+        return Err(format!("exited with {:?}{}", status.code(), suffix));
+    }
+    Ok(())
+}
+
+/// Repair the segment's audio when the yt-dlp `bestvideo+bestaudio` merge left
+/// the muxed audio track shorter than the video (a `--download-sections`
+/// keyframe-cut desync — observed e.g. 76.3s audio under an 84s video). Symptom
+/// for the user: sound stops several seconds before the picture ends, and the
+/// freeze-frame fade-out plays silent because the audio is already over. We
+/// re-fetch the same span as a standalone `bestaudio` download (which *is*
+/// aligned) and remux it in, replacing the broken track. Best-effort: any
+/// failure leaves the original segment untouched. When a repair happens, the
+/// derived caches (stretch/titled/fade) for this segment are purged so they
+/// regenerate from the fixed audio.
+fn repair_segment_audio(
+    segment: &std::path::Path,
+    url: &str,
+    start: &str,
+    end: &str,
+    cache_dir: &std::path::Path,
+    video_id: &str,
+    stamp: &str,
+    settings: &Settings,
+    tx: &Sender<Event>,
+) {
+    let Some(vdur) = probe_duration(segment) else { return };
+    // No audio stream at all → genuinely silent region, nothing to repair.
+    if !probe_has_audio(segment) {
+        return;
+    }
+    let adur = probe_audio_duration(segment).unwrap_or(vdur);
+    // Only act on a meaningful shortfall (> 0.5s) — small AAC priming/packet
+    // boundary differences are normal and harmless.
+    if adur + 0.5 >= vdur {
+        return;
+    }
+    let _ = tx.send(Event::Log(format!(
+        "Segment audio is {:.1}s but video is {:.1}s (yt-dlp merge desync) — re-fetching aligned audio…",
+        adur, vdur
+    )));
+
+    let body_audio = cache_dir.join(format!("{}_bodyaudio_{}.m4a", video_id, stamp));
+    let _ = std::fs::remove_file(&body_audio);
+    if let Err(e) = download_section_audio(url, start, end, &body_audio, settings, tx, vdur) {
+        let _ = tx.send(Event::Log(format!(
+            "Could not re-fetch aligned audio ({}); keeping original segment.",
+            e
+        )));
+        let _ = std::fs::remove_file(&body_audio);
+        return;
+    }
+    if !body_audio.exists() {
+        return;
+    }
+
+    // Remux: keep the video as-is, swap in the freshly-fetched aligned audio,
+    // trimming whichever is longer so the two stay in lock-step.
+    let fixed = cache_dir.join(format!("{}_{}_fixed.mp4", video_id, stamp));
+    let status = Command::new("ffmpeg")
+        .arg("-y")
+        .arg("-i").arg(segment)
+        .arg("-i").arg(&body_audio)
+        .args(["-map", "0:v:0", "-map", "1:a:0", "-c", "copy", "-shortest", "-movflags", "+faststart"])
+        .arg(&fixed)
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status();
+    let _ = std::fs::remove_file(&body_audio);
+    match status {
+        Ok(s) if s.success() && fixed.exists() => {
+            if std::fs::rename(&fixed, segment).is_err() {
+                // Cross-device or other rename failure — copy then drop temp.
+                if std::fs::copy(&fixed, segment).is_ok() {
+                    let _ = std::fs::remove_file(&fixed);
+                } else {
+                    let _ = std::fs::remove_file(&fixed);
+                    let _ = tx.send(Event::Log("Audio remux produced a file but could not replace the segment; keeping original.".into()));
+                    return;
+                }
+            }
+            purge_derived_caches(cache_dir, video_id, stamp);
+            let na = probe_audio_duration(segment).unwrap_or(0.0);
+            let _ = tx.send(Event::Log(format!(
+                "Audio realigned: now {:.1}s under {:.1}s of video.",
+                na, vdur
+            )));
+        }
+        _ => {
+            let _ = std::fs::remove_file(&fixed);
+            let _ = tx.send(Event::Log("Audio remux failed; keeping original segment.".into()));
+        }
+    }
+}
+
+/// Delete the stretch/titled/fade caches derived from a given raw segment so
+/// they regenerate. Matches `<video_id>_<stamp>_*` (the raw segment itself is
+/// `<video_id>_<stamp>.mp4` and the per-video tail/body audio use a different
+/// infix, so both are left intact).
+fn purge_derived_caches(cache_dir: &std::path::Path, video_id: &str, stamp: &str) {
+    let prefix = format!("{}_{}_", video_id, stamp);
+    if let Ok(entries) = std::fs::read_dir(cache_dir) {
+        for e in entries.flatten() {
+            if let Some(name) = e.file_name().to_str() {
+                if name.starts_with(&prefix) {
+                    let _ = std::fs::remove_file(e.path());
+                }
+            }
+        }
+    }
 }
 
 /// Pick the most useful stderr lines to surface in the error banner.
@@ -953,6 +1119,26 @@ fn probe_duration(input: &std::path::Path) -> Option<f64> {
         .args([
             "-v", "error",
             "-show_entries", "format=duration",
+            "-of", "csv=p=0",
+            input.to_str()?,
+        ])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    String::from_utf8_lossy(&output.stdout).trim().parse().ok()
+}
+
+/// Duration of the first audio stream in seconds, if there is one. Used to
+/// detect the yt-dlp `--download-sections` merge desync where the muxed audio
+/// track comes out shorter than the video track.
+fn probe_audio_duration(input: &std::path::Path) -> Option<f64> {
+    let output = Command::new("ffprobe")
+        .args([
+            "-v", "error",
+            "-select_streams", "a:0",
+            "-show_entries", "stream=duration",
             "-of", "csv=p=0",
             input.to_str()?,
         ])
