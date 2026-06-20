@@ -9,7 +9,8 @@ use crossbeam_channel::Sender;
 use std::collections::VecDeque;
 use std::io::Read;
 use std::path::PathBuf;
-use std::process::{Command, Stdio};
+use std::process::{Child, Command, ExitStatus, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 type LineBuf = Arc<Mutex<VecDeque<String>>>;
@@ -21,6 +22,107 @@ pub enum Event {
     Done(String),
     Preview(PathBuf),
     Error(String),
+    /// The user clicked Cancel; the worker stopped (and killed any running
+    /// yt-dlp/ffmpeg child). Reported separately from `Error` so the UI can
+    /// show a neutral "Cancelled" instead of a red failure.
+    Cancelled,
+}
+
+/// Error string returned by `wait_or_cancel` / `upload_video` when the user
+/// cancelled. Callers detect cancellation via the shared `cancel` flag (which
+/// is what `report_fail` keys on), so this text is effectively internal.
+pub const CANCEL_MSG: &str = "cancelled by user";
+
+/// Block until `child` exits, polling the shared `cancel` flag ~10×/s. If the
+/// flag flips true mid-run, kill the child (then reap it) and return the
+/// cancel sentinel error so the caller can unwind cleanly. This is what makes
+/// an in-flight yt-dlp download or ffmpeg encode actually stop the moment the
+/// user clicks Cancel — `Child::wait` alone blocks until the process finishes.
+fn wait_or_cancel(child: &mut Child, cancel: &AtomicBool) -> Result<ExitStatus, String> {
+    loop {
+        if cancel.load(Ordering::SeqCst) {
+            kill_tree(child);
+            let _ = child.wait();
+            return Err(CANCEL_MSG.to_string());
+        }
+        match child.try_wait() {
+            Ok(Some(status)) => return Ok(status),
+            Ok(None) => std::thread::sleep(std::time::Duration::from_millis(100)),
+            Err(e) => return Err(format!("wait: {}", e)),
+        }
+    }
+}
+
+/// Put a spawned child in its own process group so Cancel can take down the
+/// whole tree. yt-dlp drives ffmpeg as a *grandchild* to download/cut the
+/// requested section (`--download-sections --force-keyframes-at-cuts`); a bare
+/// `child.kill()` only hits yt-dlp and would orphan that ffmpeg — it keeps
+/// downloading after the user "cancelled". Making the child a group leader lets
+/// `kill_tree` signal the group. No-op on non-Unix. Call before `.spawn()`.
+fn detach_group(cmd: &mut Command) {
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        cmd.process_group(0);
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = cmd;
+    }
+}
+
+/// Kill `child` and, on Unix, its entire process group (the grandchildren
+/// `detach_group` corralled). Signals the group *and* the direct child, so even
+/// a spawn that wasn't group-detached still dies. Caller reaps with `wait()`.
+fn kill_tree(child: &mut Child) {
+    #[cfg(unix)]
+    {
+        // The child is its own group leader (pgid == pid via process_group(0)),
+        // so a negative pid signals the whole group: yt-dlp + its ffmpeg.
+        let pid = child.id() as i32;
+        unsafe {
+            libc::kill(-pid, libc::SIGKILL);
+        }
+    }
+    let _ = child.kill();
+}
+
+/// Remove a cut segment plus the intermediate files yt-dlp leaves when killed
+/// mid-download/merge (`<stem>.fNNN.mp4`, `<stem>.fNNN.m4a`, `<stem>.part`,
+/// `<stem>.ytdl`, `<stem>.temp.mp4`, …). yt-dlp names these `<stem>.<…>`, so we
+/// delete every sibling whose name starts with `"<stem>."`. The trailing dot
+/// guards against nuking derived caches that share the prefix but not the dot
+/// (e.g. `<stem>_stretch5.mp4`, `<stem>_titled_…`).
+fn cleanup_partial_download(cached: &std::path::Path) {
+    let _ = std::fs::remove_file(cached);
+    let (Some(dir), Some(stem)) = (
+        cached.parent(),
+        cached.file_stem().and_then(|s| s.to_str()),
+    ) else {
+        return;
+    };
+    let prefix = format!("{}.", stem);
+    if let Ok(entries) = std::fs::read_dir(dir) {
+        for e in entries.flatten() {
+            if let Some(name) = e.file_name().to_str() {
+                if name.starts_with(&prefix) {
+                    let _ = std::fs::remove_file(e.path());
+                }
+            }
+        }
+    }
+}
+
+/// Emit a terminal failure to the UI: a clean `Cancelled` event when the user
+/// asked to stop, otherwise the real error. Keying on the flag (not the error
+/// text) means every pipeline stage reports cancellation uniformly even though
+/// each wraps the sentinel with its own prefix ("yt-dlp: …", "stretch: …").
+fn report_fail(tx: &Sender<Event>, cancel: &AtomicBool, msg: String) {
+    if cancel.load(Ordering::SeqCst) {
+        let _ = tx.send(Event::Cancelled);
+    } else {
+        let _ = tx.send(Event::Error(msg));
+    }
 }
 
 pub struct Job {
@@ -53,11 +155,11 @@ pub struct UploadJob {
 
 /// Direct upload of a local video file to YouTube — no yt-dlp, no
 /// segment extraction. Used by the Upload tab.
-pub fn run_upload(job: UploadJob, settings: Settings, tx: Sender<Event>) {
+pub fn run_upload(job: UploadJob, settings: Settings, tx: Sender<Event>, cancel: Arc<AtomicBool>) {
     let size = match std::fs::metadata(&job.file) {
         Ok(m) => m.len(),
         Err(e) => {
-            let _ = tx.send(Event::Error(format!("stat {}: {}", job.file.display(), e)));
+            report_fail(&tx, &cancel, format!("stat {}: {}", job.file.display(), e));
             return;
         }
     };
@@ -67,11 +169,15 @@ pub fn run_upload(job: UploadJob, settings: Settings, tx: Sender<Event>) {
         size as f64 / 1_048_576.0,
     )));
 
+    if cancel.load(Ordering::SeqCst) {
+        let _ = tx.send(Event::Cancelled);
+        return;
+    }
     let _ = tx.send(Event::Log("Refreshing YouTube access token…".into()));
     let access_token = match oauth::refresh_access_token(&settings.client_id, &settings.client_secret) {
         Ok(t) => t,
         Err(e) => {
-            let _ = tx.send(Event::Error(format!("auth: {}", e)));
+            report_fail(&tx, &cancel, format!("auth: {}", e));
             return;
         }
     };
@@ -89,7 +195,7 @@ pub fn run_upload(job: UploadJob, settings: Settings, tx: Sender<Event>) {
     };
 
     let progress_tx = tx.clone();
-    let result = upload_video(&access_token, &job.file, &body, |sent, total| {
+    let result = upload_video(&access_token, &job.file, &body, &cancel, |sent, total| {
         let f = if total == 0 { 0.0 } else { sent as f32 / total as f32 };
         let detail = format!("{:.1} / {:.1} MB", sent as f64 / 1_048_576.0, total as f64 / 1_048_576.0);
         let _ = progress_tx.send(Event::Progress { phase: "Uploading".into(), fraction: f, detail });
@@ -100,7 +206,7 @@ pub fn run_upload(job: UploadJob, settings: Settings, tx: Sender<Event>) {
             let _ = tx.send(Event::Done(format!("https://www.youtube.com/watch?v={}", id)));
         }
         Err(e) => {
-            let _ = tx.send(Event::Error(format!("upload: {}", e)));
+            report_fail(&tx, &cancel, format!("upload: {}", e));
         }
     }
 }
@@ -138,7 +244,7 @@ fn parse_ffmpeg_time(line: &str) -> Option<f64> {
     Some(h * 3600.0 + m * 60.0 + sec)
 }
 
-pub fn run(job: Job, settings: Settings, tx: Sender<Event>) {
+pub fn run(job: Job, settings: Settings, tx: Sender<Event>, cancel: Arc<AtomicBool>) {
     let _ = tx.send(Event::Log(format!("Starting job for {}", job.source)));
     let segment_secs: f64 = parse_timestamp(&job.end)
         .and_then(|e| parse_timestamp(&job.start).map(|s| (e - s).max(0.0)))
@@ -160,7 +266,7 @@ pub fn run(job: Job, settings: Settings, tx: Sender<Event>) {
     let stamp = format!("{}_{}", job.start.replace(':', "_"), job.end.replace(':', "_"));
     let cache_dir = segment_cache_dir();
     if let Err(e) = std::fs::create_dir_all(&cache_dir) {
-        let _ = tx.send(Event::Error(format!("mkdir {}: {}", cache_dir.display(), e)));
+        report_fail(&tx, &cancel, format!("mkdir {}: {}", cache_dir.display(), e));
         return;
     }
     let cached = cache_dir.join(format!("{}_{}.mp4", video_id, stamp));
@@ -175,9 +281,9 @@ pub fn run(job: Job, settings: Settings, tx: Sender<Event>) {
     } else {
         let _ = tx.send(Event::Log(format!("Downloading {} ({}-{}) → {}", url, job.start, job.end, cached.display())));
         let _ = tx.send(Event::Progress { phase: "Downloading".into(), fraction: 0.0, detail: String::new() });
-        if let Err(e) = run_yt_dlp(&url, &job.start, &job.end, &cached, &settings, &tx, segment_secs) {
-            let _ = std::fs::remove_file(&cached);
-            let _ = tx.send(Event::Error(format!("yt-dlp: {}", e)));
+        if let Err(e) = run_yt_dlp(&url, &job.start, &job.end, &cached, &settings, &tx, segment_secs, &cancel) {
+            cleanup_partial_download(&cached);
+            report_fail(&tx, &cancel, format!("yt-dlp: {}", e));
             return;
         }
         cached.clone()
@@ -186,7 +292,7 @@ pub fn run(job: Job, settings: Settings, tx: Sender<Event>) {
     let size = match std::fs::metadata(&out) {
         Ok(m) => m.len(),
         Err(e) => {
-            let _ = tx.send(Event::Error(format!("yt-dlp produced no file: {}", e)));
+            report_fail(&tx, &cancel, format!("yt-dlp produced no file: {}", e));
             return;
         }
     };
@@ -196,7 +302,11 @@ pub fn run(job: Job, settings: Settings, tx: Sender<Event>) {
     // shorter than its video (sound stops early; the fade-out plays silent).
     // Re-fetches and remuxes aligned audio in place when a shortfall is found,
     // then purges the stale derived caches. No-op for healthy segments.
-    repair_segment_audio(&out, &url, &job.start, &job.end, &cache_dir, &video_id, &stamp, &settings, &tx);
+    repair_segment_audio(&out, &url, &job.start, &job.end, &cache_dir, &video_id, &stamp, &settings, &tx, &cancel);
+    if cancel.load(Ordering::SeqCst) {
+        let _ = tx.send(Event::Cancelled);
+        return;
+    }
 
     // Optional: time-stretch (slow down) the core clip so it lasts
     // `stretch_secs` seconds longer. Applied to the raw segment *before*
@@ -213,9 +323,9 @@ pub fn run(job: Job, settings: Settings, tx: Sender<Event>) {
             )));
         } else {
             let _ = tx.send(Event::Log(format!("Stretching clip by {}s…", stretch_secs)));
-            if let Err(e) = apply_stretch(&out, &stretch_path, &tx, segment_secs, stretch_secs) {
+            if let Err(e) = apply_stretch(&out, &stretch_path, &tx, segment_secs, stretch_secs, &cancel) {
                 let _ = std::fs::remove_file(&stretch_path);
-                let _ = tx.send(Event::Error(format!("stretch: {}", e)));
+                report_fail(&tx, &cancel, format!("stretch: {}", e));
                 return;
             }
         }
@@ -256,9 +366,9 @@ pub fn run(job: Job, settings: Settings, tx: Sender<Event>) {
             )));
         } else {
             let _ = tx.send(Event::Log("Burning title overlay…".into()));
-            if let Err(e) = apply_title_overlay(&base, &job.title, job.overlay_color, job.overlay_pos, &overlay_path, &tx, core_secs) {
+            if let Err(e) = apply_title_overlay(&base, &job.title, job.overlay_color, job.overlay_pos, &overlay_path, &tx, core_secs, &cancel) {
                 let _ = std::fs::remove_file(&overlay_path);
-                let _ = tx.send(Event::Error(format!("title overlay: {}", e)));
+                report_fail(&tx, &cancel, format!("title overlay: {}", e));
                 return;
             }
         }
@@ -285,9 +395,9 @@ pub fn run(job: Job, settings: Settings, tx: Sender<Event>) {
                 "Adding {}s freeze-frame fade-in…",
                 fade_in_secs
             )));
-            if let Err(e) = apply_fade_in(&final_out, &fin_path, &tx, core_secs, fade_in_secs) {
+            if let Err(e) = apply_fade_in(&final_out, &fin_path, &tx, core_secs, fade_in_secs, &cancel) {
                 let _ = std::fs::remove_file(&fin_path);
-                let _ = tx.send(Event::Error(format!("fade-in: {}", e)));
+                report_fail(&tx, &cancel, format!("fade-in: {}", e));
                 return;
             }
         }
@@ -333,9 +443,18 @@ pub fn run(job: Job, settings: Settings, tx: Sender<Event>) {
                         "Fetching {}s of audio after the cut for the fade-out…",
                         fade_secs
                     )));
-                    match download_tail_audio(&url, end_secs, fade_secs, &tail_path, &settings, &tx) {
+                    match download_tail_audio(&url, end_secs, fade_secs, &tail_path, &settings, &tx, &cancel) {
                         Ok(()) if tail_path.exists() => Some(tail_path),
                         Ok(()) => None,
+                        // A cancel mid-fetch surfaces here as an Err too. Bail
+                        // cleanly with Cancelled instead of logging the
+                        // misleading "no continuing audio" line and then
+                        // spawning a doomed fade-out encode.
+                        Err(_) if cancel.load(Ordering::SeqCst) => {
+                            let _ = std::fs::remove_file(&tail_path);
+                            let _ = tx.send(Event::Cancelled);
+                            return;
+                        }
                         Err(e) => {
                             let _ = std::fs::remove_file(&tail_path);
                             let _ = tx.send(Event::Log(format!(
@@ -361,9 +480,10 @@ pub fn run(job: Job, settings: Settings, tx: Sender<Event>) {
                 core_secs,
                 fade_secs,
                 tail_audio.as_deref(),
+                &cancel,
             ) {
                 let _ = std::fs::remove_file(&fade_path);
-                let _ = tx.send(Event::Error(format!("fade-out: {}", e)));
+                report_fail(&tx, &cancel, format!("fade-out: {}", e));
                 return;
             }
         }
@@ -378,11 +498,15 @@ pub fn run(job: Job, settings: Settings, tx: Sender<Event>) {
         return;
     }
 
+    if cancel.load(Ordering::SeqCst) {
+        let _ = tx.send(Event::Cancelled);
+        return;
+    }
     let _ = tx.send(Event::Log("Refreshing YouTube access token…".to_string()));
     let access_token = match oauth::refresh_access_token(&settings.client_id, &settings.client_secret) {
         Ok(t) => t,
         Err(e) => {
-            let _ = tx.send(Event::Error(format!("auth: {}", e)));
+            report_fail(&tx, &cancel, format!("auth: {}", e));
             return;
         }
     };
@@ -407,7 +531,7 @@ pub fn run(job: Job, settings: Settings, tx: Sender<Event>) {
     let upload_size = std::fs::metadata(&delivered).map(|m| m.len()).unwrap_or(size);
     let _ = tx.send(Event::Log(format!("Uploading {:.1} MB…", upload_size as f64 / 1024.0 / 1024.0)));
     let progress_tx = tx.clone();
-    let result = upload_video(&access_token, &delivered, &body, |sent, total| {
+    let result = upload_video(&access_token, &delivered, &body, &cancel, |sent, total| {
         let f = if total == 0 { 0.0 } else { sent as f32 / total as f32 };
         let detail = format!("{:.1} / {:.1} MB", sent as f64 / 1_048_576.0, total as f64 / 1_048_576.0);
         let _ = progress_tx.send(Event::Progress { phase: "Uploading".into(), fraction: f, detail });
@@ -426,7 +550,7 @@ pub fn run(job: Job, settings: Settings, tx: Sender<Event>) {
             let _ = tx.send(Event::Done(format!("https://www.youtube.com/watch?v={}", id)));
         }
         Err(e) => {
-            let _ = tx.send(Event::Error(format!("upload: {}", e)));
+            report_fail(&tx, &cancel, format!("upload: {}", e));
         }
     }
 }
@@ -451,6 +575,7 @@ fn run_yt_dlp(
     settings: &Settings,
     tx: &Sender<Event>,
     segment_secs: f64,
+    cancel: &Arc<AtomicBool>,
 ) -> Result<(), String> {
     let mut cmd = Command::new("yt-dlp");
     cmd.args([
@@ -471,6 +596,7 @@ fn run_yt_dlp(
     cmd.arg(url);
     cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
 
+    detach_group(&mut cmd);
     let mut child = cmd.spawn().map_err(|e| {
         format!("yt-dlp not found ({}). Install with `brew install yt-dlp` or `pipx install yt-dlp`.", e)
     })?;
@@ -482,7 +608,7 @@ fn run_yt_dlp(
     let cap_for_thread = stderr_capture.clone();
     let h_o = stdout.map(|r| std::thread::spawn(move || stream_progress(r, tx_o, segment_secs, None)));
     let h_e = stderr.map(|r| std::thread::spawn(move || stream_progress(r, tx_e, segment_secs, Some(cap_for_thread))));
-    let status = child.wait().map_err(|e| format!("wait: {}", e))?;
+    let status = wait_or_cancel(&mut child, cancel)?;
     if let Some(h) = h_o { let _ = h.join(); }
     if let Some(h) = h_e { let _ = h.join(); }
     if !status.success() {
@@ -505,6 +631,7 @@ fn download_tail_audio(
     out: &PathBuf,
     settings: &Settings,
     tx: &Sender<Event>,
+    cancel: &Arc<AtomicBool>,
 ) -> Result<(), String> {
     let stop = end_secs + fade_secs as f64;
     let mut cmd = Command::new("yt-dlp");
@@ -529,6 +656,7 @@ fn download_tail_audio(
     cmd.arg(url);
     cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
 
+    detach_group(&mut cmd);
     let mut child = cmd
         .spawn()
         .map_err(|e| format!("yt-dlp not found ({})", e))?;
@@ -541,7 +669,7 @@ fn download_tail_audio(
     let secs = fade_secs as f64;
     let h_o = stdout.map(|r| std::thread::spawn(move || stream_progress(r, tx_o, secs, None)));
     let h_e = stderr.map(|r| std::thread::spawn(move || stream_progress(r, tx_e, secs, Some(cap_for_thread))));
-    let status = child.wait().map_err(|e| format!("wait: {}", e))?;
+    let status = wait_or_cancel(&mut child, cancel)?;
     if let Some(h) = h_o { let _ = h.join(); }
     if let Some(h) = h_e { let _ = h.join(); }
     if !status.success() {
@@ -564,6 +692,7 @@ fn download_section_audio(
     settings: &Settings,
     tx: &Sender<Event>,
     secs: f64,
+    cancel: &Arc<AtomicBool>,
 ) -> Result<(), String> {
     let mut cmd = Command::new("yt-dlp");
     cmd.args([
@@ -585,6 +714,7 @@ fn download_section_audio(
     cmd.arg(url);
     cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
 
+    detach_group(&mut cmd);
     let mut child = cmd.spawn().map_err(|e| format!("yt-dlp not found ({})", e))?;
     let stdout = child.stdout.take();
     let stderr = child.stderr.take();
@@ -594,7 +724,7 @@ fn download_section_audio(
     let cap_for_thread = stderr_capture.clone();
     let h_o = stdout.map(|r| std::thread::spawn(move || stream_progress(r, tx_o, secs, None)));
     let h_e = stderr.map(|r| std::thread::spawn(move || stream_progress(r, tx_e, secs, Some(cap_for_thread))));
-    let status = child.wait().map_err(|e| format!("wait: {}", e))?;
+    let status = wait_or_cancel(&mut child, cancel)?;
     if let Some(h) = h_o { let _ = h.join(); }
     if let Some(h) = h_e { let _ = h.join(); }
     if !status.success() {
@@ -625,6 +755,7 @@ fn repair_segment_audio(
     stamp: &str,
     settings: &Settings,
     tx: &Sender<Event>,
+    cancel: &Arc<AtomicBool>,
 ) {
     let Some(vdur) = probe_duration(segment) else { return };
     // No audio stream at all → genuinely silent region, nothing to repair.
@@ -644,7 +775,7 @@ fn repair_segment_audio(
 
     let body_audio = cache_dir.join(format!("{}_bodyaudio_{}.m4a", video_id, stamp));
     let _ = std::fs::remove_file(&body_audio);
-    if let Err(e) = download_section_audio(url, start, end, &body_audio, settings, tx, vdur) {
+    if let Err(e) = download_section_audio(url, start, end, &body_audio, settings, tx, vdur, cancel) {
         let _ = tx.send(Event::Log(format!(
             "Could not re-fetch aligned audio ({}); keeping original segment.",
             e
@@ -659,15 +790,19 @@ fn repair_segment_audio(
     // Remux: keep the video as-is, swap in the freshly-fetched aligned audio,
     // trimming whichever is longer so the two stay in lock-step.
     let fixed = cache_dir.join(format!("{}_{}_fixed.mp4", video_id, stamp));
-    let status = Command::new("ffmpeg")
-        .arg("-y")
+    let mut cmd = Command::new("ffmpeg");
+    cmd.arg("-y")
         .arg("-i").arg(segment)
         .arg("-i").arg(&body_audio)
         .args(["-map", "0:v:0", "-map", "1:a:0", "-c", "copy", "-shortest", "-movflags", "+faststart"])
         .arg(&fixed)
         .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status();
+        .stderr(Stdio::null());
+    detach_group(&mut cmd);
+    let status = match cmd.spawn() {
+        Ok(mut child) => wait_or_cancel(&mut child, cancel),
+        Err(e) => Err(format!("ffmpeg spawn: {}", e)),
+    };
     let _ = std::fs::remove_file(&body_audio);
     match status {
         Ok(s) if s.success() && fixed.exists() => {
@@ -1023,6 +1158,7 @@ fn apply_title_overlay(
     output: &std::path::Path,
     tx: &Sender<Event>,
     segment_secs: f64,
+    cancel: &Arc<AtomicBool>,
 ) -> Result<(), String> {
     let (video_w, video_h) = probe_video_size(input)?;
     let _ = tx.send(Event::Log(format!(
@@ -1064,6 +1200,7 @@ fn apply_title_overlay(
     ]);
     cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
 
+    detach_group(&mut cmd);
     let mut child = cmd.spawn().map_err(|e| format!("ffmpeg spawn ({}): install ffmpeg", e))?;
     let stdout = child.stdout.take();
     let stderr = child.stderr.take();
@@ -1073,7 +1210,7 @@ fn apply_title_overlay(
     let cap_for_thread = stderr_capture.clone();
     let h_o = stdout.map(|r| std::thread::spawn(move || stream_progress(r, tx_o, segment_secs, None)));
     let h_e = stderr.map(|r| std::thread::spawn(move || stream_progress(r, tx_e, segment_secs, Some(cap_for_thread))));
-    let status = child.wait().map_err(|e| format!("wait: {}", e))?;
+    let status = wait_or_cancel(&mut child, cancel)?;
     if let Some(h) = h_o { let _ = h.join(); }
     if let Some(h) = h_e { let _ = h.join(); }
     let _ = std::fs::remove_file(&png_path);
@@ -1181,6 +1318,7 @@ fn apply_fade_out(
     segment_secs: f64,
     fade_secs: u32,
     tail_audio: Option<&std::path::Path>,
+    cancel: &Arc<AtomicBool>,
 ) -> Result<(), String> {
     let fade: f64 = fade_secs.max(1) as f64;
     let dur = probe_duration(input).unwrap_or(segment_secs);
@@ -1268,6 +1406,7 @@ fn apply_fade_out(
     // Progress is measured against the held total length so the bar reaches
     // 100% at the real end of the encode.
     let total = freeze_start + fade;
+    detach_group(&mut cmd);
     let mut child = cmd.spawn().map_err(|e| format!("ffmpeg spawn ({}): install ffmpeg", e))?;
     let stdout = child.stdout.take();
     let stderr = child.stderr.take();
@@ -1277,7 +1416,7 @@ fn apply_fade_out(
     let cap_for_thread = stderr_capture.clone();
     let h_o = stdout.map(|r| std::thread::spawn(move || stream_progress(r, tx_o, total, None)));
     let h_e = stderr.map(|r| std::thread::spawn(move || stream_progress(r, tx_e, total, Some(cap_for_thread))));
-    let status = child.wait().map_err(|e| format!("wait: {}", e))?;
+    let status = wait_or_cancel(&mut child, cancel)?;
     if let Some(h) = h_o { let _ = h.join(); }
     if let Some(h) = h_e { let _ = h.join(); }
     if !status.success() {
@@ -1300,6 +1439,7 @@ fn apply_fade_in(
     tx: &Sender<Event>,
     segment_secs: f64,
     fade_secs: u32,
+    cancel: &Arc<AtomicBool>,
 ) -> Result<(), String> {
     let fade: f64 = fade_secs.max(1) as f64;
     let dur = probe_duration(input).unwrap_or(segment_secs);
@@ -1355,6 +1495,7 @@ fn apply_fade_in(
     // Progress against the padded total length so the bar reaches 100% at the
     // real end of the encode.
     let total = if dur > 0.0 { dur + fade } else { segment_secs.max(0.0) + fade };
+    detach_group(&mut cmd);
     let mut child = cmd.spawn().map_err(|e| format!("ffmpeg spawn ({}): install ffmpeg", e))?;
     let stdout = child.stdout.take();
     let stderr = child.stderr.take();
@@ -1364,7 +1505,7 @@ fn apply_fade_in(
     let cap_for_thread = stderr_capture.clone();
     let h_o = stdout.map(|r| std::thread::spawn(move || stream_progress(r, tx_o, total, None)));
     let h_e = stderr.map(|r| std::thread::spawn(move || stream_progress(r, tx_e, total, Some(cap_for_thread))));
-    let status = child.wait().map_err(|e| format!("wait: {}", e))?;
+    let status = wait_or_cancel(&mut child, cancel)?;
     if let Some(h) = h_o { let _ = h.join(); }
     if let Some(h) = h_e { let _ = h.join(); }
     if !status.success() {
@@ -1400,6 +1541,7 @@ fn apply_stretch(
     tx: &Sender<Event>,
     segment_secs: f64,
     stretch_secs: u32,
+    cancel: &Arc<AtomicBool>,
 ) -> Result<(), String> {
     let extra = stretch_secs.max(1) as f64;
     let dur = probe_duration(input).unwrap_or(segment_secs).max(0.001);
@@ -1445,6 +1587,7 @@ fn apply_stretch(
 
     // Progress against the stretched (target) length so the bar reaches
     // 100% at the real end of the encode.
+    detach_group(&mut cmd);
     let mut child = cmd.spawn().map_err(|e| format!("ffmpeg spawn ({}): install ffmpeg", e))?;
     let stdout = child.stdout.take();
     let stderr = child.stderr.take();
@@ -1454,7 +1597,7 @@ fn apply_stretch(
     let cap_for_thread = stderr_capture.clone();
     let h_o = stdout.map(|r| std::thread::spawn(move || stream_progress(r, tx_o, target, None)));
     let h_e = stderr.map(|r| std::thread::spawn(move || stream_progress(r, tx_e, target, Some(cap_for_thread))));
-    let status = child.wait().map_err(|e| format!("wait: {}", e))?;
+    let status = wait_or_cancel(&mut child, cancel)?;
     if let Some(h) = h_o { let _ = h.join(); }
     if let Some(h) = h_e { let _ = h.join(); }
     if !status.success() {

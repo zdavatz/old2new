@@ -655,7 +655,7 @@ dependencies = [
 
 [[package]]
 name = "create_shorts_gui"
-version = "1.0.34"
+version = "1.0.35"
 dependencies = [
  "ab_glyph",
  "chrono",
@@ -664,6 +664,7 @@ dependencies = [
  "eframe",
  "egui",
  "image",
+ "libc",
  "open",
  "reqwest",
  "rfd",

@@ -1,6 +1,6 @@
 [package]
 name = "create_shorts_gui"
-version = "1.0.34"
+version = "1.0.35"
 edition = "2021"
 description = "Cross-platform GUI for extracting a YouTube segment and re-uploading it as a new video."
 license = "GPL-3.0-only"
@@ -28,6 +28,12 @@ image = { version = "0.25", default-features = false, features = ["png"] }
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
 rfd = "0.15"
 ab_glyph = "0.2"
+
+# Cancel kills the whole process group (yt-dlp + its ffmpeg grandchild), which
+# needs `kill(-pgid, SIGKILL)`. Already in the dependency tree transitively, so
+# declaring it directly is free.
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
 
 [target.'cfg(windows)'.build-dependencies]
 winresource = "0.1"

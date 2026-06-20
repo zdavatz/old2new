@@ -6,6 +6,7 @@ use serde::Serialize;
 use std::fs::File;
 use std::io::{Read, Seek, SeekFrom};
 use std::path::Path;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 #[derive(Serialize)]
 pub struct VideoSnippet<'a> {
@@ -38,16 +39,28 @@ pub fn upload_video(
     access_token: &str,
     file: &Path,
     body: &VideoBody<'_>,
+    cancel: &AtomicBool,
     mut on_progress: impl FnMut(u64, u64),
 ) -> Result<String, String> {
     let total = std::fs::metadata(file)
         .map_err(|e| format!("stat {}: {}", file.display(), e))?
         .len();
 
+    // Bounded per-request timeouts so a stalled connection surfaces an error
+    // within ~2 min instead of reqwest's default (none). Each request here is
+    // either tiny (init) or a single 4 MB chunk, so 120 s tolerates very slow
+    // links (~280 kbps) while capping how long a Cancel can lag behind an
+    // in-flight PUT on a dead connection. connect_timeout fails fast on a
+    // captive portal / unplugged network.
     let client = reqwest::blocking::Client::builder()
-        .timeout(std::time::Duration::from_secs(600))
+        .connect_timeout(std::time::Duration::from_secs(15))
+        .timeout(std::time::Duration::from_secs(120))
         .build()
         .map_err(|e| format!("client build: {}", e))?;
+
+    if cancel.load(Ordering::SeqCst) {
+        return Err("cancelled by user".to_string());
+    }
 
     let init_resp = client
         .post(RESUMABLE_INIT)
@@ -76,6 +89,11 @@ pub fn upload_video(
     let mut buf = vec![0u8; CHUNK];
 
     loop {
+        // Stop between chunks when the user cancels. The in-flight 4 MB PUT
+        // (if any) finishes first; the next iteration never starts.
+        if cancel.load(Ordering::SeqCst) {
+            return Err("cancelled by user".to_string());
+        }
         let want = ((total - offset) as usize).min(CHUNK);
         f.seek(SeekFrom::Start(offset))
             .map_err(|e| format!("seek: {}", e))?;

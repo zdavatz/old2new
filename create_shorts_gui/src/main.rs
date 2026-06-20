@@ -24,6 +24,7 @@ use pipeline::{Event, Job};
 use settings::{log_path, token_path, Settings};
 use std::fs::OpenOptions;
 use std::io::Write;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 const MAX_LOG_LINES: usize = 5000;
@@ -134,6 +135,11 @@ struct App {
     progress: Arc<Mutex<ProgressInfo>>,
     rx: Option<Receiver<Event>>,
     running: bool,
+    /// Shared cancel flag for the main create-short job. Set true by the
+    /// Cancel button; the worker polls it, kills any running yt-dlp/ffmpeg
+    /// child, and exits with `Event::Cancelled`. A fresh `Arc` is minted per
+    /// job in `kick_off` so a previous cancel can't bleed into the next run.
+    cancel: Arc<AtomicBool>,
     last_done_url: Option<String>,
     last_error: Option<String>,
     show_settings: bool,
@@ -188,6 +194,10 @@ struct App {
     upload_description: String,
     upload_privacy: String,
     upload_running: bool,
+    /// Cancel flag for the direct-upload (Upload tab) job — same mechanism as
+    /// `cancel`, kept separate so the two jobs can run and be cancelled
+    /// independently.
+    upload_cancel: Arc<AtomicBool>,
     upload_rx: Option<Receiver<Event>>,
     upload_progress: Arc<Mutex<ProgressInfo>>,
     upload_log: Arc<Mutex<Vec<String>>>,
@@ -384,6 +394,7 @@ impl App {
             progress: Arc::new(Mutex::new(ProgressInfo::default())),
             rx: None,
             running: false,
+            cancel: Arc::new(AtomicBool::new(false)),
             last_done_url: None,
             last_error: None,
             show_settings,
@@ -435,6 +446,7 @@ impl App {
             upload_description: String::new(),
             upload_privacy: "public".to_string(),
             upload_running: false,
+            upload_cancel: Arc::new(AtomicBool::new(false)),
             upload_rx: None,
             upload_progress: Arc::new(Mutex::new(ProgressInfo::default())),
             upload_log: Arc::new(Mutex::new(Vec::new())),
@@ -766,6 +778,8 @@ impl App {
         let (tx, rx): (Sender<Event>, Receiver<Event>) = unbounded();
         self.upload_rx = Some(rx);
         self.upload_running = true;
+        let cancel = Arc::new(AtomicBool::new(false));
+        self.upload_cancel = cancel.clone();
         self.upload_last_done_url = None;
         self.upload_last_error = None;
         if let Ok(mut g) = self.upload_log.lock() { g.clear(); }
@@ -778,7 +792,7 @@ impl App {
             privacy: self.upload_privacy.clone(),
         };
         let settings = self.settings.clone();
-        std::thread::spawn(move || pipeline::run_upload(job, settings, tx));
+        std::thread::spawn(move || pipeline::run_upload(job, settings, tx, cancel));
     }
 
     fn kick_off(&mut self, preview_only: bool) {
@@ -813,6 +827,9 @@ impl App {
         let (tx, rx): (Sender<Event>, Receiver<Event>) = unbounded();
         self.rx = Some(rx);
         self.running = true;
+        // Fresh flag per job so a Cancel from a prior run can't abort this one.
+        let cancel = Arc::new(AtomicBool::new(false));
+        self.cancel = cancel.clone();
         self.last_done_url = None;
         self.last_error = None;
         if let Ok(mut g) = self.log.lock() { g.clear(); }
@@ -837,13 +854,28 @@ impl App {
             fade_in_secs: self.form.fade_in_secs,
         };
         let settings = self.settings.clone();
-        std::thread::spawn(move || pipeline::run(job, settings, tx));
+        std::thread::spawn(move || pipeline::run(job, settings, tx, cancel));
     }
 
     fn drain_events(&mut self) {
         if let Some(rx) = &self.rx {
             let mut still_running = true;
-            while let Ok(ev) = rx.try_recv() {
+            loop {
+                let ev = match rx.try_recv() {
+                    Ok(ev) => ev,
+                    Err(crossbeam_channel::TryRecvError::Empty) => break,
+                    Err(crossbeam_channel::TryRecvError::Disconnected) => {
+                        // Worker thread ended without a terminal event (it
+                        // panicked). Don't leave the UI stuck on "running" /
+                        // "Cancelling…" forever — surface it and reset.
+                        if still_running {
+                            self.last_error = Some("worker exited unexpectedly".into());
+                            self.append_log("ERROR: worker exited unexpectedly".into());
+                        }
+                        still_running = false;
+                        break;
+                    }
+                };
                 match ev {
                     Event::Log(s) => self.append_log(s),
                     Event::Progress { phase, fraction, detail } => {
@@ -882,6 +914,11 @@ impl App {
                         self.append_log(format!("ERROR: {}", e));
                         still_running = false;
                     }
+                    Event::Cancelled => {
+                        self.append_log("⏹ Cancelled.".into());
+                        if let Ok(mut p) = self.progress.lock() { *p = ProgressInfo::default(); }
+                        still_running = false;
+                    }
                 }
             }
             if !still_running {
@@ -892,7 +929,19 @@ impl App {
 
         if let Some(rx) = &self.upload_rx {
             let mut still_running = true;
-            while let Ok(ev) = rx.try_recv() {
+            loop {
+                let ev = match rx.try_recv() {
+                    Ok(ev) => ev,
+                    Err(crossbeam_channel::TryRecvError::Empty) => break,
+                    Err(crossbeam_channel::TryRecvError::Disconnected) => {
+                        if still_running {
+                            self.upload_last_error = Some("worker exited unexpectedly".into());
+                            self.append_upload_log("ERROR: worker exited unexpectedly".into());
+                        }
+                        still_running = false;
+                        break;
+                    }
+                };
                 match ev {
                     Event::Log(s) => self.append_upload_log(s),
                     Event::Progress { phase, fraction, detail } => {
@@ -921,6 +970,11 @@ impl App {
                     Event::Error(e) => {
                         self.upload_last_error = Some(e.clone());
                         self.append_upload_log(format!("ERROR: {}", e));
+                        still_running = false;
+                    }
+                    Event::Cancelled => {
+                        self.append_upload_log("⏹ Cancelled.".into());
+                        if let Ok(mut p) = self.upload_progress.lock() { *p = ProgressInfo::default(); }
                         still_running = false;
                     }
                 }
@@ -1509,6 +1563,25 @@ impl eframe::App for App {
                     egui::Button::new(label).min_size(egui::vec2(220.0, 32.0)),
                 );
                 if btn.clicked() { self.start_job(); }
+
+                // While a job runs, offer a red Cancel that stops the
+                // download/encode/upload (kills the running yt-dlp/ffmpeg
+                // child) so a wrong timestamp doesn't have to run to the end.
+                if self.running {
+                    ui.add_space(8.0);
+                    let cancelling = self.cancel.load(Ordering::SeqCst);
+                    let cancel_label = if cancelling { "Cancelling…" } else { "✖ Cancel" };
+                    let cancel_btn = ui.add_enabled(
+                        !cancelling,
+                        egui::Button::new(RichText::new(cancel_label).color(egui::Color32::WHITE))
+                            .fill(egui::Color32::from_rgb(200, 70, 70))
+                            .min_size(egui::vec2(120.0, 32.0)),
+                    ).on_hover_text("Stop this job (download/encode/upload) and discard it");
+                    if cancel_btn.clicked() {
+                        self.cancel.store(true, Ordering::SeqCst);
+                        self.append_log("Cancel requested — stopping…".into());
+                    }
+                }
             });
 
             if let Some(url) = self.last_done_url.clone() {
@@ -1879,6 +1952,22 @@ impl App {
                         egui::Button::new(label).min_size(egui::vec2(200.0, 32.0)),
                     );
                     if btn.clicked() { self.start_direct_upload(); }
+
+                    if self.upload_running {
+                        ui.add_space(8.0);
+                        let cancelling = self.upload_cancel.load(Ordering::SeqCst);
+                        let cancel_label = if cancelling { "Cancelling…" } else { "✖ Cancel" };
+                        let cancel_btn = ui.add_enabled(
+                            !cancelling,
+                            egui::Button::new(RichText::new(cancel_label).color(egui::Color32::WHITE))
+                                .fill(egui::Color32::from_rgb(200, 70, 70))
+                                .min_size(egui::vec2(120.0, 32.0)),
+                        ).on_hover_text("Stop the upload and discard it");
+                        if cancel_btn.clicked() {
+                            self.upload_cancel.store(true, Ordering::SeqCst);
+                            self.append_upload_log("Cancel requested — stopping…".into());
+                        }
+                    }
                 });
 
                 if self.upload_running {

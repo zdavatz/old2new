@@ -95,6 +95,19 @@ pub fn run_auth_flow(
     Ok(tok)
 }
 
+/// A blocking client with bounded timeouts. The token endpoint POST is tiny,
+/// so a stalled connection (dead network, captive portal, hung DNS) should
+/// fail in seconds rather than hang the worker thread forever — otherwise a
+/// Cancel click during the pre-upload token refresh would leave the UI stuck
+/// on "Cancelling…" with no child process to kill.
+fn token_client() -> Result<reqwest::blocking::Client, String> {
+    reqwest::blocking::Client::builder()
+        .connect_timeout(Duration::from_secs(10))
+        .timeout(Duration::from_secs(30))
+        .build()
+        .map_err(|e| format!("http client build: {}", e))
+}
+
 fn parse_code(request: &str) -> Option<String> {
     let first_line = request.lines().next()?;
     let target = first_line.split_whitespace().nth(1)?;
@@ -112,7 +125,7 @@ fn exchange_code(
     client_secret: &str,
     code: &str,
 ) -> Result<Token, String> {
-    let client = reqwest::blocking::Client::new();
+    let client = token_client()?;
     let resp = client
         .post("https://oauth2.googleapis.com/token")
         .form(&[
@@ -167,7 +180,7 @@ pub fn refresh_access_token(
         return Err("no refresh token saved — please sign in again".to_string());
     }
 
-    let client = reqwest::blocking::Client::new();
+    let client = token_client()?;
     let resp = client
         .post("https://oauth2.googleapis.com/token")
         .form(&[
