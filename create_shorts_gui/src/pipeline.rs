@@ -1150,6 +1150,32 @@ fn render_title_png(
 /// render the title in Rust to a frame-sized transparent PNG, then
 /// composite it via ffmpeg's `overlay` filter (which is always present,
 /// unlike `drawtext` which needs ffmpeg built with libfreetype).
+/// Video-encoder arguments for the re-encode steps (title overlay, fades,
+/// stretch). On macOS we use Apple's hardware H.264 encoder
+/// (`h264_videotoolbox`) — on Apple Silicon (M-series) the dedicated media
+/// engine encodes 4K in near-real-time, whereas the CPU-bound `libx264`
+/// crawls on 4K sources (the original cause of the "Encoding segment" being
+/// painfully slow). Everywhere else we keep `libx264 -preset veryfast`.
+///
+/// `-q:v` is VideoToolbox's constant-quality knob (1–100, higher = better,
+/// Apple-Silicon only); 60 is visually transparent for this content. We pin
+/// `-pix_fmt yuv420p` so the output stays 8-bit 4:2:0 (broadly compatible /
+/// what YouTube expects) and `-allow_sw 1` lets ffmpeg fall back to a
+/// software VideoToolbox path rather than erroring if the HW encoder is
+/// momentarily unavailable.
+fn video_encoder_args() -> Vec<&'static str> {
+    if cfg!(target_os = "macos") {
+        vec![
+            "-c:v", "h264_videotoolbox",
+            "-q:v", "60",
+            "-allow_sw", "1",
+            "-pix_fmt", "yuv420p",
+        ]
+    } else {
+        vec!["-c:v", "libx264", "-preset", "veryfast", "-crf", "20"]
+    }
+}
+
 fn apply_title_overlay(
     input: &std::path::Path,
     title: &str,
@@ -1188,12 +1214,9 @@ fn apply_title_overlay(
         filter,
         "-c:a",
         "copy",
-        "-c:v",
-        "libx264",
-        "-preset",
-        "veryfast",
-        "-crf",
-        "20",
+    ]);
+    cmd.args(video_encoder_args());
+    cmd.args([
         "-movflags",
         "+faststart",
         output.to_str().ok_or("non-utf8 output path")?,
@@ -1391,11 +1414,7 @@ fn apply_fade_out(
     } else {
         cmd.arg("-vf").arg(&vf).arg("-an");
     }
-    cmd.args([
-        "-c:v", "libx264",
-        "-preset", "veryfast",
-        "-crf", "20",
-    ]);
+    cmd.args(video_encoder_args());
     if has_audio {
         cmd.args(["-c:a", "aac"]);
     }
@@ -1480,11 +1499,7 @@ fn apply_fade_in(
     } else {
         cmd.arg("-an");
     }
-    cmd.args([
-        "-c:v", "libx264",
-        "-preset", "veryfast",
-        "-crf", "20",
-    ]);
+    cmd.args(video_encoder_args());
     if has_audio {
         cmd.args(["-c:a", "aac"]);
     }
@@ -1577,7 +1592,7 @@ fn apply_stretch(
     } else {
         cmd.arg("-an");
     }
-    cmd.args(["-c:v", "libx264", "-preset", "veryfast", "-crf", "20"]);
+    cmd.args(video_encoder_args());
     if has_audio {
         cmd.args(["-c:a", "aac"]);
     }
