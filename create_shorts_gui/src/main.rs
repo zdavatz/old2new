@@ -150,6 +150,8 @@ struct App {
     deps: deps::DepStatus,
     brew_installing: bool,
     brew_rx: Option<Receiver<BrewEvent>>,
+    ytdlp_updating: bool,
+    ytdlp_update_rx: Option<Receiver<BrewEvent>>,
     update_rx: Option<Receiver<Option<update::UpdateInfo>>>,
     update_info: Option<update::UpdateInfo>,
     update_checking: bool,
@@ -405,6 +407,8 @@ impl App {
             deps: deps::DepStatus::check(),
             brew_installing: false,
             brew_rx: None,
+            ytdlp_updating: false,
+            ytdlp_update_rx: None,
             update_rx: Some(spawn_update_check()),
             update_info: None,
             update_checking: true,
@@ -454,7 +458,78 @@ impl App {
             upload_last_error: None,
         };
         s.refresh_wa_status();
+        // Auto-*check* yt-dlp freshness on launch (the deps probe above
+        // already read its version). We only *log* staleness here and
+        // surface a one-click "Update yt-dlp" banner — we deliberately do
+        // NOT auto-run the update, because on a Homebrew install that
+        // triggers a full `brew update` that pegs the machine (load spikes
+        // into the hundreds) right when the user wants to work.
+        if let Some(age) = s.deps.yt_dlp_age_days() {
+            if s.deps.yt_dlp_is_stale() {
+                s.append_log(format!(
+                    "yt-dlp is {} days old (> {} days) — update recommended (see banner)",
+                    age, deps::YT_DLP_STALE_DAYS
+                ));
+            }
+        }
         s
+    }
+
+    /// Update yt-dlp in place, chosen by how it was installed (brew upgrade
+    /// vs `yt-dlp -U`). Triggered by the "Update yt-dlp" banner button — a
+    /// stale yt-dlp is the most common cause of "video unavailable" /
+    /// bot-check download failures (YouTube changes its internals
+    /// constantly). Streams output to the log; re-checks deps on completion.
+    fn start_ytdlp_update(&mut self) {
+        if self.ytdlp_updating { return; }
+        let age = self.deps.yt_dlp_age_days().unwrap_or(0);
+        let (cmd, args) = deps::yt_dlp_update_command();
+        self.append_log(format!(
+            "yt-dlp is {} days old — updating ({} {})",
+            age, cmd, args.join(" ")
+        ));
+        let (tx, rx) = unbounded::<BrewEvent>();
+        self.ytdlp_update_rx = Some(rx);
+        self.ytdlp_updating = true;
+        std::thread::spawn(move || {
+            use std::io::{BufRead, BufReader};
+            use std::process::{Command, Stdio};
+            let mut c = Command::new(&cmd);
+            for a in &args { c.arg(a); }
+            c.stdout(Stdio::piped()).stderr(Stdio::piped());
+            let mut child = match c.spawn() {
+                Ok(c) => c,
+                Err(e) => { let _ = tx.send(BrewEvent::Error(format!("yt-dlp update spawn failed: {}", e))); return; }
+            };
+            let stdout = child.stdout.take();
+            let stderr = child.stderr.take();
+            let tx_o = tx.clone();
+            let tx_e = tx.clone();
+            let h_out = stdout.map(|r| std::thread::spawn(move || {
+                let mut buf = BufReader::new(r);
+                let mut line = String::new();
+                while buf.read_line(&mut line).map(|n| n > 0).unwrap_or(false) {
+                    let _ = tx_o.send(BrewEvent::Log(line.trim_end_matches(['\r','\n']).to_string()));
+                    line.clear();
+                }
+            }));
+            let h_err = stderr.map(|r| std::thread::spawn(move || {
+                let mut buf = BufReader::new(r);
+                let mut line = String::new();
+                while buf.read_line(&mut line).map(|n| n > 0).unwrap_or(false) {
+                    let _ = tx_e.send(BrewEvent::Log(line.trim_end_matches(['\r','\n']).to_string()));
+                    line.clear();
+                }
+            }));
+            let status = child.wait();
+            if let Some(h) = h_out { let _ = h.join(); }
+            if let Some(h) = h_err { let _ = h.join(); }
+            match status {
+                Ok(s) if s.success() => { let _ = tx.send(BrewEvent::Done); }
+                Ok(s) => { let _ = tx.send(BrewEvent::Error(format!("yt-dlp update exited with {:?}", s.code()))); }
+                Err(e) => { let _ = tx.send(BrewEvent::Error(format!("yt-dlp update wait failed: {}", e))); }
+            }
+        });
     }
 
     fn refresh_wa_status(&mut self) {
@@ -1226,6 +1301,30 @@ impl App {
                 self.brew_rx = None;
             }
         }
+
+        if let Some(rx) = &self.ytdlp_update_rx {
+            let mut done = false;
+            while let Ok(ev) = rx.try_recv() {
+                match ev {
+                    BrewEvent::Log(s) => self.append_log(s),
+                    BrewEvent::Done => {
+                        self.deps = deps::DepStatus::check();
+                        let ver = self.deps.yt_dlp.clone().unwrap_or_default();
+                        self.append_log(format!("yt-dlp update finished — now {}", ver));
+                        done = true;
+                    }
+                    BrewEvent::Error(e) => {
+                        self.last_error = Some(e.clone());
+                        self.append_log(format!("yt-dlp update error: {}", e));
+                        done = true;
+                    }
+                }
+            }
+            if done {
+                self.ytdlp_updating = false;
+                self.ytdlp_update_rx = None;
+            }
+        }
     }
 
     fn start_signin(&mut self) {
@@ -1259,7 +1358,7 @@ impl eframe::App for App {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.drain_events();
         self.ensure_icon_texture(ctx);
-        if self.running || self.upload_running || self.signing_in || self.brew_installing || self.update_checking || self.cookies_testing || self.installing || self.wa_sending || self.wa_setup_running || self.wa_login_running || self.davaz_posting {
+        if self.running || self.upload_running || self.signing_in || self.brew_installing || self.ytdlp_updating || self.update_checking || self.cookies_testing || self.installing || self.wa_sending || self.wa_setup_running || self.wa_login_running || self.davaz_posting {
             ctx.request_repaint_after(std::time::Duration::from_millis(150));
         }
 
@@ -1397,6 +1496,39 @@ impl eframe::App for App {
                             ui.label("Then come back here and click Re-check.");
                         } else {
                             ui.label(deps::DepStatus::install_hint(&missing));
+                        }
+                    });
+                ui.add_space(6.0);
+            }
+
+            // yt-dlp staleness banner: shown when yt-dlp is present but
+            // older than the threshold. One-click update; we never auto-run
+            // it (a brew upgrade pegs the machine — see start_ytdlp_update).
+            if self.deps.yt_dlp.is_some() && self.deps.yt_dlp_is_stale() {
+                let age = self.deps.yt_dlp_age_days().unwrap_or(0);
+                let is_brew = deps::yt_dlp_update_command().1 == vec!["upgrade".to_string(), "yt-dlp".to_string()];
+                egui::Frame::none()
+                    .fill(egui::Color32::from_rgb(255, 240, 205))
+                    .stroke(egui::Stroke::new(1.0, egui::Color32::from_rgb(220, 170, 60)))
+                    .inner_margin(8.0)
+                    .rounding(4.0)
+                    .show(ui, |ui| {
+                        ui.horizontal(|ui| {
+                            ui.colored_label(
+                                egui::Color32::from_rgb(140, 80, 0),
+                                format!("⚠ yt-dlp is {} days old — updating is recommended to avoid download failures.", age),
+                            );
+                            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                let label = if self.ytdlp_updating { "Updating…" } else { "Update yt-dlp" };
+                                let resp = ui.add_enabled(!self.ytdlp_updating, egui::Button::new(label));
+                                if resp.clicked() { self.start_ytdlp_update(); }
+                            });
+                        });
+                        if is_brew && !self.ytdlp_updating {
+                            ui.label(
+                                RichText::new("Note: this runs `brew upgrade yt-dlp`, which first does a full `brew update` and may briefly load the machine.")
+                                    .weak().small(),
+                            );
                         }
                     });
                 ui.add_space(6.0);

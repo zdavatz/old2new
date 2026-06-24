@@ -28,6 +28,26 @@ impl DepStatus {
         m
     }
 
+    /// yt-dlp releases are date-versioned (`YYYY.MM.DD`, optionally with a
+    /// `.NNNN` nightly suffix). Parse the date out of the probed version
+    /// line and return how many days old it is relative to today, or `None`
+    /// if yt-dlp is absent / the version is unparseable.
+    pub fn yt_dlp_age_days(&self) -> Option<i64> {
+        let ver = self.yt_dlp.as_deref()?;
+        let mut it = ver.split('.');
+        let y: i32 = it.next()?.trim().parse().ok()?;
+        let m: u32 = it.next()?.trim().parse().ok()?;
+        let d: u32 = it.next()?.trim().parse().ok()?;
+        let released = chrono::NaiveDate::from_ymd_opt(y, m, d)?;
+        let today = chrono::Local::now().date_naive();
+        Some((today - released).num_days())
+    }
+
+    /// True when yt-dlp is present but older than [`YT_DLP_STALE_DAYS`].
+    pub fn yt_dlp_is_stale(&self) -> bool {
+        self.yt_dlp_age_days().map(|d| d > YT_DLP_STALE_DAYS).unwrap_or(false)
+    }
+
     pub fn install_hint(missing: &[&str]) -> String {
         if missing.is_empty() { return String::new(); }
         if cfg!(target_os = "macos") {
@@ -72,6 +92,33 @@ pub fn brew_path() -> Option<String> {
         }
     }
     None
+}
+
+/// yt-dlp is considered "too old" past this many days. YouTube breakage
+/// from a stale yt-dlp typically appears within a few weeks, so we flag
+/// (and auto-update) well before yt-dlp's own 90-day self-warning.
+pub const YT_DLP_STALE_DAYS: i64 = 30;
+
+/// The command that updates yt-dlp in place, chosen by how it was
+/// installed. A Homebrew-managed yt-dlp must be updated via `brew upgrade`
+/// — `yt-dlp -U` refuses to self-update a package-manager install. Anything
+/// else (standalone binary, pip/pipx on Linux/Windows) takes `yt-dlp -U`.
+pub fn yt_dlp_update_command() -> (String, Vec<String>) {
+    if cfg!(target_os = "macos") {
+        if let Some(brew) = brew_path() {
+            let brew_owned = Command::new(&brew)
+                .args(["list", "--versions", "yt-dlp"])
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .status()
+                .map(|s| s.success())
+                .unwrap_or(false);
+            if brew_owned {
+                return (brew, vec!["upgrade".to_string(), "yt-dlp".to_string()]);
+            }
+        }
+    }
+    ("yt-dlp".to_string(), vec!["-U".to_string()])
 }
 
 pub const HOMEBREW_INSTALL_CMD: &str =
