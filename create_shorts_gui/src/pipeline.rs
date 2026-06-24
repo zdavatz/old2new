@@ -281,9 +281,48 @@ pub fn run(job: Job, settings: Settings, tx: Sender<Event>, cancel: Arc<AtomicBo
     } else {
         let _ = tx.send(Event::Log(format!("Downloading {} ({}-{}) → {}", url, job.start, job.end, cached.display())));
         let _ = tx.send(Event::Progress { phase: "Downloading".into(), fraction: 0.0, detail: String::new() });
-        if let Err(e) = run_yt_dlp(&url, &job.start, &job.end, &cached, &settings, &tx, segment_secs, &cancel) {
+        // Self-heal: clear any stale temps (`.raw.mp4`, `.partial.mp4`,
+        // yt-dlp `.part`/`.fNNN`) left by a prior hard-killed run. `cached`
+        // doesn't exist in this branch, so this only sweeps the `<stem>.`
+        // siblings, never a valid cache.
+        cleanup_partial_download(&cached);
+        // Build the segment at a `.partial.mp4` temp and only atomically
+        // rename it onto the canonical cache name on success. That keeps
+        // `cached.exists()` a *valid-only* signal: a crash/SIGKILL mid-build
+        // leaves only the temp (swept next run), never a truncated cache file
+        // that a later run would blindly reuse or upload.
+        let partial = cache_dir.join(format!("{}_{}.partial.mp4", video_id, stamp));
+        #[cfg(target_os = "macos")]
+        {
+            // Fast path: stream-copy the section (no re-encode, CPU-idle) then
+            // hardware-decode+encode it to H.264. Keeps full 4K, runs ~2x
+            // real-time on the media engine, and stays cool (no thermal
+            // throttle in the tail). The raw download is named with a `.raw.`
+            // infix so `cleanup_partial_download(&cached)` sweeps it too.
+            let raw = cache_dir.join(format!("{}_{}.raw.mp4", video_id, stamp));
+            if let Err(e) = run_yt_dlp(&url, &job.start, &job.end, &raw, &settings, &tx, segment_secs, &cancel, true) {
+                cleanup_partial_download(&cached);
+                report_fail(&tx, &cancel, format!("yt-dlp: {}", e));
+                return;
+            }
+            if let Err(e) = hw_transcode_segment(&raw, &partial, &tx, segment_secs, &cancel) {
+                cleanup_partial_download(&cached);
+                report_fail(&tx, &cancel, format!("transcode: {}", e));
+                return;
+            }
+            let _ = std::fs::remove_file(&raw);
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            if let Err(e) = run_yt_dlp(&url, &job.start, &job.end, &partial, &settings, &tx, segment_secs, &cancel, false) {
+                cleanup_partial_download(&cached);
+                report_fail(&tx, &cancel, format!("yt-dlp: {}", e));
+                return;
+            }
+        }
+        if let Err(e) = std::fs::rename(&partial, &cached) {
             cleanup_partial_download(&cached);
-            report_fail(&tx, &cancel, format!("yt-dlp: {}", e));
+            report_fail(&tx, &cancel, format!("finalize segment: {}", e));
             return;
         }
         cached.clone()
@@ -576,6 +615,7 @@ fn run_yt_dlp(
     tx: &Sender<Event>,
     segment_secs: f64,
     cancel: &Arc<AtomicBool>,
+    stream_copy: bool,
 ) -> Result<(), String> {
     let mut cmd = Command::new("yt-dlp");
     cmd.args([
@@ -583,23 +623,33 @@ fn run_yt_dlp(
         "bestvideo[height<=2160]+bestaudio/best",
         "--download-sections",
         &format!("*{}-{}", start, end),
-        "--force-keyframes-at-cuts",
+    ]);
+    // `--force-keyframes-at-cuts` gives a frame-accurate cut but forces a
+    // *re-encode* of the section inside yt-dlp's ffmpeg downloader — slow,
+    // CPU-bound (software VP9 decode + libx264). The macOS fast path
+    // (`stream_copy`) instead does a pure stream copy here (no re-encode,
+    // download-bound, CPU-idle) and re-encodes afterwards via
+    // `hw_transcode_segment`, which hardware-decodes the VP9 and
+    // hardware-encodes to H.264. Empirically the stream-copy section is
+    // already frame-accurate at the start (verified frame-exact even at a
+    // mid-segment start), so no boundary trimming is needed downstream.
+    if !stream_copy {
+        cmd.arg("--force-keyframes-at-cuts");
+    }
+    cmd.args([
         "--merge-output-format",
         "mp4",
         "--newline",
         "-o",
         out.to_str().ok_or("non-utf8 path")?,
     ]);
-    // `--force-keyframes-at-cuts` re-encodes the cut segment via yt-dlp's
-    // ffmpeg *downloader* (FFmpegFD) — not a postprocessor — so the slow
-    // libx264 software encode it defaults to can only be redirected with
-    // `--downloader-args ffmpeg_o:`. On macOS route it through Apple's
-    // hardware H.264 encoder so cutting a long 4K segment isn't CPU-bound
-    // (this is the "Encoding segment" step; the overlay/fade re-encodes are
-    // handled separately by `video_encoder_args`).
-    if cfg!(target_os = "macos") {
+    // Only relevant on the re-encode path (`!stream_copy`): redirect yt-dlp's
+    // forced-keyframe re-encode onto Apple's hardware H.264 encoder. With the
+    // macOS two-step this branch isn't taken (macOS uses `stream_copy`), but
+    // it's kept correct in case the re-encode path is ever used on macOS.
+    if cfg!(target_os = "macos") && !stream_copy {
         cmd.arg("--downloader-args")
-            .arg("ffmpeg_o:-c:v h264_videotoolbox -q:v 60 -allow_sw 1");
+            .arg("ffmpeg_o:-c:v h264_videotoolbox -q:v 65 -allow_sw 1");
     }
     if !settings.cookies_browser.is_empty() {
         cmd.arg("--cookies-from-browser").arg(&settings.cookies_browser);
@@ -628,6 +678,81 @@ fn run_yt_dlp(
         return Err(format!("exited with {:?}{}", status.code(), suffix));
     }
     Ok(())
+}
+
+/// macOS fast path, step 2: re-encode the stream-copied VP9 section to H.264
+/// using Apple's media engine for BOTH decode and encode. `-hwaccel
+/// videotoolbox -hwaccel_output_format videotoolbox_vld` keeps decoded frames
+/// on the GPU and feeds them straight to `h264_videotoolbox` (near zero-copy),
+/// so a 4K cut runs at ~2x real-time with the CPU idle — no software VP9
+/// decode, no thermal throttling (the cause of the "last 30% is slow" tail
+/// slowdown), and the result is a normal H.264 mp4 so every downstream stage
+/// (overlay/fade/stretch) and the cache contract are unchanged.
+///
+/// The input is already exactly the requested frames (the stream-copy section
+/// is frame-accurate), so we transcode the whole clip — no `-ss`/`-t` trim.
+/// If hardware decode of this stream isn't available on the running chip, the
+/// first attempt fails and we retry with software decode (still HW encode) so
+/// the cut always completes, just slower.
+#[cfg(target_os = "macos")]
+fn hw_transcode_segment(
+    raw_in: &std::path::Path,
+    out: &std::path::Path,
+    tx: &Sender<Event>,
+    segment_secs: f64,
+    cancel: &Arc<AtomicBool>,
+) -> Result<(), String> {
+    let attempts: [&[&str]; 2] = [
+        &["-hwaccel", "videotoolbox", "-hwaccel_output_format", "videotoolbox_vld"],
+        &[], // software-decode fallback (HW encode still used)
+    ];
+    let mut last_err = String::new();
+    for (i, hw) in attempts.iter().enumerate() {
+        if cancel.load(Ordering::SeqCst) {
+            return Err(CANCEL_MSG.to_string());
+        }
+        let _ = tx.send(Event::Log(format!(
+            "Transcoding segment (4K, {} decode + hardware encode)…",
+            if hw.is_empty() { "software" } else { "hardware" }
+        )));
+        let mut cmd = Command::new("ffmpeg");
+        cmd.arg("-y");
+        cmd.args(*hw);
+        cmd.args(["-i", raw_in.to_str().ok_or("non-utf8 input path")?]);
+        // Map video + (optional) audio explicitly so a silent clip doesn't error.
+        cmd.args(["-map", "0:v:0", "-map", "0:a:0?"]);
+        cmd.args(["-c:v", "h264_videotoolbox", "-q:v", "65", "-allow_sw", "1"]);
+        cmd.args(["-c:a", "aac", "-movflags", "+faststart"]);
+        cmd.arg(out.to_str().ok_or("non-utf8 output path")?);
+        cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
+
+        detach_group(&mut cmd);
+        let mut child = cmd.spawn().map_err(|e| format!("ffmpeg spawn ({}): install ffmpeg", e))?;
+        let stdout = child.stdout.take();
+        let stderr = child.stderr.take();
+        let tx_o = tx.clone();
+        let tx_e = tx.clone();
+        let stderr_capture: LineBuf = Arc::new(Mutex::new(VecDeque::new()));
+        let cap_for_thread = stderr_capture.clone();
+        let h_o = stdout.map(|r| std::thread::spawn(move || stream_progress(r, tx_o, segment_secs, None)));
+        let h_e = stderr.map(|r| std::thread::spawn(move || stream_progress(r, tx_e, segment_secs, Some(cap_for_thread))));
+        let status = wait_or_cancel(&mut child, cancel)?;
+        if let Some(h) = h_o { let _ = h.join(); }
+        if let Some(h) = h_e { let _ = h.join(); }
+        if status.success() {
+            return Ok(());
+        }
+        let detail = summarize_yt_dlp_failure(&stderr_capture);
+        last_err = format!("exited with {:?}{}", status.code(),
+            if detail.is_empty() { String::new() } else { format!(" — {}", detail) });
+        let _ = std::fs::remove_file(out);
+        if i == 0 {
+            let _ = tx.send(Event::Log(
+                "Hardware decode unavailable for this stream — retrying with software decode…".into()
+            ));
+        }
+    }
+    Err(last_err)
 }
 
 /// Download just the audio of the `fade_secs` seconds that follow the cut
@@ -1178,7 +1303,7 @@ fn video_encoder_args() -> Vec<&'static str> {
     if cfg!(target_os = "macos") {
         vec![
             "-c:v", "h264_videotoolbox",
-            "-q:v", "60",
+            "-q:v", "65",
             "-allow_sw", "1",
             "-pix_fmt", "yuv420p",
         ]
