@@ -590,6 +590,17 @@ fn run_yt_dlp(
         "-o",
         out.to_str().ok_or("non-utf8 path")?,
     ]);
+    // `--force-keyframes-at-cuts` re-encodes the cut segment via yt-dlp's
+    // ffmpeg *downloader* (FFmpegFD) — not a postprocessor — so the slow
+    // libx264 software encode it defaults to can only be redirected with
+    // `--downloader-args ffmpeg_o:`. On macOS route it through Apple's
+    // hardware H.264 encoder so cutting a long 4K segment isn't CPU-bound
+    // (this is the "Encoding segment" step; the overlay/fade re-encodes are
+    // handled separately by `video_encoder_args`).
+    if cfg!(target_os = "macos") {
+        cmd.arg("--downloader-args")
+            .arg("ffmpeg_o:-c:v h264_videotoolbox -q:v 60 -allow_sw 1");
+    }
     if !settings.cookies_browser.is_empty() {
         cmd.arg("--cookies-from-browser").arg(&settings.cookies_browser);
     }

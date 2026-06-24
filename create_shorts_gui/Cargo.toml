@@ -1,6 +1,6 @@
 [package]
 name = "create_shorts_gui"
-version = "1.0.36"
+version = "1.0.37"
 edition = "2021"
 description = "Cross-platform GUI for extracting a YouTube segment and re-uploading it as a new video."
 license = "GPL-3.0-only"
