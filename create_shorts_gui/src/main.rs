@@ -14,6 +14,7 @@ mod installer;
 mod oauth;
 mod pdf;
 mod pipeline;
+mod shorts;
 mod settings;
 mod update;
 mod whatsapp;
@@ -74,8 +75,10 @@ fn run_export_pdf_cli(args: &[String]) -> ! {
         .filter(|s| !s.starts_with("--"))
         .map(std::path::PathBuf::from)
         .unwrap_or_else(|| pdf::default_output_path(PDF_SHORTS_COUNT));
-    let entries = history::load_all();
-    match pdf::export(&entries, PDF_SHORTS_COUNT, &out) {
+    let settings = Settings::load();
+    let (rows, note) = shorts::latest_rows(&settings, PDF_SHORTS_COUNT);
+    eprintln!("Source: {note}");
+    match pdf::export(&rows, &out) {
         Ok(n) => {
             println!("Wrote {} ({} short{})", out.display(), n, if n == 1 { "" } else { "s" });
             std::process::exit(0);
@@ -182,6 +185,8 @@ struct App {
     brew_rx: Option<Receiver<BrewEvent>>,
     ytdlp_updating: bool,
     ytdlp_update_rx: Option<Receiver<BrewEvent>>,
+    pdf_exporting: bool,
+    pdf_rx: Option<Receiver<Result<(std::path::PathBuf, usize, String), String>>>,
     update_rx: Option<Receiver<Option<update::UpdateInfo>>>,
     update_info: Option<update::UpdateInfo>,
     update_checking: bool,
@@ -439,6 +444,8 @@ impl App {
             brew_rx: None,
             ytdlp_updating: false,
             ytdlp_update_rx: None,
+            pdf_exporting: false,
+            pdf_rx: None,
             update_rx: Some(spawn_update_check()),
             update_info: None,
             update_checking: true,
@@ -845,26 +852,23 @@ impl App {
         }
     }
 
-    /// Generate the latest-shorts PDF (clickable links) and open it. PDF
-    /// generation is local and fast, so we do it synchronously and report
-    /// into the log pane; `open::that` reveals it in the system viewer.
-    fn export_shorts_pdf(&mut self) {
-        let entries = history::load_all();
-        let out = pdf::default_output_path(PDF_SHORTS_COUNT);
-        match pdf::export(&entries, PDF_SHORTS_COUNT, &out) {
-            Ok(n) => {
-                self.append_log(format!(
-                    "📄 Exported {} short{} to {}",
-                    n,
-                    if n == 1 { "" } else { "s" },
-                    out.display()
-                ));
-                if let Err(e) = open::that(&out) {
-                    self.append_log(format!("(couldn't open PDF automatically: {e})"));
-                }
-            }
-            Err(e) => self.append_log(format!("📄 PDF export failed: {e}")),
-        }
+    /// Export the latest-shorts PDF on a worker thread (the channel fetch is
+    /// a network call, so we mustn't block the UI). The result — path + count
+    /// + source note, or an error — comes back via `pdf_rx` and is handled in
+    /// `drain_events`, which opens the PDF.
+    fn start_pdf_export(&mut self) {
+        if self.pdf_exporting { return; }
+        self.pdf_exporting = true;
+        self.append_log("📄 Building PDF of the latest shorts (fetching @gozipa)…".into());
+        let settings = self.settings.clone();
+        let (tx, rx) = unbounded::<Result<(std::path::PathBuf, usize, String), String>>();
+        self.pdf_rx = Some(rx);
+        std::thread::spawn(move || {
+            let out = pdf::default_output_path(PDF_SHORTS_COUNT);
+            let (rows, note) = shorts::latest_rows(&settings, PDF_SHORTS_COUNT);
+            let result = pdf::export(&rows, &out).map(|n| (out, n, note));
+            let _ = tx.send(result);
+        });
     }
 
     fn start_job(&mut self) { self.kick_off(false); }
@@ -1164,6 +1168,28 @@ impl App {
             }
         }
 
+        if let Some(rx) = &self.pdf_rx {
+            if let Ok(result) = rx.try_recv() {
+                self.pdf_exporting = false;
+                self.pdf_rx = None;
+                match result {
+                    Ok((out, n, note)) => {
+                        self.append_log(format!(
+                            "📄 Exported {} short{} ({}) to {}",
+                            n,
+                            if n == 1 { "" } else { "s" },
+                            note,
+                            out.display()
+                        ));
+                        if let Err(e) = open::that(&out) {
+                            self.append_log(format!("(couldn't open PDF automatically: {e})"));
+                        }
+                    }
+                    Err(e) => self.append_log(format!("📄 PDF export failed: {e}")),
+                }
+            }
+        }
+
         if let Some(rx) = &self.install_rx {
             let mut done = false;
             while let Ok(ev) = rx.try_recv() {
@@ -1410,7 +1436,7 @@ impl eframe::App for App {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.drain_events();
         self.ensure_icon_texture(ctx);
-        if self.running || self.upload_running || self.signing_in || self.brew_installing || self.ytdlp_updating || self.update_checking || self.cookies_testing || self.installing || self.wa_sending || self.wa_setup_running || self.wa_login_running || self.davaz_posting {
+        if self.running || self.upload_running || self.signing_in || self.brew_installing || self.ytdlp_updating || self.update_checking || self.cookies_testing || self.installing || self.wa_sending || self.wa_setup_running || self.wa_login_running || self.davaz_posting || self.pdf_exporting {
             ctx.request_repaint_after(std::time::Duration::from_millis(150));
         }
 
@@ -1437,14 +1463,16 @@ impl eframe::App for App {
                         self.show_upload = true;
                     }
                     if ui
-                        .button("📄 PDF")
+                        .add_enabled(!self.pdf_exporting, egui::Button::new(
+                            if self.pdf_exporting { "📄 PDF…" } else { "📄 PDF" }
+                        ))
                         .on_hover_text(format!(
-                            "Export a PDF of the latest {} shorts (clickable links)",
+                            "Export a PDF of the latest {} shorts from @gozipa (clickable links)",
                             PDF_SHORTS_COUNT
                         ))
                         .clicked()
                     {
-                        self.export_shorts_pdf();
+                        self.start_pdf_export();
                     }
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         if let Some(tex) = &self.icon_texture {

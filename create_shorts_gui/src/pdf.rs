@@ -7,13 +7,21 @@
 //! Helvetica fonts (no font files to ship) and lay text out top-down in
 //! millimetres, converting to printpdf's bottom-left origin as we go.
 
-use crate::history::UploadEntry;
 use printpdf::{
     Actions, BorderArray, BuiltinFont, Color, ColorArray, HighlightingMode, LinkAnnotation, Mm,
     PdfDocument, Rect, Rgb,
 };
 use std::io::BufWriter;
 use std::path::{Path, PathBuf};
+
+/// One line item in the PDF: a title, a clickable URL, and a free-form
+/// metadata string (e.g. "0:45" from the channel, or "20:25–22:18 · public
+/// · 2026-06-29" from upload history).
+pub struct PdfRow {
+    pub title: String,
+    pub url: String,
+    pub meta: String,
+}
 
 const PAGE_W: f32 = 210.0; // A4 width  (mm)
 const PAGE_H: f32 = 297.0; // A4 height (mm)
@@ -34,13 +42,12 @@ pub fn default_output_path(n: usize) -> PathBuf {
     crate::settings::config_dir().join(name)
 }
 
-/// Render up to `max` newest entries to a PDF at `out`. Returns the number
-/// of shorts actually written. Entries with an empty URL are skipped.
-pub fn export(entries: &[UploadEntry], max: usize, out: &Path) -> Result<usize, String> {
-    let shorts: Vec<&UploadEntry> = entries
+/// Render the given rows to a PDF at `out`. Returns the number of rows
+/// written. Rows with an empty URL are skipped.
+pub fn export(rows: &[PdfRow], out: &Path) -> Result<usize, String> {
+    let shorts: Vec<&PdfRow> = rows
         .iter()
-        .filter(|e| !e.url.trim().is_empty())
-        .take(max)
+        .filter(|r| !r.url.trim().is_empty())
         .collect();
 
     let (doc, page1, layer1) =
@@ -78,14 +85,14 @@ pub fn export(entries: &[UploadEntry], max: usize, out: &Path) -> Result<usize, 
         approx_width_mm(name, title_size),
         title_size,
     );
-    y += 10.0;
+    y += 9.0;
     let subtitle = format!(
         "{} short{} \u{2014} create_shorts",
         shorts.len(),
         if shorts.len() == 1 { "" } else { "s" }
     );
     layer.use_text(&subtitle, 10.0, Mm(MARGIN), at(y + 4.0), &font);
-    y += 10.0;
+    y += 7.0;
     // divider
     layer.use_text(
         "\u{2014}".repeat(60),
@@ -94,11 +101,11 @@ pub fn export(entries: &[UploadEntry], max: usize, out: &Path) -> Result<usize, 
         at(y),
         &font,
     );
-    y += 6.0;
+    y += 5.0;
 
     if shorts.is_empty() {
         layer.use_text(
-            "No shorts found in upload history yet.",
+            "No shorts found.",
             12.0,
             Mm(MARGIN),
             at(y + 6.0),
@@ -109,7 +116,7 @@ pub fn export(entries: &[UploadEntry], max: usize, out: &Path) -> Result<usize, 
     // ---- one block per short ----
     for (i, e) in shorts.iter().enumerate() {
         // crude page-overflow guard: stop before running off the bottom.
-        if y > PAGE_H - MARGIN - 24.0 {
+        if y > PAGE_H - MARGIN - 20.0 {
             layer.use_text(
                 format!("\u{2026} and {} more", shorts.len() - i),
                 10.0,
@@ -127,7 +134,7 @@ pub fn export(entries: &[UploadEntry], max: usize, out: &Path) -> Result<usize, 
         };
         let line1 = format!("{}. {}", i + 1, title);
         layer.use_text(&line1, 13.0, Mm(MARGIN), at(y + 5.0), &font_bold);
-        y += 8.0;
+        y += 7.5;
 
         // clickable URL line — draw the text in link-blue, then reset to
         // black so the metadata/title that follow stay black.
@@ -138,30 +145,15 @@ pub fn export(entries: &[UploadEntry], max: usize, out: &Path) -> Result<usize, 
         layer.use_text(url, link_size, Mm(link_x), at(y + 4.0), &font);
         layer.set_fill_color(Color::Rgb(Rgb::new(0.0, 0.0, 0.0, None)));
         add_link_box(&layer, url, link_x, y + 4.0, approx_width_mm(url, link_size), link_size);
-        y += 6.5;
+        y += 6.0;
 
-        // metadata line (range / privacy / date) — plain text
-        let mut meta: Vec<String> = Vec::new();
-        if !e.start.trim().is_empty() || !e.end.trim().is_empty() {
-            meta.push(format!("{}\u{2013}{}", e.start.trim(), e.end.trim()));
-        }
-        if !e.privacy.trim().is_empty() {
-            meta.push(e.privacy.trim().to_string());
-        }
-        if !e.timestamp.trim().is_empty() {
-            meta.push(e.timestamp.trim().to_string());
-        }
+        // metadata line — plain text, free-form (set by the caller).
+        let meta = e.meta.trim();
         if !meta.is_empty() {
-            layer.use_text(
-                meta.join("   \u{00b7}   "),
-                9.0,
-                Mm(link_x),
-                at(y + 3.5),
-                &font,
-            );
-            y += 6.0;
+            layer.use_text(meta, 9.0, Mm(link_x), at(y + 3.5), &font);
+            y += 5.5;
         }
-        y += 4.0; // gap between blocks
+        y += 3.0; // gap between blocks
     }
 
     let file = std::fs::File::create(out).map_err(|e| format!("create {}: {e}", out.display()))?;
