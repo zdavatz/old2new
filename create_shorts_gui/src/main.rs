@@ -12,6 +12,7 @@ mod deps;
 mod history;
 mod installer;
 mod oauth;
+mod pdf;
 mod pipeline;
 mod settings;
 mod update;
@@ -61,7 +62,36 @@ fn ensure_homebrew_on_path() {
     }
 }
 
+/// Number of most-recent shorts the PDF export includes.
+const PDF_SHORTS_COUNT: usize = 10;
+
+/// Headless `--export-pdf [path]`: write the latest-shorts PDF and exit.
+/// Lets the same binary serve the GUI and a scriptable CLI.
+fn run_export_pdf_cli(args: &[String]) -> ! {
+    let pos = args.iter().position(|a| a == "--export-pdf").unwrap();
+    let out = args
+        .get(pos + 1)
+        .filter(|s| !s.starts_with("--"))
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| pdf::default_output_path(PDF_SHORTS_COUNT));
+    let entries = history::load_all();
+    match pdf::export(&entries, PDF_SHORTS_COUNT, &out) {
+        Ok(n) => {
+            println!("Wrote {} ({} short{})", out.display(), n, if n == 1 { "" } else { "s" });
+            std::process::exit(0);
+        }
+        Err(e) => {
+            eprintln!("export-pdf failed: {e}");
+            std::process::exit(1);
+        }
+    }
+}
+
 fn main() -> eframe::Result<()> {
+    let args: Vec<String> = std::env::args().collect();
+    if args.iter().any(|a| a == "--export-pdf") {
+        run_export_pdf_cli(&args);
+    }
     ensure_homebrew_on_path();
     let mut viewport = egui::ViewportBuilder::default()
         .with_title(format!("create_shorts v{}", APP_VERSION))
@@ -815,6 +845,28 @@ impl App {
         }
     }
 
+    /// Generate the latest-shorts PDF (clickable links) and open it. PDF
+    /// generation is local and fast, so we do it synchronously and report
+    /// into the log pane; `open::that` reveals it in the system viewer.
+    fn export_shorts_pdf(&mut self) {
+        let entries = history::load_all();
+        let out = pdf::default_output_path(PDF_SHORTS_COUNT);
+        match pdf::export(&entries, PDF_SHORTS_COUNT, &out) {
+            Ok(n) => {
+                self.append_log(format!(
+                    "📄 Exported {} short{} to {}",
+                    n,
+                    if n == 1 { "" } else { "s" },
+                    out.display()
+                ));
+                if let Err(e) = open::that(&out) {
+                    self.append_log(format!("(couldn't open PDF automatically: {e})"));
+                }
+            }
+            Err(e) => self.append_log(format!("📄 PDF export failed: {e}")),
+        }
+    }
+
     fn start_job(&mut self) { self.kick_off(false); }
     fn start_preview(&mut self) { self.kick_off(true); }
 
@@ -1383,6 +1435,16 @@ impl eframe::App for App {
                         .clicked()
                     {
                         self.show_upload = true;
+                    }
+                    if ui
+                        .button("📄 PDF")
+                        .on_hover_text(format!(
+                            "Export a PDF of the latest {} shorts (clickable links)",
+                            PDF_SHORTS_COUNT
+                        ))
+                        .clicked()
+                    {
+                        self.export_shorts_pdf();
                     }
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         if let Some(tex) = &self.icon_texture {
