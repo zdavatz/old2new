@@ -44,7 +44,7 @@ pub fn export(entries: &[UploadEntry], max: usize, out: &Path) -> Result<usize, 
         .collect();
 
     let (doc, page1, layer1) =
-        PdfDocument::new("Latest Shorts", Mm(PAGE_W), Mm(PAGE_H), "Layer 1");
+        PdfDocument::new("Latest Shorts by J\u{00fc}rg Da Vaz", Mm(PAGE_W), Mm(PAGE_H), "Layer 1");
     let font = doc
         .add_builtin_font(BuiltinFont::Helvetica)
         .map_err(|e| format!("font: {e}"))?;
@@ -59,7 +59,25 @@ pub fn export(entries: &[UploadEntry], max: usize, out: &Path) -> Result<usize, 
     let mut y = MARGIN;
 
     // ---- header ----
-    layer.use_text("Latest Shorts", 22.0, Mm(MARGIN), at(y + 7.0), &font_bold);
+    // Title: "Latest Shorts by Jürg Da Vaz" with the name in blue and
+    // linked to davaz.com.
+    let title_size = 22.0;
+    let title_baseline = y + 7.0;
+    let prefix = "Latest Shorts by ";
+    let name = "J\u{00fc}rg Da Vaz";
+    layer.use_text(prefix, title_size, Mm(MARGIN), at(title_baseline), &font_bold);
+    let name_x = MARGIN + approx_width_mm(prefix, title_size);
+    layer.set_fill_color(Color::Rgb(Rgb::new(0.0, 0.0, 0.8, None)));
+    layer.use_text(name, title_size, Mm(name_x), at(title_baseline), &font_bold);
+    layer.set_fill_color(Color::Rgb(Rgb::new(0.0, 0.0, 0.0, None)));
+    add_link_box(
+        &layer,
+        "https://davaz.com",
+        name_x,
+        title_baseline,
+        approx_width_mm(name, title_size),
+        title_size,
+    );
     y += 10.0;
     let subtitle = format!(
         "{} short{} \u{2014} create_shorts",
@@ -119,7 +137,7 @@ pub fn export(entries: &[UploadEntry], max: usize, out: &Path) -> Result<usize, 
         layer.set_fill_color(Color::Rgb(Rgb::new(0.0, 0.0, 0.8, None)));
         layer.use_text(url, link_size, Mm(link_x), at(y + 4.0), &font);
         layer.set_fill_color(Color::Rgb(Rgb::new(0.0, 0.0, 0.0, None)));
-        add_link(&layer, url, link_x, y, url.len(), link_size);
+        add_link_box(&layer, url, link_x, y + 4.0, approx_width_mm(url, link_size), link_size);
         y += 6.5;
 
         // metadata line (range / privacy / date) — plain text
@@ -152,16 +170,27 @@ pub fn export(entries: &[UploadEntry], max: usize, out: &Path) -> Result<usize, 
     Ok(shorts.len())
 }
 
-/// Place an invisible-border URI link annotation over the text drawn at
-/// (`x`, top-down `y`) so clicking the URL opens it. Width is estimated
-/// from Helvetica's ~0.5em average advance — close enough for a click box.
-fn add_link(layer: &printpdf::PdfLayerReference, url: &str, x: f32, y_top: f32, n_chars: usize, size_pt: f32) {
-    let w = n_chars as f32 * size_pt * 0.5 * PT_MM;
-    let h = size_pt * PT_MM * 1.2;
-    // text baseline was drawn at at(y_top + 4.0); box spans a bit below/above.
-    let ll_y = PAGE_H - (y_top + 5.0);
-    let ur_y = ll_y + h;
-    let rect = Rect::new(Mm(x), Mm(ll_y), Mm(x + w), Mm(ur_y));
+/// Rough text width in mm from Helvetica's ~0.5em average advance — close
+/// enough to size a click box / place a following run on the same line.
+fn approx_width_mm(text: &str, size_pt: f32) -> f32 {
+    text.chars().count() as f32 * size_pt * 0.5 * PT_MM
+}
+
+/// Place an invisible-border URI link annotation of `width_mm` over text
+/// whose baseline sits at top-down `baseline_top` mm. The box brackets the
+/// baseline (a little below for descenders, most of the cap-height above).
+fn add_link_box(
+    layer: &printpdf::PdfLayerReference,
+    url: &str,
+    x: f32,
+    baseline_top: f32,
+    width_mm: f32,
+    size_pt: f32,
+) {
+    let baseline_y = PAGE_H - baseline_top;
+    let ll_y = baseline_y - size_pt * PT_MM * 0.25;
+    let ur_y = baseline_y + size_pt * PT_MM * 0.85;
+    let rect = Rect::new(Mm(x), Mm(ll_y), Mm(x + width_mm), Mm(ur_y));
     // Zero-width border + transparent color = no visible box, just a
     // clickable region over the blue URL text.
     let annot = LinkAnnotation::new(
