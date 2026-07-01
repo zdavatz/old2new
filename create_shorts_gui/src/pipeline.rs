@@ -144,6 +144,13 @@ pub struct Job {
     pub fade_secs: u32,
     pub fade_in: bool,
     pub fade_in_secs: u32,
+    /// Remove a middle section from the extracted segment. `cut_from` /
+    /// `cut_till` are timestamps in the same style as `start`/`end`
+    /// (absolute in the source video); the part between them is deleted and
+    /// the surrounding parts are concatenated.
+    pub cut_middle: bool,
+    pub cut_from: String,
+    pub cut_till: String,
 }
 
 pub struct UploadJob {
@@ -347,14 +354,81 @@ pub fn run(job: Job, settings: Settings, tx: Sender<Event>, cancel: Arc<AtomicBo
         return;
     }
 
+    // Optional: remove a middle section [cut_from, cut_till] from the
+    // segment and concatenate the surrounding parts into one clip. The cut
+    // timestamps are absolute in the source (same style as start/end), so we
+    // convert them to offsets from `start`. Applied first — before stretch,
+    // title, and fades — so every later stage operates on the joined clip and
+    // its (shorter) duration. Cached as `<video_id>_<stamp>_cut_<from>_<till>.mp4`.
+    let (clip, segment_secs) = if job.cut_middle {
+        let start_secs = parse_timestamp(&job.start).unwrap_or(0.0);
+        let from_abs = match parse_timestamp(&job.cut_from) {
+            Some(v) => v,
+            None => {
+                report_fail(&tx, &cancel, format!("cut-out: can't parse from-timestamp {:?}", job.cut_from));
+                return;
+            }
+        };
+        let till_abs = match parse_timestamp(&job.cut_till) {
+            Some(v) => v,
+            None => {
+                report_fail(&tx, &cancel, format!("cut-out: can't parse till-timestamp {:?}", job.cut_till));
+                return;
+            }
+        };
+        let rel_from = from_abs - start_secs;
+        let rel_till = till_abs - start_secs;
+        let dur = probe_duration(&out).unwrap_or(segment_secs);
+        if !(rel_from > 0.0 && rel_till > rel_from && rel_till < dur) {
+            report_fail(&tx, &cancel, format!(
+                "cut-out range {}–{} must lie strictly inside the segment {}–{} (got offsets {:.1}s–{:.1}s within a {:.1}s clip)",
+                job.cut_from, job.cut_till, job.start, job.end, rel_from, rel_till, dur
+            ));
+            return;
+        }
+        let cut_path = cache_dir.join(format!(
+            "{}_{}_cut_{}_{}.mp4",
+            video_id,
+            stamp,
+            job.cut_from.replace(':', "_"),
+            job.cut_till.replace(':', "_"),
+        ));
+        let new_secs = dur - (rel_till - rel_from);
+        if cut_path.exists() {
+            let _ = tx.send(Event::Log(format!("Reusing cached cut segment {}", cut_path.display())));
+        } else {
+            let _ = tx.send(Event::Log(format!(
+                "Cutting out {}–{} ({:.1}s removed) — joining the {:.1}s that remain…",
+                job.cut_from, job.cut_till, rel_till - rel_from, new_secs
+            )));
+            if let Err(e) = apply_cut_middle(&out, &cut_path, rel_from, rel_till, &tx, new_secs, &cancel) {
+                let _ = std::fs::remove_file(&cut_path);
+                report_fail(&tx, &cancel, format!("cut-out: {}", e));
+                return;
+            }
+        }
+        (cut_path, new_secs)
+    } else {
+        (out.clone(), segment_secs)
+    };
+
+    // Tag derived caches (stretch, titled) with the cut range so toggling the
+    // cut on/off — or changing its bounds — re-encodes instead of serving a
+    // stale clip built from the un-cut segment.
+    let cut_tag = if job.cut_middle {
+        format!("_cut{}_{}", job.cut_from.replace(':', "_"), job.cut_till.replace(':', "_"))
+    } else {
+        String::new()
+    };
+
     // Optional: time-stretch (slow down) the core clip so it lasts
-    // `stretch_secs` seconds longer. Applied to the raw segment *before*
-    // the title overlay and fades, so those keep their own independent
-    // durations — only the movie content is stretched. Cached as
-    // `<video_id>_<stamp>_stretch<secs>.mp4`.
+    // `stretch_secs` seconds longer. Applied to the (post-cut) segment
+    // *before* the title overlay and fades, so those keep their own
+    // independent durations — only the movie content is stretched. Cached as
+    // `<video_id>_<stamp><cut_tag>_stretch<secs>.mp4`.
     let stretch_secs = job.stretch_secs.max(1);
     let base = if job.stretch {
-        let stretch_path = cache_dir.join(format!("{}_{}_stretch{}.mp4", video_id, stamp, stretch_secs));
+        let stretch_path = cache_dir.join(format!("{}_{}{}_stretch{}.mp4", video_id, stamp, cut_tag, stretch_secs));
         if stretch_path.exists() {
             let _ = tx.send(Event::Log(format!(
                 "Reusing cached stretched segment {}",
@@ -362,7 +436,7 @@ pub fn run(job: Job, settings: Settings, tx: Sender<Event>, cancel: Arc<AtomicBo
             )));
         } else {
             let _ = tx.send(Event::Log(format!("Stretching clip by {}s…", stretch_secs)));
-            if let Err(e) = apply_stretch(&out, &stretch_path, &tx, segment_secs, stretch_secs, &cancel) {
+            if let Err(e) = apply_stretch(&clip, &stretch_path, &tx, segment_secs, stretch_secs, &cancel) {
                 let _ = std::fs::remove_file(&stretch_path);
                 report_fail(&tx, &cancel, format!("stretch: {}", e));
                 return;
@@ -370,16 +444,20 @@ pub fn run(job: Job, settings: Settings, tx: Sender<Event>, cancel: Arc<AtomicBo
         }
         stretch_path
     } else {
-        out.clone()
+        clip.clone()
     };
 
     // The core clip's duration after the optional stretch — used to drive
     // the progress bars of the downstream (title/fade) re-encodes.
     let core_secs = if job.stretch { segment_secs + stretch_secs as f64 } else { segment_secs };
 
-    // Tag the titled cache filename with the stretch so toggling stretch
-    // on/off doesn't serve a stale titled clip.
-    let stretch_tag = if job.stretch { format!("_stretch{}", stretch_secs) } else { String::new() };
+    // Tag the titled cache filename with the cut and stretch so toggling
+    // either on/off doesn't serve a stale titled clip.
+    let stretch_tag = format!(
+        "{}{}",
+        cut_tag,
+        if job.stretch { format!("_stretch{}", stretch_secs) } else { String::new() }
+    );
 
     // Optional: burn the title into the bottom-left of the frame for
     // 3 seconds starting 1 second in. Output is cached separately per
@@ -580,7 +658,7 @@ pub fn run(job: Job, settings: Settings, tx: Sender<Event>, cancel: Arc<AtomicBo
     // (fade-out, fade-in, titled overlay, raw segment) so the cache dir
     // doesn't accumulate. Removing the same path twice is a harmless
     // ignored error.
-    for f in [&delivered, &after_fade_in, &final_out, &base, &out] {
+    for f in [&delivered, &after_fade_in, &final_out, &base, &clip, &out] {
         let _ = std::fs::remove_file(f);
     }
 
@@ -1310,6 +1388,82 @@ fn video_encoder_args() -> Vec<&'static str> {
     } else {
         vec!["-c:v", "libx264", "-preset", "veryfast", "-crf", "20"]
     }
+}
+
+/// Remove the section [`rel_from`, `rel_till`] (seconds, relative to the
+/// start of `input`) and concatenate the parts before and after into
+/// `output`. Uses ffmpeg's trim/concat filter graph — arbitrary cut points
+/// rarely land on keyframes, so this re-encodes (hardware H.264 on macOS,
+/// libx264 elsewhere). `progress_secs` is the expected *output* duration,
+/// used only to drive the progress bar.
+fn apply_cut_middle(
+    input: &std::path::Path,
+    output: &std::path::Path,
+    rel_from: f64,
+    rel_till: f64,
+    tx: &Sender<Event>,
+    progress_secs: f64,
+    cancel: &Arc<AtomicBool>,
+) -> Result<(), String> {
+    let _ = tx.send(Event::Progress {
+        phase: "Cutting out section".into(),
+        fraction: 0.0,
+        detail: String::new(),
+    });
+
+    // Keep [0, from) and [till, end), then concatenate. asetpts/setpts reset
+    // each part's timestamps to 0 so concat joins them seamlessly.
+    let filter = format!(
+        "[0:v]trim=0:{from},setpts=PTS-STARTPTS[v0];\
+         [0:v]trim=start={till},setpts=PTS-STARTPTS[v1];\
+         [0:a]atrim=0:{from},asetpts=PTS-STARTPTS[a0];\
+         [0:a]atrim=start={till},asetpts=PTS-STARTPTS[a1];\
+         [v0][a0][v1][a1]concat=n=2:v=1:a=1[v][a]",
+        from = rel_from,
+        till = rel_till,
+    );
+
+    let mut cmd = Command::new("ffmpeg");
+    cmd.args([
+        "-y",
+        "-i",
+        input.to_str().ok_or("non-utf8 input path")?,
+        "-filter_complex",
+        &filter,
+        "-map",
+        "[v]",
+        "-map",
+        "[a]",
+    ]);
+    cmd.args(video_encoder_args());
+    cmd.args([
+        "-c:a",
+        "aac",
+        "-movflags",
+        "+faststart",
+        output.to_str().ok_or("non-utf8 output path")?,
+    ]);
+    cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
+
+    detach_group(&mut cmd);
+    let mut child = cmd.spawn().map_err(|e| format!("ffmpeg spawn ({}): install ffmpeg", e))?;
+    let stdout = child.stdout.take();
+    let stderr = child.stderr.take();
+    let tx_o = tx.clone();
+    let tx_e = tx.clone();
+    let stderr_capture: LineBuf = Arc::new(Mutex::new(VecDeque::new()));
+    let cap_for_thread = stderr_capture.clone();
+    let h_o = stdout.map(|r| std::thread::spawn(move || stream_progress(r, tx_o, progress_secs, None)));
+    let h_e = stderr.map(|r| std::thread::spawn(move || stream_progress(r, tx_e, progress_secs, Some(cap_for_thread))));
+    let status = wait_or_cancel(&mut child, cancel)?;
+    if let Some(h) = h_o { let _ = h.join(); }
+    if let Some(h) = h_e { let _ = h.join(); }
+    if !status.success() {
+        let detail = summarize_yt_dlp_failure(&stderr_capture);
+        let suffix = if detail.is_empty() { String::new() } else { format!(" — {}", detail) };
+        return Err(format!("ffmpeg cut exited with {:?}{}", status.code(), suffix));
+    }
+    Ok(())
 }
 
 fn apply_title_overlay(

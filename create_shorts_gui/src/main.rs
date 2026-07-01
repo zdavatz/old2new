@@ -131,6 +131,13 @@ struct FormState {
     #[serde(default = "default_fade_secs")] fade_secs: u32,
     #[serde(default)] fade_in: bool,
     #[serde(default = "default_fade_secs")] fade_in_secs: u32,
+    // Remove a middle section from the extracted segment: everything
+    // between `cut_from` and `cut_till` (same timestamp style as start/end,
+    // absolute in the source video) is deleted and the parts before and
+    // after are joined into one clip.
+    #[serde(default)] cut_middle: bool,
+    #[serde(default)] cut_from: String,
+    #[serde(default)] cut_till: String,
 }
 
 fn default_overlay_color() -> [u8; 3] { [255, 255, 255] }
@@ -157,6 +164,9 @@ impl Default for FormState {
             fade_secs: default_fade_secs(),
             fade_in: false,
             fade_in_secs: default_fade_secs(),
+            cut_middle: false,
+            cut_from: String::new(),
+            cut_till: String::new(),
         }
     }
 }
@@ -945,6 +955,12 @@ impl App {
             self.last_error = Some("Start and end timestamps are required".into());
             return;
         }
+        if self.form.cut_middle
+            && (self.form.cut_from.trim().is_empty() || self.form.cut_till.trim().is_empty())
+        {
+            self.last_error = Some("Cut-out from/till timestamps are required when \"Cut out\" is on".into());
+            return;
+        }
         // Title is only required when actually uploading.
         if !preview_only && self.form.title.trim().is_empty() {
             self.last_error = Some("Title is required".into());
@@ -983,6 +999,9 @@ impl App {
             fade_secs: self.form.fade_secs,
             fade_in: self.form.fade_in,
             fade_in_secs: self.form.fade_in_secs,
+            cut_middle: self.form.cut_middle,
+            cut_from: self.form.cut_from.trim().to_string(),
+            cut_till: self.form.cut_till.trim().to_string(),
         };
         let settings = self.settings.clone();
         std::thread::spawn(move || pipeline::run(job, settings, tx, cancel));
@@ -1709,6 +1728,31 @@ impl eframe::App for App {
                         {
                             self.form.overlay_pos = default_overlay_pos();
                         }
+                    });
+                    ui.end_row();
+
+                    ui.label("Cut out:");
+                    ui.horizontal(|ui| {
+                        ui.checkbox(
+                            &mut self.form.cut_middle,
+                            "Remove a middle section",
+                        ).on_hover_text(
+                            "Deletes everything between the two timestamps below (same style as start/end, e.g. 1:15 or 12:44) and joins the parts before and after into one clip. Applies to both Preview and Upload.",
+                        );
+                        ui.add_enabled_ui(self.form.cut_middle, |ui| {
+                            ui.label("from");
+                            ui.add(
+                                egui::TextEdit::singleline(&mut self.form.cut_from)
+                                    .desired_width(70.0)
+                                    .hint_text("mm:ss"),
+                            ).on_hover_text("Start of the section to remove (absolute in the source, e.g. 1:15).");
+                            ui.label("till");
+                            ui.add(
+                                egui::TextEdit::singleline(&mut self.form.cut_till)
+                                    .desired_width(70.0)
+                                    .hint_text("mm:ss"),
+                            ).on_hover_text("End of the section to remove (absolute in the source, e.g. 1:40).");
+                        });
                     });
                     ui.end_row();
 
