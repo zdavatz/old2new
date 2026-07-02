@@ -17,7 +17,7 @@ use std::path::{Path, PathBuf};
 /// One line item in the PDF: a title, a clickable URL, and a free-form
 /// metadata string (e.g. "0:45" from the channel, or "20:25–22:18 · public
 /// · 2026-06-29" from upload history).
-#[derive(Clone)]
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub struct PdfRow {
     pub title: String,
     pub url: String,

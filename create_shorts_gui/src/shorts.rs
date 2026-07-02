@@ -11,6 +11,28 @@ use std::process::Command;
 /// The channel whose newest uploads are "the latest shorts created".
 pub const SHORTS_CHANNEL: &str = "https://www.youtube.com/@gozipa/videos";
 
+/// Where the fetched shorts list is cached so the preview modal can show
+/// something instantly while a fresh fetch runs in the background.
+fn cache_path() -> std::path::PathBuf {
+    crate::settings::config_dir().join("shorts_cache.json")
+}
+
+/// Load the previously-cached shorts list (newest-first), if any. Returns an
+/// empty vec on a missing/corrupt cache.
+pub fn load_cache() -> Vec<PdfRow> {
+    match std::fs::read_to_string(cache_path()) {
+        Ok(s) => serde_json::from_str(&s).unwrap_or_default(),
+        Err(_) => Vec::new(),
+    }
+}
+
+/// Persist the fetched shorts list for instant display next time.
+pub fn save_cache(rows: &[PdfRow]) {
+    if let Ok(s) = serde_json::to_string(rows) {
+        let _ = std::fs::write(cache_path(), s);
+    }
+}
+
 /// Build the rows for the PDF: the `n` newest channel uploads, or — if the
 /// channel can't be reached — the `n` newest history entries. Returns the
 /// rows plus a short human note about which source was used.
@@ -23,6 +45,44 @@ pub fn latest_rows(settings: &Settings, n: usize) -> (Vec<PdfRow>, String) {
 /// entry. Used by the preview modal so the user can pick which shorts go in.
 pub fn all_rows(settings: &Settings) -> (Vec<PdfRow>, String) {
     rows_from(settings, None)
+}
+
+/// Number of newest videos re-fetched on an incremental refresh — enough to
+/// catch anything uploaded since the last open without paginating the whole
+/// channel. `--playlist-end` makes yt-dlp stop after this many, so it's fast.
+const REFRESH_HEAD: usize = 25;
+
+/// Incremental refresh for the preview modal. With a non-empty `cached` list
+/// we fetch only the newest `REFRESH_HEAD` videos and merge any that aren't
+/// already cached to the front — much faster than re-scanning the whole
+/// channel. With no cache we do the one-time full fetch. If the quick head
+/// fetch fails we keep showing the cache unchanged.
+pub fn refresh(settings: &Settings, cached: &[PdfRow]) -> (Vec<PdfRow>, String) {
+    if cached.is_empty() {
+        return all_rows(settings);
+    }
+    match fetch_channel_latest(settings, Some(REFRESH_HEAD)) {
+        Ok(head) if !head.is_empty() => {
+            let head_urls: std::collections::HashSet<String> =
+                head.iter().map(|r| r.url.trim().to_string()).collect();
+            // Freshly-fetched newest first (also picks up edited titles), then
+            // the older cached entries that weren't in the head fetch.
+            let mut merged = head;
+            for c in cached {
+                if !head_urls.contains(c.url.trim()) {
+                    merged.push(c.clone());
+                }
+            }
+            let new_count = merged.len().saturating_sub(cached.len());
+            let note = if new_count > 0 {
+                format!("{} from @gozipa (+{} new)", merged.len(), new_count)
+            } else {
+                format!("{} from @gozipa", merged.len())
+            };
+            (merged, note)
+        }
+        _ => (cached.to_vec(), format!("{} cached (channel unreachable)", cached.len())),
+    }
 }
 
 /// Shared implementation: `limit = Some(n)` for the newest n, `None` for all.

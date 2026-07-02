@@ -894,13 +894,32 @@ impl App {
     /// Handled in `drain_events`.
     fn start_pdf_fetch(&mut self) {
         if self.pdf_fetching || self.pdf_exporting { return; }
+        // Open the modal immediately so the window feels instant. If we have a
+        // cached list, show it right away (newest 10 pre-selected) while an
+        // incremental refresh (only the newest few) runs in the background.
+        let cached = shorts::load_cache();
+        if !cached.is_empty() {
+            self.pdf_preview_selected =
+                (0..cached.len()).map(|i| i < PDF_SHORTS_COUNT).collect();
+            self.pdf_preview_rows = cached.clone();
+            self.pdf_preview_note = "cached — checking for new…".into();
+        } else {
+            self.pdf_preview_rows.clear();
+            self.pdf_preview_selected.clear();
+            self.pdf_preview_note = "loading…".into();
+        }
+        self.pdf_preview_open = true;
         self.pdf_fetching = true;
-        self.append_log("📄 Fetching the full shorts history (@gozipa) for preview…".into());
+        self.append_log(if cached.is_empty() {
+            "📄 Fetching the full shorts history (@gozipa) — first time, this scans the channel…".into()
+        } else {
+            "📄 Checking @gozipa for new shorts…".to_string()
+        });
         let settings = self.settings.clone();
         let (tx, rx) = unbounded::<Result<(Vec<pdf::PdfRow>, String), String>>();
         self.pdf_fetch_rx = Some(rx);
         std::thread::spawn(move || {
-            let (rows, note) = shorts::all_rows(&settings);
+            let (rows, note) = shorts::refresh(&settings, &cached);
             let _ = tx.send(Ok((rows, note)));
         });
     }
@@ -1268,17 +1287,34 @@ impl App {
                     Ok((rows, note)) => {
                         if rows.is_empty() {
                             self.append_log("📄 No shorts found to preview.".into());
+                            if self.pdf_preview_rows.is_empty() {
+                                self.pdf_preview_open = false;
+                            }
                         } else {
                             self.append_log(format!(
-                                "📄 Loaded {} short(s) ({}) — the newest {} are selected; tick/untick before creating the PDF.",
+                                "📄 Loaded {} short(s) ({}).",
                                 rows.len(),
-                                note,
-                                PDF_SHORTS_COUNT.min(rows.len())
+                                note
                             ));
-                            // Auto-select the newest PDF_SHORTS_COUNT (rows come
+                            shorts::save_cache(&rows);
+                            // Preserve any ticks the user already made (match by
+                            // URL); for a first load with nothing yet selected,
+                            // auto-select the newest PDF_SHORTS_COUNT (rows come
                             // newest-first from the channel/history).
-                            self.pdf_preview_selected =
-                                (0..rows.len()).map(|i| i < PDF_SHORTS_COUNT).collect();
+                            let prev_selected: std::collections::HashSet<String> = self
+                                .pdf_preview_rows
+                                .iter()
+                                .zip(self.pdf_preview_selected.iter())
+                                .filter(|(_, s)| **s)
+                                .map(|(r, _)| r.url.trim().to_string())
+                                .collect();
+                            self.pdf_preview_selected = if prev_selected.is_empty() {
+                                (0..rows.len()).map(|i| i < PDF_SHORTS_COUNT).collect()
+                            } else {
+                                rows.iter()
+                                    .map(|r| prev_selected.contains(r.url.trim()))
+                                    .collect()
+                            };
                             self.pdf_preview_rows = rows;
                             self.pdf_preview_note = note;
                             self.pdf_preview_open = true;
@@ -2213,7 +2249,14 @@ impl App {
                 if total == 0 {
                     ui.add_space(20.0);
                     ui.vertical_centered(|ui| {
-                        ui.label(RichText::new("No shorts found.").weak());
+                        if self.pdf_fetching {
+                            ui.horizontal(|ui| {
+                                ui.spinner();
+                                ui.label("Loading shorts from @gozipa…");
+                            });
+                        } else {
+                            ui.label(RichText::new("No shorts found.").weak());
+                        }
                     });
                 } else {
                     // Shrink vertically to the content so the buttons sit right
