@@ -144,13 +144,12 @@ pub struct Job {
     pub fade_secs: u32,
     pub fade_in: bool,
     pub fade_in_secs: u32,
-    /// Remove a middle section from the extracted segment. `cut_from` /
-    /// `cut_till` are timestamps in the same style as `start`/`end`
-    /// (absolute in the source video); the part between them is deleted and
-    /// the surrounding parts are concatenated.
+    /// Remove one or more middle sections from the extracted segment. Each
+    /// `(from, till)` is a timestamp pair in the same style as `start`/`end`
+    /// (absolute in the source video); those parts are deleted and everything
+    /// remaining is concatenated into one clip.
     pub cut_middle: bool,
-    pub cut_from: String,
-    pub cut_till: String,
+    pub cuts: Vec<(String, String)>,
 }
 
 pub struct UploadJob {
@@ -354,54 +353,65 @@ pub fn run(job: Job, settings: Settings, tx: Sender<Event>, cancel: Arc<AtomicBo
         return;
     }
 
-    // Optional: remove a middle section [cut_from, cut_till] from the
-    // segment and concatenate the surrounding parts into one clip. The cut
-    // timestamps are absolute in the source (same style as start/end), so we
-    // convert them to offsets from `start`. Applied first — before stretch,
-    // title, and fades — so every later stage operates on the joined clip and
-    // its (shorter) duration. Cached as `<video_id>_<stamp>_cut_<from>_<till>.mp4`.
-    let (clip, segment_secs) = if job.cut_middle {
+    // Optional: remove one or more middle sections from the segment and
+    // concatenate everything that remains into one clip. Each cut's timestamps
+    // are absolute in the source (same style as start/end), so we convert them
+    // to offsets from `start`. Applied first — before stretch, title, and
+    // fades — so every later stage operates on the joined clip and its
+    // (shorter) duration. Cached as `<video_id>_<stamp>_cut<tag>.mp4`.
+    let has_cuts = job.cut_middle && !job.cuts.is_empty();
+    let (clip, segment_secs) = if has_cuts {
         let start_secs = parse_timestamp(&job.start).unwrap_or(0.0);
-        let from_abs = match parse_timestamp(&job.cut_from) {
-            Some(v) => v,
-            None => {
-                report_fail(&tx, &cancel, format!("cut-out: can't parse from-timestamp {:?}", job.cut_from));
-                return;
-            }
-        };
-        let till_abs = match parse_timestamp(&job.cut_till) {
-            Some(v) => v,
-            None => {
-                report_fail(&tx, &cancel, format!("cut-out: can't parse till-timestamp {:?}", job.cut_till));
-                return;
-            }
-        };
-        let rel_from = from_abs - start_secs;
-        let rel_till = till_abs - start_secs;
         let dur = probe_duration(&out).unwrap_or(segment_secs);
-        if !(rel_from > 0.0 && rel_till > rel_from && rel_till < dur) {
-            report_fail(&tx, &cancel, format!(
-                "cut-out range {}–{} must lie strictly inside the segment {}–{} (got offsets {:.1}s–{:.1}s within a {:.1}s clip)",
-                job.cut_from, job.cut_till, job.start, job.end, rel_from, rel_till, dur
-            ));
-            return;
+        // Parse + convert every cut to an offset range within the segment.
+        let mut ranges: Vec<(f64, f64)> = Vec::new();
+        for (from_s, till_s) in &job.cuts {
+            let from_abs = match parse_timestamp(from_s) {
+                Some(v) => v,
+                None => {
+                    report_fail(&tx, &cancel, format!("cut-out: can't parse from-timestamp {:?}", from_s));
+                    return;
+                }
+            };
+            let till_abs = match parse_timestamp(till_s) {
+                Some(v) => v,
+                None => {
+                    report_fail(&tx, &cancel, format!("cut-out: can't parse till-timestamp {:?}", till_s));
+                    return;
+                }
+            };
+            let rel_from = from_abs - start_secs;
+            let rel_till = till_abs - start_secs;
+            if !(rel_from > 0.0 && rel_till > rel_from && rel_till < dur) {
+                report_fail(&tx, &cancel, format!(
+                    "cut-out range {}–{} must lie strictly inside the segment {}–{} (got offsets {:.1}s–{:.1}s within a {:.1}s clip)",
+                    from_s, till_s, job.start, job.end, rel_from, rel_till, dur
+                ));
+                return;
+            }
+            ranges.push((rel_from, rel_till));
         }
-        let cut_path = cache_dir.join(format!(
-            "{}_{}_cut_{}_{}.mp4",
-            video_id,
-            stamp,
-            job.cut_from.replace(':', "_"),
-            job.cut_till.replace(':', "_"),
-        ));
-        let new_secs = dur - (rel_till - rel_from);
+        // Sort by start and reject overlaps — the concat filter needs disjoint,
+        // ordered kept-segments.
+        ranges.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+        for w in ranges.windows(2) {
+            if w[1].0 < w[0].1 {
+                report_fail(&tx, &cancel,
+                    "cut-out ranges overlap — make them separate, non-overlapping sections".to_string());
+                return;
+            }
+        }
+        let removed: f64 = ranges.iter().map(|(a, b)| b - a).sum();
+        let new_secs = dur - removed;
+        let cut_path = cache_dir.join(format!("{}_{}_cut{}.mp4", video_id, stamp, cuts_tag(&job.cuts)));
         if cut_path.exists() {
             let _ = tx.send(Event::Log(format!("Reusing cached cut segment {}", cut_path.display())));
         } else {
             let _ = tx.send(Event::Log(format!(
-                "Cutting out {}–{} ({:.1}s removed) — joining the {:.1}s that remain…",
-                job.cut_from, job.cut_till, rel_till - rel_from, new_secs
+                "Cutting out {} section{} ({:.1}s removed) — joining the {:.1}s that remain…",
+                ranges.len(), if ranges.len() == 1 { "" } else { "s" }, removed, new_secs
             )));
-            if let Err(e) = apply_cut_middle(&out, &cut_path, rel_from, rel_till, &tx, new_secs, &cancel) {
+            if let Err(e) = apply_cut_middle(&out, &cut_path, &ranges, &tx, new_secs, &cancel) {
                 let _ = std::fs::remove_file(&cut_path);
                 report_fail(&tx, &cancel, format!("cut-out: {}", e));
                 return;
@@ -412,11 +422,11 @@ pub fn run(job: Job, settings: Settings, tx: Sender<Event>, cancel: Arc<AtomicBo
         (out.clone(), segment_secs)
     };
 
-    // Tag derived caches (stretch, titled) with the cut range so toggling the
+    // Tag derived caches (stretch, titled) with the cut ranges so toggling the
     // cut on/off — or changing its bounds — re-encodes instead of serving a
     // stale clip built from the un-cut segment.
-    let cut_tag = if job.cut_middle {
-        format!("_cut{}_{}", job.cut_from.replace(':', "_"), job.cut_till.replace(':', "_"))
+    let cut_tag = if has_cuts {
+        format!("_cut{}", cuts_tag(&job.cuts))
     } else {
         String::new()
     };
@@ -1390,17 +1400,27 @@ fn video_encoder_args() -> Vec<&'static str> {
     }
 }
 
-/// Remove the section [`rel_from`, `rel_till`] (seconds, relative to the
-/// start of `input`) and concatenate the parts before and after into
-/// `output`. Uses ffmpeg's trim/concat filter graph — arbitrary cut points
-/// rarely land on keyframes, so this re-encodes (hardware H.264 on macOS,
-/// libx264 elsewhere). `progress_secs` is the expected *output* duration,
-/// used only to drive the progress bar.
+/// Filename-safe tag encoding all cut ranges, e.g. two cuts 0:10–0:15 and
+/// 0:30–0:40 → `0_10_0_15-0_30_0_40`. Folded into derived cache filenames so
+/// changing the cuts busts the cache.
+fn cuts_tag(cuts: &[(String, String)]) -> String {
+    cuts.iter()
+        .map(|(f, t)| format!("{}_{}", f.replace(':', "_"), t.replace(':', "_")))
+        .collect::<Vec<_>>()
+        .join("-")
+}
+
+/// Remove one or more sections (each `(rel_from, rel_till)` in seconds,
+/// relative to the start of `input`, **sorted and non-overlapping**) and
+/// concatenate everything that remains into `output`. Uses ffmpeg's
+/// trim/concat filter graph — arbitrary cut points rarely land on keyframes,
+/// so this re-encodes (hardware H.264 on macOS, libx264 elsewhere).
+/// `progress_secs` is the expected *output* duration, used only to drive the
+/// progress bar.
 fn apply_cut_middle(
     input: &std::path::Path,
     output: &std::path::Path,
-    rel_from: f64,
-    rel_till: f64,
+    ranges: &[(f64, f64)],
     tx: &Sender<Event>,
     progress_secs: f64,
     cancel: &Arc<AtomicBool>,
@@ -1411,17 +1431,38 @@ fn apply_cut_middle(
         detail: String::new(),
     });
 
-    // Keep [0, from) and [till, end), then concatenate. asetpts/setpts reset
-    // each part's timestamps to 0 so concat joins them seamlessly.
-    let filter = format!(
-        "[0:v]trim=0:{from},setpts=PTS-STARTPTS[v0];\
-         [0:v]trim=start={till},setpts=PTS-STARTPTS[v1];\
-         [0:a]atrim=0:{from},asetpts=PTS-STARTPTS[a0];\
-         [0:a]atrim=start={till},asetpts=PTS-STARTPTS[a1];\
-         [v0][a0][v1][a1]concat=n=2:v=1:a=1[v][a]",
-        from = rel_from,
-        till = rel_till,
-    );
+    // Build the list of kept intervals: [0, cut1_from), (cut1_till, cut2_from),
+    // …, (lastCut_till, end]. Trim each kept interval for video and audio,
+    // resetting timestamps to 0 so concat joins them seamlessly, then concat
+    // all kept parts in order.
+    let mut boundaries: Vec<(f64, Option<f64>)> = Vec::new();
+    let mut cursor = 0.0_f64;
+    for &(from, till) in ranges {
+        boundaries.push((cursor, Some(from)));
+        cursor = till;
+    }
+    boundaries.push((cursor, None)); // final kept part runs to end of input
+
+    let mut parts = String::new();
+    let mut concat_inputs = String::new();
+    for (i, &(seg_start, seg_end)) in boundaries.iter().enumerate() {
+        // Video/audio trim for kept part i. `trim=start:end` (end omitted =
+        // to the end of the stream for the final part).
+        let vtrim = match seg_end {
+            Some(e) => format!("trim=start={seg_start}:end={e}"),
+            None => format!("trim=start={seg_start}"),
+        };
+        let atrim = match seg_end {
+            Some(e) => format!("atrim=start={seg_start}:end={e}"),
+            None => format!("atrim=start={seg_start}"),
+        };
+        parts.push_str(&format!(
+            "[0:v]{vtrim},setpts=PTS-STARTPTS[v{i}];[0:a]{atrim},asetpts=PTS-STARTPTS[a{i}];",
+        ));
+        concat_inputs.push_str(&format!("[v{i}][a{i}]"));
+    }
+    let n = boundaries.len();
+    let filter = format!("{parts}{concat_inputs}concat=n={n}:v=1:a=1[v][a]");
 
     let mut cmd = Command::new("ffmpeg");
     cmd.args([

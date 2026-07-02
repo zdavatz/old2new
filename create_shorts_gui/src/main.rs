@@ -131,14 +131,25 @@ struct FormState {
     #[serde(default = "default_fade_secs")] fade_secs: u32,
     #[serde(default)] fade_in: bool,
     #[serde(default = "default_fade_secs")] fade_in_secs: u32,
-    // Remove a middle section from the extracted segment: everything
-    // between `cut_from` and `cut_till` (same timestamp style as start/end,
-    // absolute in the source video) is deleted and the parts before and
-    // after are joined into one clip.
+    // Remove one or more middle sections from the extracted segment: each
+    // `CutRange` (from/till, same timestamp style as start/end, absolute in
+    // the source video) is deleted and the remaining parts joined into one
+    // clip.
     #[serde(default)] cut_middle: bool,
-    #[serde(default)] cut_from: String,
-    #[serde(default)] cut_till: String,
+    #[serde(default = "default_cuts")] cuts: Vec<CutRange>,
 }
+
+/// One "remove this middle section" range. Timestamps are strings in the
+/// same mm:ss / hh:mm:ss style as start/end (absolute in the source video).
+#[derive(Clone, Default, serde::Serialize, serde::Deserialize)]
+struct CutRange {
+    #[serde(default)] from: String,
+    #[serde(default)] till: String,
+}
+
+/// Fresh forms start with one empty cut row so the fields are visible the
+/// moment "Remove middle section(s)" is ticked.
+fn default_cuts() -> Vec<CutRange> { vec![CutRange::default()] }
 
 fn default_overlay_color() -> [u8; 3] { [255, 255, 255] }
 fn default_overlay_pos() -> [f32; 2] { [0.0, 1.0] }
@@ -165,8 +176,7 @@ impl Default for FormState {
             fade_in: false,
             fade_in_secs: default_fade_secs(),
             cut_middle: false,
-            cut_from: String::new(),
-            cut_till: String::new(),
+            cuts: default_cuts(),
         }
     }
 }
@@ -197,6 +207,13 @@ struct App {
     ytdlp_update_rx: Option<Receiver<BrewEvent>>,
     pdf_exporting: bool,
     pdf_rx: Option<Receiver<Result<(std::path::PathBuf, usize, String), String>>>,
+    /// Fetching the shorts list (network) for the preview modal.
+    pdf_fetching: bool,
+    pdf_fetch_rx: Option<Receiver<Result<(Vec<pdf::PdfRow>, String), String>>>,
+    /// Preview modal: the rows the user can trim before exporting.
+    pdf_preview_open: bool,
+    pdf_preview_rows: Vec<pdf::PdfRow>,
+    pdf_preview_note: String,
     update_rx: Option<Receiver<Option<update::UpdateInfo>>>,
     update_info: Option<update::UpdateInfo>,
     update_checking: bool,
@@ -456,6 +473,11 @@ impl App {
             ytdlp_update_rx: None,
             pdf_exporting: false,
             pdf_rx: None,
+            pdf_fetching: false,
+            pdf_fetch_rx: None,
+            pdf_preview_open: false,
+            pdf_preview_rows: Vec::new(),
+            pdf_preview_note: String::new(),
             update_rx: Some(spawn_update_check()),
             update_info: None,
             update_checking: true,
@@ -862,20 +884,41 @@ impl App {
         }
     }
 
-    /// Export the latest-shorts PDF on a worker thread (the channel fetch is
-    /// a network call, so we mustn't block the UI). The result — path + count
-    /// + source note, or an error — comes back via `pdf_rx` and is handled in
-    /// `drain_events`, which opens the PDF.
-    fn start_pdf_export(&mut self) {
-        if self.pdf_exporting { return; }
-        self.pdf_exporting = true;
-        self.append_log("📄 Building PDF of the latest shorts (fetching @gozipa)…".into());
+    /// Fetch the latest-shorts list on a worker thread (the channel fetch is a
+    /// network call, so we mustn't block the UI) and, when it returns, open the
+    /// preview modal so the user can delete items before creating the PDF.
+    /// Handled in `drain_events`.
+    fn start_pdf_fetch(&mut self) {
+        if self.pdf_fetching || self.pdf_exporting { return; }
+        self.pdf_fetching = true;
+        self.append_log("📄 Fetching the latest shorts (@gozipa) for preview…".into());
         let settings = self.settings.clone();
+        let (tx, rx) = unbounded::<Result<(Vec<pdf::PdfRow>, String), String>>();
+        self.pdf_fetch_rx = Some(rx);
+        std::thread::spawn(move || {
+            let (rows, note) = shorts::latest_rows(&settings, PDF_SHORTS_COUNT);
+            let _ = tx.send(Ok((rows, note)));
+        });
+    }
+
+    /// Export the shorts currently in the preview list (after the user's
+    /// deletions) to a PDF on a worker thread, then open it. Handled in
+    /// `drain_events`.
+    fn export_pdf_from_preview(&mut self) {
+        if self.pdf_exporting { return; }
+        let rows: Vec<pdf::PdfRow> = self.pdf_preview_rows.clone();
+        if rows.is_empty() {
+            self.append_log("📄 Nothing to export — the list is empty.".into());
+            return;
+        }
+        self.pdf_preview_open = false;
+        self.pdf_exporting = true;
+        self.append_log(format!("📄 Building PDF of {} short(s)…", rows.len()));
+        let note = self.pdf_preview_note.clone();
         let (tx, rx) = unbounded::<Result<(std::path::PathBuf, usize, String), String>>();
         self.pdf_rx = Some(rx);
         std::thread::spawn(move || {
-            let out = pdf::default_output_path(PDF_SHORTS_COUNT);
-            let (rows, note) = shorts::latest_rows(&settings, PDF_SHORTS_COUNT);
+            let out = pdf::default_output_path(rows.len());
             let result = pdf::export(&rows, &out).map(|n| (out, n, note));
             let _ = tx.send(result);
         });
@@ -955,11 +998,23 @@ impl App {
             self.last_error = Some("Start and end timestamps are required".into());
             return;
         }
-        if self.form.cut_middle
-            && (self.form.cut_from.trim().is_empty() || self.form.cut_till.trim().is_empty())
-        {
-            self.last_error = Some("Cut-out from/till timestamps are required when \"Cut out\" is on".into());
-            return;
+        if self.form.cut_middle {
+            let filled: Vec<&CutRange> = self
+                .form
+                .cuts
+                .iter()
+                .filter(|c| !c.from.trim().is_empty() || !c.till.trim().is_empty())
+                .collect();
+            if filled.is_empty() {
+                self.last_error =
+                    Some("Add at least one cut-out from/till when \"Remove middle section(s)\" is on".into());
+                return;
+            }
+            if filled.iter().any(|c| c.from.trim().is_empty() || c.till.trim().is_empty()) {
+                self.last_error =
+                    Some("Every cut-out row needs both a from and a till timestamp".into());
+                return;
+            }
         }
         // Title is only required when actually uploading.
         if !preview_only && self.form.title.trim().is_empty() {
@@ -1000,8 +1055,16 @@ impl App {
             fade_in: self.form.fade_in,
             fade_in_secs: self.form.fade_in_secs,
             cut_middle: self.form.cut_middle,
-            cut_from: self.form.cut_from.trim().to_string(),
-            cut_till: self.form.cut_till.trim().to_string(),
+            cuts: if self.form.cut_middle {
+                self.form
+                    .cuts
+                    .iter()
+                    .filter(|c| !c.from.trim().is_empty() || !c.till.trim().is_empty())
+                    .map(|c| (c.from.trim().to_string(), c.till.trim().to_string()))
+                    .collect()
+            } else {
+                Vec::new()
+            },
         };
         let settings = self.settings.clone();
         std::thread::spawn(move || pipeline::run(job, settings, tx, cancel));
@@ -1184,6 +1247,30 @@ impl App {
                     Ok(b) => format!("✅ {} cookies look good.", b),
                     Err(e) => format!("❌ {}", e),
                 });
+            }
+        }
+
+        if let Some(rx) = &self.pdf_fetch_rx {
+            if let Ok(result) = rx.try_recv() {
+                self.pdf_fetching = false;
+                self.pdf_fetch_rx = None;
+                match result {
+                    Ok((rows, note)) => {
+                        if rows.is_empty() {
+                            self.append_log("📄 No shorts found to preview.".into());
+                        } else {
+                            self.append_log(format!(
+                                "📄 Loaded {} short(s) ({}) — review and delete before creating the PDF.",
+                                rows.len(),
+                                note
+                            ));
+                            self.pdf_preview_rows = rows;
+                            self.pdf_preview_note = note;
+                            self.pdf_preview_open = true;
+                        }
+                    }
+                    Err(e) => self.append_log(format!("📄 Fetch failed: {e}")),
+                }
             }
         }
 
@@ -1455,7 +1542,7 @@ impl eframe::App for App {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.drain_events();
         self.ensure_icon_texture(ctx);
-        if self.running || self.upload_running || self.signing_in || self.brew_installing || self.ytdlp_updating || self.update_checking || self.cookies_testing || self.installing || self.wa_sending || self.wa_setup_running || self.wa_login_running || self.davaz_posting || self.pdf_exporting {
+        if self.running || self.upload_running || self.signing_in || self.brew_installing || self.ytdlp_updating || self.update_checking || self.cookies_testing || self.installing || self.wa_sending || self.wa_setup_running || self.wa_login_running || self.davaz_posting || self.pdf_exporting || self.pdf_fetching {
             ctx.request_repaint_after(std::time::Duration::from_millis(150));
         }
 
@@ -1481,17 +1568,18 @@ impl eframe::App for App {
                     {
                         self.show_upload = true;
                     }
+                    let pdf_busy = self.pdf_exporting || self.pdf_fetching;
                     if ui
-                        .add_enabled(!self.pdf_exporting, egui::Button::new(
-                            if self.pdf_exporting { "📄 PDF…" } else { "📄 PDF" }
+                        .add_enabled(!pdf_busy, egui::Button::new(
+                            if pdf_busy { "📄 PDF…" } else { "📄 PDF" }
                         ))
                         .on_hover_text(format!(
-                            "Export a PDF of the latest {} shorts from @gozipa (clickable links)",
+                            "Preview the latest {} shorts from @gozipa, delete any you don't want, then export a PDF (clickable links)",
                             PDF_SHORTS_COUNT
                         ))
                         .clicked()
                     {
-                        self.start_pdf_export();
+                        self.start_pdf_fetch();
                     }
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         if let Some(tex) = &self.icon_texture {
@@ -1732,26 +1820,48 @@ impl eframe::App for App {
                     ui.end_row();
 
                     ui.label("Cut out:");
-                    ui.horizontal(|ui| {
+                    ui.vertical(|ui| {
                         ui.checkbox(
                             &mut self.form.cut_middle,
-                            "Remove a middle section",
+                            "Remove middle section(s)",
                         ).on_hover_text(
-                            "Deletes everything between the two timestamps below (same style as start/end, e.g. 1:15 or 12:44) and joins the parts before and after into one clip. Applies to both Preview and Upload.",
+                            "Deletes everything between each from/till pair below (same style as start/end, e.g. 1:15 or 12:44) and joins the remaining parts into one clip. Add as many cuts as you like. Applies to both Preview and Upload.",
                         );
-                        ui.add_enabled_ui(self.form.cut_middle, |ui| {
-                            ui.label("from");
-                            ui.add(
-                                egui::TextEdit::singleline(&mut self.form.cut_from)
-                                    .desired_width(70.0)
-                                    .hint_text("mm:ss"),
-                            ).on_hover_text("Start of the section to remove (absolute in the source, e.g. 1:15).");
-                            ui.label("till");
-                            ui.add(
-                                egui::TextEdit::singleline(&mut self.form.cut_till)
-                                    .desired_width(70.0)
-                                    .hint_text("mm:ss"),
-                            ).on_hover_text("End of the section to remove (absolute in the source, e.g. 1:40).");
+                        let cut_on = self.form.cut_middle;
+                        ui.add_enabled_ui(cut_on, |ui| {
+                            let mut remove: Option<usize> = None;
+                            let count = self.form.cuts.len();
+                            for (i, cut) in self.form.cuts.iter_mut().enumerate() {
+                                ui.horizontal(|ui| {
+                                    ui.label("from");
+                                    ui.add(
+                                        egui::TextEdit::singleline(&mut cut.from)
+                                            .desired_width(70.0)
+                                            .hint_text("mm:ss"),
+                                    ).on_hover_text("Start of a section to remove (absolute in the source, e.g. 1:15).");
+                                    ui.label("till");
+                                    ui.add(
+                                        egui::TextEdit::singleline(&mut cut.till)
+                                            .desired_width(70.0)
+                                            .hint_text("mm:ss"),
+                                    ).on_hover_text("End of that section (absolute in the source, e.g. 1:40).");
+                                    if count > 1
+                                        && ui.button("🗑").on_hover_text("Remove this cut").clicked()
+                                    {
+                                        remove = Some(i);
+                                    }
+                                });
+                            }
+                            if let Some(i) = remove {
+                                self.form.cuts.remove(i);
+                            }
+                            if ui
+                                .button("➕ Add cut")
+                                .on_hover_text("Add another section to remove")
+                                .clicked()
+                            {
+                                self.form.cuts.push(CutRange::default());
+                            }
                         });
                     });
                     ui.end_row();
@@ -2029,10 +2139,124 @@ impl eframe::App for App {
         if self.show_upload {
             self.draw_upload_modal(ctx);
         }
+
+        if self.pdf_preview_open {
+            self.draw_pdf_preview_modal(ctx);
+        }
     }
 }
 
 impl App {
+    /// Preview the shorts that will go into the PDF, letting the user delete
+    /// any they don't want before exporting. Each row is one movie/short.
+    fn draw_pdf_preview_modal(&mut self, ctx: &egui::Context) {
+        let mut open = self.pdf_preview_open;
+        let mut export_now = false;
+        let mut cancel = false;
+        let mut remove: Option<usize> = None;
+        egui::Window::new("Shorts for PDF")
+            .open(&mut open)
+            .collapsible(false)
+            .resizable(true)
+            .default_width(720.0)
+            .default_height(520.0)
+            .show(ctx, |ui| {
+                let total = self.pdf_preview_rows.len();
+                ui.horizontal(|ui| {
+                    ui.label(
+                        RichText::new(format!(
+                            "{} short{} — {}",
+                            total,
+                            if total == 1 { "" } else { "s" },
+                            self.pdf_preview_note
+                        ))
+                        .strong(),
+                    );
+                });
+                ui.label(
+                    RichText::new("Delete the ones you don't want, then Create PDF.")
+                        .small()
+                        .weak(),
+                );
+                ui.separator();
+
+                if total == 0 {
+                    ui.add_space(20.0);
+                    ui.vertical_centered(|ui| {
+                        ui.label(RichText::new("Nothing left — add some back or cancel.").weak());
+                    });
+                } else {
+                    // Shrink vertically to the content so the buttons sit right
+                    // under the last item (no big gap), but cap the height and
+                    // scroll when the list is long. Reserve room for the button row.
+                    let max_h = (ui.available_height() - 40.0).max(80.0);
+                    egui::ScrollArea::vertical()
+                        .auto_shrink([false, true])
+                        .max_height(max_h)
+                        .show(ui, |ui| {
+                        for (i, row) in self.pdf_preview_rows.iter().enumerate() {
+                            ui.horizontal(|ui| {
+                                if ui
+                                    .button("🗑")
+                                    .on_hover_text("Remove this short from the PDF")
+                                    .clicked()
+                                {
+                                    remove = Some(i);
+                                }
+                                ui.vertical(|ui| {
+                                    let title = if row.title.trim().is_empty() {
+                                        "(untitled)"
+                                    } else {
+                                        row.title.trim()
+                                    };
+                                    ui.label(RichText::new(format!("{}. {}", i + 1, title)).strong());
+                                    ui.horizontal_wrapped(|ui| {
+                                        if ui
+                                            .link(RichText::new(row.url.trim()).monospace().small())
+                                            .on_hover_text("Open in browser")
+                                            .clicked()
+                                        {
+                                            let _ = open::that(row.url.trim());
+                                        }
+                                        if !row.meta.trim().is_empty() {
+                                            ui.label(
+                                                RichText::new(row.meta.trim()).small().weak(),
+                                            );
+                                        }
+                                    });
+                                });
+                            });
+                            ui.separator();
+                        }
+                    });
+                }
+
+                ui.horizontal(|ui| {
+                    if ui
+                        .add_enabled(total > 0, egui::Button::new("📄 Create PDF"))
+                        .clicked()
+                    {
+                        export_now = true;
+                    }
+                    if ui.button("Cancel").clicked() {
+                        cancel = true;
+                    }
+                });
+            });
+        if let Some(i) = remove {
+            if i < self.pdf_preview_rows.len() {
+                self.pdf_preview_rows.remove(i);
+            }
+        }
+        if cancel {
+            open = false;
+        }
+        self.pdf_preview_open = open;
+        if export_now {
+            self.export_pdf_from_preview();
+        }
+    }
+
     fn draw_history_modal(&mut self, ctx: &egui::Context) {
         let mut open = self.show_history;
         egui::Window::new("Upload history")
