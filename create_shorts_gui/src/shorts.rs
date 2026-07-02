@@ -15,16 +15,33 @@ pub const SHORTS_CHANNEL: &str = "https://www.youtube.com/@gozipa/videos";
 /// channel can't be reached — the `n` newest history entries. Returns the
 /// rows plus a short human note about which source was used.
 pub fn latest_rows(settings: &Settings, n: usize) -> (Vec<PdfRow>, String) {
-    match fetch_channel_latest(settings, n) {
+    rows_from(settings, Some(n))
+}
+
+/// Build the rows for the PDF from the **full** history: every channel upload
+/// (no count limit), or — if the channel can't be reached — every history
+/// entry. Used by the preview modal so the user can pick which shorts go in.
+pub fn all_rows(settings: &Settings) -> (Vec<PdfRow>, String) {
+    rows_from(settings, None)
+}
+
+/// Shared implementation: `limit = Some(n)` for the newest n, `None` for all.
+fn rows_from(settings: &Settings, limit: Option<usize>) -> (Vec<PdfRow>, String) {
+    match fetch_channel_latest(settings, limit) {
         Ok(rows) if !rows.is_empty() => {
             let note = format!("{} from @gozipa", rows.len());
             (rows, note)
         }
         Ok(_) | Err(_) => {
-            let rows: Vec<PdfRow> = history::load_all()
-                .into_iter()
-                .filter(|e| !e.url.trim().is_empty())
-                .take(n)
+            let mut iter: Box<dyn Iterator<Item = _>> = Box::new(
+                history::load_all()
+                    .into_iter()
+                    .filter(|e| !e.url.trim().is_empty()),
+            );
+            if let Some(n) = limit {
+                iter = Box::new(iter.take(n));
+            }
+            let rows: Vec<PdfRow> = iter
                 .map(|e| {
                     let mut meta: Vec<String> = Vec::new();
                     if !e.start.trim().is_empty() || !e.end.trim().is_empty() {
@@ -49,15 +66,17 @@ pub fn latest_rows(settings: &Settings, n: usize) -> (Vec<PdfRow>, String) {
     }
 }
 
-/// One fast yt-dlp `--flat-playlist` call returning the `n` newest videos
-/// as `id \t title \t duration` lines. No per-video description fetch — that
-/// would be `n` extra network round-trips and JS-challenge solves.
-fn fetch_channel_latest(settings: &Settings, n: usize) -> Result<Vec<PdfRow>, String> {
+/// One fast yt-dlp `--flat-playlist` call returning the newest videos as
+/// `id \t title \t duration` lines. `limit = Some(n)` caps to the newest n via
+/// `--playlist-end`; `None` fetches the whole channel. No per-video
+/// description fetch — that would be N extra network round-trips.
+fn fetch_channel_latest(settings: &Settings, limit: Option<usize>) -> Result<Vec<PdfRow>, String> {
     let mut cmd = Command::new("yt-dlp");
+    cmd.args(["--flat-playlist"]);
+    if let Some(n) = limit {
+        cmd.arg("--playlist-end").arg(n.to_string());
+    }
     cmd.args([
-        "--flat-playlist",
-        "--playlist-end",
-        &n.to_string(),
         "--print",
         "%(id)s\t%(title)s\t%(duration)s",
     ]);

@@ -210,9 +210,12 @@ struct App {
     /// Fetching the shorts list (network) for the preview modal.
     pdf_fetching: bool,
     pdf_fetch_rx: Option<Receiver<Result<(Vec<pdf::PdfRow>, String), String>>>,
-    /// Preview modal: the rows the user can trim before exporting.
+    /// Preview modal: the full history of shorts, each with a checkbox so the
+    /// user picks which go into the PDF. `pdf_preview_selected` is parallel to
+    /// `pdf_preview_rows`; the newest `PDF_SHORTS_COUNT` are selected by default.
     pdf_preview_open: bool,
     pdf_preview_rows: Vec<pdf::PdfRow>,
+    pdf_preview_selected: Vec<bool>,
     pdf_preview_note: String,
     update_rx: Option<Receiver<Option<update::UpdateInfo>>>,
     update_info: Option<update::UpdateInfo>,
@@ -477,6 +480,7 @@ impl App {
             pdf_fetch_rx: None,
             pdf_preview_open: false,
             pdf_preview_rows: Vec::new(),
+            pdf_preview_selected: Vec::new(),
             pdf_preview_note: String::new(),
             update_rx: Some(spawn_update_check()),
             update_info: None,
@@ -891,12 +895,12 @@ impl App {
     fn start_pdf_fetch(&mut self) {
         if self.pdf_fetching || self.pdf_exporting { return; }
         self.pdf_fetching = true;
-        self.append_log("📄 Fetching the latest shorts (@gozipa) for preview…".into());
+        self.append_log("📄 Fetching the full shorts history (@gozipa) for preview…".into());
         let settings = self.settings.clone();
         let (tx, rx) = unbounded::<Result<(Vec<pdf::PdfRow>, String), String>>();
         self.pdf_fetch_rx = Some(rx);
         std::thread::spawn(move || {
-            let (rows, note) = shorts::latest_rows(&settings, PDF_SHORTS_COUNT);
+            let (rows, note) = shorts::all_rows(&settings);
             let _ = tx.send(Ok((rows, note)));
         });
     }
@@ -906,9 +910,15 @@ impl App {
     /// `drain_events`.
     fn export_pdf_from_preview(&mut self) {
         if self.pdf_exporting { return; }
-        let rows: Vec<pdf::PdfRow> = self.pdf_preview_rows.clone();
+        let rows: Vec<pdf::PdfRow> = self
+            .pdf_preview_rows
+            .iter()
+            .zip(self.pdf_preview_selected.iter())
+            .filter(|(_, sel)| **sel)
+            .map(|(row, _)| row.clone())
+            .collect();
         if rows.is_empty() {
-            self.append_log("📄 Nothing to export — the list is empty.".into());
+            self.append_log("📄 Nothing to export — select at least one short.".into());
             return;
         }
         self.pdf_preview_open = false;
@@ -1260,10 +1270,15 @@ impl App {
                             self.append_log("📄 No shorts found to preview.".into());
                         } else {
                             self.append_log(format!(
-                                "📄 Loaded {} short(s) ({}) — review and delete before creating the PDF.",
+                                "📄 Loaded {} short(s) ({}) — the newest {} are selected; tick/untick before creating the PDF.",
                                 rows.len(),
-                                note
+                                note,
+                                PDF_SHORTS_COUNT.min(rows.len())
                             ));
+                            // Auto-select the newest PDF_SHORTS_COUNT (rows come
+                            // newest-first from the channel/history).
+                            self.pdf_preview_selected =
+                                (0..rows.len()).map(|i| i < PDF_SHORTS_COUNT).collect();
                             self.pdf_preview_rows = rows;
                             self.pdf_preview_note = note;
                             self.pdf_preview_open = true;
@@ -2147,13 +2162,18 @@ impl eframe::App for App {
 }
 
 impl App {
-    /// Preview the shorts that will go into the PDF, letting the user delete
-    /// any they don't want before exporting. Each row is one movie/short.
+    /// Preview the full shorts history, letting the user tick which ones go
+    /// into the PDF (the newest `PDF_SHORTS_COUNT` are pre-selected). Each row
+    /// is one movie/short.
     fn draw_pdf_preview_modal(&mut self, ctx: &egui::Context) {
+        // Keep the selection vector in lockstep with the rows.
+        if self.pdf_preview_selected.len() != self.pdf_preview_rows.len() {
+            self.pdf_preview_selected.resize(self.pdf_preview_rows.len(), false);
+        }
         let mut open = self.pdf_preview_open;
         let mut export_now = false;
         let mut cancel = false;
-        let mut remove: Option<usize> = None;
+        let mut set_all: Option<bool> = None;
         egui::Window::new("Shorts for PDF")
             .open(&mut open)
             .collapsible(false)
@@ -2162,19 +2182,29 @@ impl App {
             .default_height(520.0)
             .show(ctx, |ui| {
                 let total = self.pdf_preview_rows.len();
+                let selected = self.pdf_preview_selected.iter().filter(|s| **s).count();
                 ui.horizontal(|ui| {
                     ui.label(
                         RichText::new(format!(
-                            "{} short{} — {}",
+                            "{} of {} short{} selected — {}",
+                            selected,
                             total,
                             if total == 1 { "" } else { "s" },
                             self.pdf_preview_note
                         ))
                         .strong(),
                     );
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if ui.button("Deselect all").clicked() {
+                            set_all = Some(false);
+                        }
+                        if ui.button("Select all").clicked() {
+                            set_all = Some(true);
+                        }
+                    });
                 });
                 ui.label(
-                    RichText::new("Delete the ones you don't want, then Create PDF.")
+                    RichText::new("Tick the shorts to include, then Create PDF.")
                         .small()
                         .weak(),
                 );
@@ -2183,7 +2213,7 @@ impl App {
                 if total == 0 {
                     ui.add_space(20.0);
                     ui.vertical_centered(|ui| {
-                        ui.label(RichText::new("Nothing left — add some back or cancel.").weak());
+                        ui.label(RichText::new("No shorts found.").weak());
                     });
                 } else {
                     // Shrink vertically to the content so the buttons sit right
@@ -2196,13 +2226,9 @@ impl App {
                         .show(ui, |ui| {
                         for (i, row) in self.pdf_preview_rows.iter().enumerate() {
                             ui.horizontal(|ui| {
-                                if ui
-                                    .button("🗑")
-                                    .on_hover_text("Remove this short from the PDF")
-                                    .clicked()
-                                {
-                                    remove = Some(i);
-                                }
+                                let sel = &mut self.pdf_preview_selected[i];
+                                ui.checkbox(sel, "")
+                                    .on_hover_text("Include this short in the PDF");
                                 ui.vertical(|ui| {
                                     let title = if row.title.trim().is_empty() {
                                         "(untitled)"
@@ -2233,7 +2259,7 @@ impl App {
 
                 ui.horizontal(|ui| {
                     if ui
-                        .add_enabled(total > 0, egui::Button::new("📄 Create PDF"))
+                        .add_enabled(selected > 0, egui::Button::new("📄 Create PDF"))
                         .clicked()
                     {
                         export_now = true;
@@ -2243,9 +2269,9 @@ impl App {
                     }
                 });
             });
-        if let Some(i) = remove {
-            if i < self.pdf_preview_rows.len() {
-                self.pdf_preview_rows.remove(i);
+        if let Some(v) = set_all {
+            for s in self.pdf_preview_selected.iter_mut() {
+                *s = v;
             }
         }
         if cancel {
