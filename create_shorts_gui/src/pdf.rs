@@ -32,15 +32,43 @@ const MARGIN: f32 = 18.0; // left/right/top/bottom margin (mm)
 const PT_MM: f32 = 0.352_777_8;
 
 /// Default location for the exported PDF: the user's Desktop if we can
-/// find it, otherwise the app config dir. Filename encodes the count.
-pub fn default_output_path(n: usize) -> PathBuf {
-    let name = format!("latest_{}_shorts.pdf", n);
+/// find it, otherwise the app config dir. Filename encodes the count and
+/// the title of the newest short (the first row, since rows are
+/// newest-first) so different exports don't overwrite each other.
+pub fn default_output_path(n: usize, newest_title: &str) -> PathBuf {
+    let slug = slugify(newest_title);
+    let name = if slug.is_empty() {
+        format!("latest_{}_shorts.pdf", n)
+    } else {
+        format!("latest_{}_shorts_{}.pdf", n, slug)
+    };
     if let Some(desktop) = dirs::desktop_dir() {
         if desktop.is_dir() {
             return desktop.join(name);
         }
     }
     crate::settings::config_dir().join(name)
+}
+
+/// Turn a short title into a filesystem-safe, lowercase slug: keep ASCII
+/// alphanumerics, collapse everything else to single underscores, cap the
+/// length so the filename stays reasonable.
+fn slugify(title: &str) -> String {
+    let mut out = String::new();
+    let mut prev_us = false;
+    for ch in title.trim().chars() {
+        if ch.is_ascii_alphanumeric() {
+            out.extend(ch.to_lowercase());
+            prev_us = false;
+        } else if !prev_us && !out.is_empty() {
+            out.push('_');
+            prev_us = true;
+        }
+    }
+    while out.ends_with('_') {
+        out.pop();
+    }
+    out.chars().take(60).collect()
 }
 
 /// Render the given rows to a PDF at `out`. Returns the number of rows

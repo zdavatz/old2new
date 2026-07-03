@@ -70,14 +70,15 @@ const PDF_SHORTS_COUNT: usize = 10;
 /// Lets the same binary serve the GUI and a scriptable CLI.
 fn run_export_pdf_cli(args: &[String]) -> ! {
     let pos = args.iter().position(|a| a == "--export-pdf").unwrap();
+    let settings = Settings::load();
+    let (rows, note) = shorts::latest_rows(&settings, PDF_SHORTS_COUNT);
+    eprintln!("Source: {note}");
+    let newest = rows.first().map(|r| r.title.clone()).unwrap_or_default();
     let out = args
         .get(pos + 1)
         .filter(|s| !s.starts_with("--"))
         .map(std::path::PathBuf::from)
-        .unwrap_or_else(|| pdf::default_output_path(PDF_SHORTS_COUNT));
-    let settings = Settings::load();
-    let (rows, note) = shorts::latest_rows(&settings, PDF_SHORTS_COUNT);
-    eprintln!("Source: {note}");
+        .unwrap_or_else(|| pdf::default_output_path(rows.len().max(1), &newest));
     match pdf::export(&rows, &out) {
         Ok(n) => {
             println!("Wrote {} ({} short{})", out.display(), n, if n == 1 { "" } else { "s" });
@@ -947,7 +948,8 @@ impl App {
         let (tx, rx) = unbounded::<Result<(std::path::PathBuf, usize, String), String>>();
         self.pdf_rx = Some(rx);
         std::thread::spawn(move || {
-            let out = pdf::default_output_path(rows.len());
+            let newest = rows.first().map(|r| r.title.clone()).unwrap_or_default();
+            let out = pdf::default_output_path(rows.len(), &newest);
             let result = pdf::export(&rows, &out).map(|n| (out, n, note));
             let _ = tx.send(result);
         });
