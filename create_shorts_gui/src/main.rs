@@ -64,89 +64,143 @@ fn ensure_homebrew_on_path() {
 }
 
 /// Open the split preview: the raw downloaded segment (`original`, top) and
-/// the final edited clip (`edited`, bottom) as two stacked video windows so
+/// the final edited clip (`edited`, bottom), stacked in one browser window so
 /// Jürg can play/stop the original to read its timeline and always see the
 /// edited version below it.
 ///
-/// On macOS we drive QuickTime Player via AppleScript so the two windows tile
-/// top/bottom of the screen — each keeps its own scrubber, timecode and
-/// independent play/stop. If automation is unavailable (or the script fails)
-/// we fall back to opening both in the default player, unpositioned. On other
-/// platforms we just open both. When no edits were applied the two paths are
-/// equal and we open a single window.
+/// We render a tiny self-contained HTML page with two `<video controls>`
+/// elements (each with its own scrubber + independent play/pause) and open it
+/// in the default browser. HTML5 controls always show the position as
+/// **mm:ss / mm:ss** on every machine — no QuickTime frame/timecode toggle, no
+/// automation permission, and no dependency on which player the user set as
+/// default (all of which previously made the time read out as a frame number
+/// on Jürg's Mac). The page is written next to the clips in the segments cache
+/// dir so it references each video by its bare filename (a relative file://
+/// reference the browser loads reliably). When no edits were applied the two
+/// paths are equal and the page shows a single pane.
 fn open_split_preview(original: &std::path::Path, edited: &std::path::Path) -> Result<(), String> {
-    if original == edited {
-        return open::that(edited).map_err(|e| e.to_string());
-    }
+    let same = original == edited;
 
-    #[cfg(target_os = "macos")]
-    {
-        let script = quicktime_split_script(original, edited);
-        match std::process::Command::new("osascript").arg("-e").arg(&script).status() {
-            Ok(s) if s.success() => return Ok(()),
-            _ => { /* automation denied / QuickTime missing → fall through */ }
+    // Both clips always live in the same segments cache dir, so we drop the
+    // page next to them and reference each video by its (percent-encoded) bare
+    // filename — a relative reference that avoids having to encode the whole
+    // absolute path (fiddly on Windows drive letters).
+    let html_dir = edited
+        .parent()
+        .ok_or_else(|| "edited clip has no parent directory".to_string())?;
+
+    let edited_src = video_src(edited, html_dir);
+    let original_src = if same { edited_src.clone() } else { video_src(original, html_dir) };
+
+    let html = build_preview_html(&original_src, &edited_src, same);
+    let html_path = html_dir.join("_preview.html");
+    std::fs::write(&html_path, html).map_err(|e| format!("write preview page: {}", e))?;
+    open::that(&html_path).map_err(|e| e.to_string())
+}
+
+/// `src` for a local video referenced from the preview page in `html_dir`.
+/// Sibling (the normal case) → percent-encoded filename (relative); otherwise
+/// an absolute `file://` URL.
+fn video_src(file: &std::path::Path, html_dir: &std::path::Path) -> String {
+    if file.parent() == Some(html_dir) {
+        if let Some(name) = file.file_name() {
+            return urlencoding::encode(&name.to_string_lossy()).into_owned();
         }
     }
-
-    // Fallback: open both in the default player (order matters little since we
-    // can't position them). Report the first failure but attempt both.
-    let mut err: Option<String> = None;
-    if let Err(e) = open::that(original) {
-        err = Some(format!("original: {}", e));
-    }
-    if let Err(e) = open::that(edited) {
-        err = Some(match err {
-            Some(prev) => format!("{}; edited: {}", prev, e),
-            None => format!("edited: {}", e),
-        });
-    }
-    match err {
-        Some(e) => Err(e),
-        None => Ok(()),
-    }
+    path_to_file_url(file)
 }
 
-/// Build the AppleScript that opens both clips in QuickTime Player and tiles
-/// them: `original` fills the top half of the screen, `edited` the bottom.
-/// Positioning is wrapped in `try` so a resize hiccup still leaves both
-/// windows open. We close QuickTime's existing windows first so repeat
-/// previews don't pile up and the window indices stay predictable
-/// (window 2 = original opened first, window 1 = edited opened last).
-#[cfg(target_os = "macos")]
-fn quicktime_split_script(original: &std::path::Path, edited: &std::path::Path) -> String {
-    format!(
-        r#"set topFile to POSIX file {orig}
-set botFile to POSIX file {edit}
-tell application "QuickTime Player"
-  activate
-  try
-    close every window
-  end try
-  open topFile
-  open botFile
-end tell
-delay 0.5
-try
-  tell application "Finder" to set deskBounds to bounds of window of desktop
-  set scrW to item 3 of deskBounds
-  set scrH to item 4 of deskBounds
-  set midY to scrH div 2
-  tell application "QuickTime Player"
-    set bounds of window 2 to {{0, 25, scrW, midY}}
-    set bounds of window 1 to {{0, midY, scrW, scrH}}
-  end tell
-end try"#,
-        orig = applescript_quote(original),
-        edit = applescript_quote(edited),
-    )
+/// Absolute `file://` URL, percent-encoding everything except path separators
+/// and the drive colon (so Windows `C:/…` stays intact).
+fn path_to_file_url(p: &std::path::Path) -> String {
+    let s = p.to_string_lossy().replace('\\', "/");
+    let mut out = String::from("file://");
+    if !s.starts_with('/') {
+        out.push('/'); // Windows drive paths: file:///C:/…
+    }
+    for b in s.bytes() {
+        match b {
+            b'/' | b':' | b'-' | b'_' | b'.' | b'~'
+            | b'0'..=b'9' | b'A'..=b'Z' | b'a'..=b'z' => out.push(b as char),
+            b' ' => out.push_str("%20"),
+            _ => out.push_str(&format!("%{:02X}", b)),
+        }
+    }
+    out
 }
 
-/// Quote a path as an AppleScript string literal (escape `\` and `"`).
-#[cfg(target_os = "macos")]
-fn applescript_quote(p: &std::path::Path) -> String {
-    let s = p.to_string_lossy();
-    let escaped = s.replace('\\', "\\\\").replace('"', "\\\"");
-    format!("\"{}\"", escaped)
+/// Build the self-contained preview page: two stacked video panes (original on
+/// top, edited below) with native HTML5 controls plus our own mm:ss / mm:ss
+/// readout that updates on every `timeupdate`.
+fn build_preview_html(original_src: &str, edited_src: &str, same: bool) -> String {
+    let css = "\
+* { box-sizing: border-box; }\n\
+html, body { margin:0; padding:0; height:100%; background:#0b0b0d; color:#e8e8ea;\n\
+  font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;\n\
+  overflow:hidden; }\n\
+.wrap { display:flex; flex-direction:column; height:100vh; width:100vw; }\n\
+.pane { flex:1 1 0; display:flex; flex-direction:column; min-height:0; }\n\
+.pane + .pane { border-top:2px solid #000; }\n\
+.bar { display:flex; align-items:center; gap:12px; padding:8px 14px; background:#161619;\n\
+  border-bottom:1px solid #26262b; }\n\
+.badge { display:inline-flex; align-items:center; justify-content:center; width:22px; height:22px;\n\
+  border-radius:50%; background:#3b82f6; color:#fff; font-size:13px; font-weight:700; flex:0 0 auto; }\n\
+.name { font-size:15px; font-weight:600; }\n\
+.sub { font-size:12px; color:#9a9aa2; }\n\
+.time { margin-left:auto; font-variant-numeric:tabular-nums; font-size:15px; font-weight:600;\n\
+  color:#fff; background:#000; padding:3px 10px; border-radius:6px; letter-spacing:.5px; flex:0 0 auto; }\n\
+.vidwrap { flex:1 1 0; min-height:0; display:flex; background:#000; }\n\
+video { width:100%; height:100%; object-fit:contain; background:#000; }\n";
+
+    let pane = |badge: &str, name: &str, sub: &str, vid_id: &str, time_id: &str, src: &str| -> String {
+        format!(
+            "<div class=\"pane\">\n\
+  <div class=\"bar\">\n\
+    <span class=\"badge\">{badge}</span>\n\
+    <span class=\"name\">{name}</span>\n\
+    <span class=\"sub\">{sub}</span>\n\
+    <span class=\"time\" id=\"{time_id}\">0:00 / 0:00</span>\n\
+  </div>\n\
+  <div class=\"vidwrap\">\n\
+    <video id=\"{vid_id}\" src=\"{src}\" controls preload=\"metadata\" playsinline></video>\n\
+  </div>\n\
+</div>",
+            badge = badge, name = name, sub = sub, time_id = time_id, vid_id = vid_id, src = src,
+        )
+    };
+
+    let body = if same {
+        pane("▶", "Preview", "no edits applied", "v1", "t1", edited_src)
+    } else {
+        format!(
+            "{}\n{}",
+            pane("1", "Original", "as downloaded — play to read its time", "v1", "t1", original_src),
+            pane("2", "Edited cut", "the version we'd upload", "v2", "t2", edited_src),
+        )
+    };
+
+    // Template kept free of `{}` so the JS below survives .replace() untouched.
+    let template = "<!doctype html>\n\
+<html lang=\"en\">\n\
+<head>\n\
+<meta charset=\"utf-8\">\n\
+<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n\
+<title>Preview — Original vs Edited</title>\n\
+<style>__CSS__</style>\n\
+</head>\n\
+<body>\n\
+<div class=\"wrap\">\n\
+__BODY__\n\
+</div>\n\
+<script>\n\
+function fmt(t){ if(!isFinite(t)||t<0){t=0;} t=Math.floor(t); var m=Math.floor(t/60), s=t%60; return m+':'+(s<10?'0':'')+s; }\n\
+function wire(vidId,outId){ var v=document.getElementById(vidId), o=document.getElementById(outId); if(!v||!o){return;} function u(){ o.textContent=fmt(v.currentTime)+' / '+fmt(v.duration); } v.addEventListener('loadedmetadata',u); v.addEventListener('timeupdate',u); v.addEventListener('durationchange',u); u(); }\n\
+wire('v1','t1'); wire('v2','t2');\n\
+</script>\n\
+</body>\n\
+</html>";
+
+    template.replace("__CSS__", css).replace("__BODY__", &body)
 }
 
 /// Number of most-recent shorts the PDF export includes.
