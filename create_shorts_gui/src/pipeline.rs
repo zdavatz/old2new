@@ -387,14 +387,18 @@ pub fn run(job: Job, settings: Settings, tx: Sender<Event>, cancel: Arc<AtomicBo
             };
             let rel_from = from_abs - start_secs;
             let rel_till = till_abs - start_secs;
-            if !(rel_from > 0.0 && rel_till > rel_from && rel_till < dur) {
+            // Allow a cut to touch the segment start (rel_from == 0 → trims the
+            // beginning) or end (rel_till == dur → trims the tail); only require
+            // a non-empty range that lies within the segment.
+            let eps = 0.05_f64;
+            if !(rel_from >= -eps && rel_till > rel_from + eps && rel_till <= dur + eps) {
                 report_fail(&tx, &cancel, format!(
-                    "cut-out range {}–{} must lie strictly inside the segment {}–{} (got offsets {:.1}s–{:.1}s within a {:.1}s clip)",
+                    "cut-out range {}–{} must lie within the segment {}–{} (got offsets {:.1}s–{:.1}s within a {:.1}s clip)",
                     from_s, till_s, job.start, job.end, rel_from, rel_till, dur
                 ));
                 return;
             }
-            ranges.push((rel_from, rel_till));
+            ranges.push((rel_from.max(0.0), rel_till.min(dur)));
         }
         // Sort by start and reject overlaps — the concat filter needs disjoint,
         // ordered kept-segments.
@@ -408,6 +412,11 @@ pub fn run(job: Job, settings: Settings, tx: Sender<Event>, cancel: Arc<AtomicBo
         }
         let removed: f64 = ranges.iter().map(|(a, b)| b - a).sum();
         let new_secs = dur - removed;
+        if new_secs < 0.1 {
+            report_fail(&tx, &cancel,
+                "cut-out would remove the entire clip — leave some section uncut".to_string());
+            return;
+        }
         let cut_path = cache_dir.join(format!("{}_{}_cut{}.mp4", video_id, stamp, cuts_tag(&job.cuts)));
         if cut_path.exists() {
             let _ = tx.send(Event::Log(format!("Reusing cached cut segment {}", cut_path.display())));
@@ -416,7 +425,7 @@ pub fn run(job: Job, settings: Settings, tx: Sender<Event>, cancel: Arc<AtomicBo
                 "Cutting out {} section{} ({:.1}s removed) — joining the {:.1}s that remain…",
                 ranges.len(), if ranges.len() == 1 { "" } else { "s" }, removed, new_secs
             )));
-            if let Err(e) = apply_cut_middle(&out, &cut_path, &ranges, &tx, new_secs, &cancel) {
+            if let Err(e) = apply_cut_middle(&out, &cut_path, &ranges, dur, &tx, new_secs, &cancel) {
                 let _ = std::fs::remove_file(&cut_path);
                 report_fail(&tx, &cancel, format!("cut-out: {}", e));
                 return;
@@ -1428,6 +1437,7 @@ fn apply_cut_middle(
     input: &std::path::Path,
     output: &std::path::Path,
     ranges: &[(f64, f64)],
+    dur: f64,
     tx: &Sender<Event>,
     progress_secs: f64,
     cancel: &Arc<AtomicBool>,
@@ -1438,31 +1448,33 @@ fn apply_cut_middle(
         detail: String::new(),
     });
 
-    // Build the list of kept intervals: [0, cut1_from), (cut1_till, cut2_from),
-    // …, (lastCut_till, end]. Trim each kept interval for video and audio,
-    // resetting timestamps to 0 so concat joins them seamlessly, then concat
-    // all kept parts in order.
-    let mut boundaries: Vec<(f64, Option<f64>)> = Vec::new();
+    // Build the list of kept intervals: [0, cut1_from], [cut1_till, cut2_from],
+    // …, [lastCut_till, dur]. Skip any *empty* interval so a cut that touches
+    // the segment start or end (or two abutting cuts) doesn't emit a
+    // zero-length concat part (ffmpeg rejects those / renders garbage). Trim
+    // each kept interval for video and audio, resetting timestamps to 0 so
+    // concat joins them seamlessly, then concat all kept parts in order.
+    let mut boundaries: Vec<(f64, f64)> = Vec::new();
     let mut cursor = 0.0_f64;
     for &(from, till) in ranges {
-        boundaries.push((cursor, Some(from)));
+        if from - cursor > 0.05 {
+            boundaries.push((cursor, from));
+        }
         cursor = till;
     }
-    boundaries.push((cursor, None)); // final kept part runs to end of input
+    if dur - cursor > 0.05 {
+        boundaries.push((cursor, dur));
+    }
+    if boundaries.is_empty() {
+        return Err("nothing left to keep after the cut-outs".into());
+    }
 
     let mut parts = String::new();
     let mut concat_inputs = String::new();
     for (i, &(seg_start, seg_end)) in boundaries.iter().enumerate() {
-        // Video/audio trim for kept part i. `trim=start:end` (end omitted =
-        // to the end of the stream for the final part).
-        let vtrim = match seg_end {
-            Some(e) => format!("trim=start={seg_start}:end={e}"),
-            None => format!("trim=start={seg_start}"),
-        };
-        let atrim = match seg_end {
-            Some(e) => format!("atrim=start={seg_start}:end={e}"),
-            None => format!("atrim=start={seg_start}"),
-        };
+        // Video/audio trim for kept part i.
+        let vtrim = format!("trim=start={seg_start}:end={seg_end}");
+        let atrim = format!("atrim=start={seg_start}:end={seg_end}");
         parts.push_str(&format!(
             "[0:v]{vtrim},setpts=PTS-STARTPTS[v{i}];[0:a]{atrim},asetpts=PTS-STARTPTS[a{i}];",
         ));

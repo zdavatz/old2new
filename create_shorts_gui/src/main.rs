@@ -147,10 +147,17 @@ html, body { margin:0; padding:0; height:100%; background:#0b0b0d; color:#e8e8ea
   border-radius:50%; background:#3b82f6; color:#fff; font-size:13px; font-weight:700; flex:0 0 auto; }\n\
 .name { font-size:15px; font-weight:600; }\n\
 .sub { font-size:12px; color:#9a9aa2; }\n\
-.time { margin-left:auto; font-variant-numeric:tabular-nums; font-size:15px; font-weight:600;\n\
+.steps { margin-left:auto; display:flex; gap:4px; align-items:center; flex:0 0 auto; }\n\
+.steps button { font:600 12px/1 -apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Arial,sans-serif;\n\
+  color:#e8e8ea; background:#26262b; border:1px solid #3a3a42; border-radius:6px;\n\
+  padding:6px 9px; cursor:pointer; min-width:36px; }\n\
+.steps button:hover { background:#33333b; }\n\
+.steps button:active { background:#3b82f6; border-color:#3b82f6; color:#fff; }\n\
+.time { margin-left:12px; font-variant-numeric:tabular-nums; font-size:15px; font-weight:600;\n\
   color:#fff; background:#000; padding:3px 10px; border-radius:6px; letter-spacing:.5px; flex:0 0 auto; }\n\
-.vidwrap { flex:1 1 0; min-height:0; display:flex; background:#000; }\n\
-video { width:100%; height:100%; object-fit:contain; background:#000; }\n";
+.vidwrap { flex:1 1 0; min-height:0; display:flex; align-items:flex-start; justify-content:center;\n\
+  background:#000; overflow:hidden; }\n\
+video { width:100%; height:100%; object-fit:contain; object-position:center top; background:#000; display:block; }\n";
 
     let pane = |badge: &str, name: &str, sub: &str, vid_id: &str, time_id: &str, src: &str| -> String {
         format!(
@@ -159,6 +166,12 @@ video { width:100%; height:100%; object-fit:contain; background:#000; }\n";
     <span class=\"badge\">{badge}</span>\n\
     <span class=\"name\">{name}</span>\n\
     <span class=\"sub\">{sub}</span>\n\
+    <span class=\"steps\">\n\
+      <button data-v=\"{vid_id}\" data-d=\"-1\" title=\"Back 1 second\">−1s</button>\n\
+      <button data-v=\"{vid_id}\" data-d=\"-0.04\" title=\"Back one frame\">−1f</button>\n\
+      <button data-v=\"{vid_id}\" data-d=\"0.04\" title=\"Forward one frame\">+1f</button>\n\
+      <button data-v=\"{vid_id}\" data-d=\"1\" title=\"Forward 1 second\">+1s</button>\n\
+    </span>\n\
     <span class=\"time\" id=\"{time_id}\">0:00 / 0:00</span>\n\
   </div>\n\
   <div class=\"vidwrap\">\n\
@@ -194,7 +207,11 @@ __BODY__\n\
 </div>\n\
 <script>\n\
 function fmt(t){ if(!isFinite(t)||t<0){t=0;} t=Math.floor(t); var m=Math.floor(t/60), s=t%60; return m+':'+(s<10?'0':'')+s; }\n\
-function wire(vidId,outId){ var v=document.getElementById(vidId), o=document.getElementById(outId); if(!v||!o){return;} function u(){ o.textContent=fmt(v.currentTime)+' / '+fmt(v.duration); } v.addEventListener('loadedmetadata',u); v.addEventListener('timeupdate',u); v.addEventListener('durationchange',u); u(); }\n\
+var GUT=48;\n\
+function layout(v){ if(!v||!v.videoWidth){return;} var w=v.parentElement; var availW=w.clientWidth, availH=w.clientHeight; var usableH=Math.max(availH-GUT,40); var s=Math.min(availW/v.videoWidth, usableH/v.videoHeight); var dw=Math.round(v.videoWidth*s), dh=Math.round(v.videoHeight*s); v.style.width=dw+'px'; v.style.height=(dh+GUT)+'px'; }\n\
+function wire(vidId,outId){ var v=document.getElementById(vidId), o=document.getElementById(outId); if(!v){return;} function u(){ if(o){o.textContent=fmt(v.currentTime)+' / '+fmt(v.duration);} } function ll(){ layout(v); } v.addEventListener('loadedmetadata',function(){u();ll();}); v.addEventListener('timeupdate',u); v.addEventListener('durationchange',u); v.addEventListener('seeked',u); window.addEventListener('resize',ll); u(); ll(); }\n\
+function step(vidId,delta){ var v=document.getElementById(vidId); if(!v){return;} v.pause(); var t=v.currentTime+delta; if(t<0){t=0;} var d=v.duration; if(isFinite(d)&&t>d){t=d;} v.currentTime=t; }\n\
+Array.prototype.forEach.call(document.querySelectorAll('button[data-v]'), function(b){ b.addEventListener('click', function(){ step(b.getAttribute('data-v'), parseFloat(b.getAttribute('data-d'))); }); });\n\
 wire('v1','t1'); wire('v2','t2');\n\
 </script>\n\
 </body>\n\
