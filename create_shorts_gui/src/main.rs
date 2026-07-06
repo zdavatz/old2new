@@ -63,6 +63,92 @@ fn ensure_homebrew_on_path() {
     }
 }
 
+/// Open the split preview: the raw downloaded segment (`original`, top) and
+/// the final edited clip (`edited`, bottom) as two stacked video windows so
+/// Jürg can play/stop the original to read its timeline and always see the
+/// edited version below it.
+///
+/// On macOS we drive QuickTime Player via AppleScript so the two windows tile
+/// top/bottom of the screen — each keeps its own scrubber, timecode and
+/// independent play/stop. If automation is unavailable (or the script fails)
+/// we fall back to opening both in the default player, unpositioned. On other
+/// platforms we just open both. When no edits were applied the two paths are
+/// equal and we open a single window.
+fn open_split_preview(original: &std::path::Path, edited: &std::path::Path) -> Result<(), String> {
+    if original == edited {
+        return open::that(edited).map_err(|e| e.to_string());
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        let script = quicktime_split_script(original, edited);
+        match std::process::Command::new("osascript").arg("-e").arg(&script).status() {
+            Ok(s) if s.success() => return Ok(()),
+            _ => { /* automation denied / QuickTime missing → fall through */ }
+        }
+    }
+
+    // Fallback: open both in the default player (order matters little since we
+    // can't position them). Report the first failure but attempt both.
+    let mut err: Option<String> = None;
+    if let Err(e) = open::that(original) {
+        err = Some(format!("original: {}", e));
+    }
+    if let Err(e) = open::that(edited) {
+        err = Some(match err {
+            Some(prev) => format!("{}; edited: {}", prev, e),
+            None => format!("edited: {}", e),
+        });
+    }
+    match err {
+        Some(e) => Err(e),
+        None => Ok(()),
+    }
+}
+
+/// Build the AppleScript that opens both clips in QuickTime Player and tiles
+/// them: `original` fills the top half of the screen, `edited` the bottom.
+/// Positioning is wrapped in `try` so a resize hiccup still leaves both
+/// windows open. We close QuickTime's existing windows first so repeat
+/// previews don't pile up and the window indices stay predictable
+/// (window 2 = original opened first, window 1 = edited opened last).
+#[cfg(target_os = "macos")]
+fn quicktime_split_script(original: &std::path::Path, edited: &std::path::Path) -> String {
+    format!(
+        r#"set topFile to POSIX file {orig}
+set botFile to POSIX file {edit}
+tell application "QuickTime Player"
+  activate
+  try
+    close every window
+  end try
+  open topFile
+  open botFile
+end tell
+delay 0.5
+try
+  tell application "Finder" to set deskBounds to bounds of window of desktop
+  set scrW to item 3 of deskBounds
+  set scrH to item 4 of deskBounds
+  set midY to scrH div 2
+  tell application "QuickTime Player"
+    set bounds of window 2 to {{0, 25, scrW, midY}}
+    set bounds of window 1 to {{0, midY, scrW, scrH}}
+  end tell
+end try"#,
+        orig = applescript_quote(original),
+        edit = applescript_quote(edited),
+    )
+}
+
+/// Quote a path as an AppleScript string literal (escape `\` and `"`).
+#[cfg(target_os = "macos")]
+fn applescript_quote(p: &std::path::Path) -> String {
+    let s = p.to_string_lossy();
+    let escaped = s.replace('\\', "\\\\").replace('"', "\\\"");
+    format!("\"{}\"", escaped)
+}
+
 /// Number of most-recent shorts the PDF export includes.
 const PDF_SHORTS_COUNT: usize = 10;
 
@@ -1146,10 +1232,23 @@ impl App {
                         self.append_log(format!("DONE: {}", url));
                         still_running = false;
                     }
-                    Event::Preview(path) => {
-                        self.append_log(format!("Opening preview: {}", path.display()));
-                        if let Err(e) = open::that(&path) {
-                            self.last_error = Some(format!("Could not open preview ({}). File at {}", e, path.display()));
+                    Event::Preview { original, edited } => {
+                        if original == edited {
+                            self.append_log(format!("Opening preview: {}", edited.display()));
+                        } else {
+                            self.append_log(format!(
+                                "Opening split preview — original (top): {}",
+                                original.display()
+                            ));
+                            self.append_log(format!("edited cut (bottom): {}", edited.display()));
+                        }
+                        if let Err(e) = open_split_preview(&original, &edited) {
+                            self.last_error = Some(format!(
+                                "Could not open preview ({}). Files at {} and {}",
+                                e,
+                                original.display(),
+                                edited.display()
+                            ));
                         }
                         still_running = false;
                     }
@@ -1210,7 +1309,7 @@ impl App {
                         self.append_upload_log(format!("DONE: {}", url));
                         still_running = false;
                     }
-                    Event::Preview(_) => {} // not used in direct upload
+                    Event::Preview { .. } => {} // not used in direct upload
                     Event::Error(e) => {
                         self.upload_last_error = Some(e.clone());
                         self.append_upload_log(format!("ERROR: {}", e));

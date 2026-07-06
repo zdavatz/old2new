@@ -20,7 +20,12 @@ pub enum Event {
     Log(String),
     Progress { phase: String, fraction: f32, detail: String },
     Done(String),
-    Preview(PathBuf),
+    /// Preview finished. `original` is the raw start–end segment exactly as
+    /// downloaded (before any cut-out/stretch/title/fade edits); `edited` is
+    /// the final processed clip we'd upload. The UI opens them as two stacked
+    /// player windows (original on top). When no edits were applied the two
+    /// paths are equal and the UI just opens one.
+    Preview { original: PathBuf, edited: PathBuf },
     Error(String),
     /// The user clicked Cancel; the worker stopped (and killed any running
     /// yt-dlp/ffmpeg child). Reported separately from `Error` so the UI can
@@ -621,7 +626,9 @@ pub fn run(job: Job, settings: Settings, tx: Sender<Event>, cancel: Arc<AtomicBo
 
     if job.preview_only {
         let _ = tx.send(Event::Log(format!("Preview file kept at {}", delivered.display())));
-        let _ = tx.send(Event::Preview(delivered));
+        // `out` is the raw downloaded segment (before edits); `delivered` is
+        // the final edited clip. The UI shows them stacked (original on top).
+        let _ = tx.send(Event::Preview { original: out.clone(), edited: delivered.clone() });
         return;
     }
 
