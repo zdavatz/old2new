@@ -14,6 +14,7 @@ mod installer;
 mod oauth;
 mod pdf;
 mod pipeline;
+mod preview_server;
 mod shorts;
 mod settings;
 mod update;
@@ -63,39 +64,57 @@ fn ensure_homebrew_on_path() {
     }
 }
 
-/// Open the split preview: the raw downloaded segment (`original`, top) and
-/// the final edited clip (`edited`, bottom), stacked in one browser window so
-/// Jürg can play/stop the original to read its timeline and always see the
-/// edited version below it.
+/// Open the split preview: the **full original video on top** and the edited
+/// clip below, stacked in one browser page opened in the default browser.
 ///
-/// We render a tiny self-contained HTML page with two `<video controls>`
-/// elements (each with its own scrubber + independent play/pause) and open it
-/// in the default browser. HTML5 controls always show the position as
-/// **mm:ss / mm:ss** on every machine — no QuickTime frame/timecode toggle, no
-/// automation permission, and no dependency on which player the user set as
-/// default (all of which previously made the time read out as a frame number
-/// on Jürg's Mac). The page is written next to the clips in the segments cache
-/// dir so it references each video by its bare filename (a relative file://
-/// reference the browser loads reliably). When no edits were applied the two
-/// paths are equal and the page shows a single pane.
-fn open_split_preview(original: &std::path::Path, edited: &std::path::Path) -> Result<(), String> {
-    let same = original == edited;
-
-    // Both clips always live in the same segments cache dir, so we drop the
-    // page next to them and reference each video by its (percent-encoded) bare
-    // filename — a relative reference that avoids having to encode the whole
-    // absolute path (fiddly on Windows drive letters).
+/// The top pane embeds the source video straight from YouTube (`source_id`,
+/// deep-linked to `start_secs`) so Jürg sees the whole, untrimmed original —
+/// not the downloaded start–end segment, which to him already counts as "cut".
+/// The bottom pane is the local edited clip as a `<video controls>` (HTML5
+/// controls always show mm:ss / mm:ss; we also render our own readout and add
+/// −1s/−1f/+1f/+1s step buttons, and letterbox a small black gutter so the
+/// timeline never covers burned-in subtitles). When there's no embeddable id
+/// (`source_id` empty) the top pane falls back to the local `original` segment
+/// file; if that also equals `edited` (no edits at all) the page shows one pane.
+fn open_split_preview(
+    original: &std::path::Path,
+    edited: &std::path::Path,
+    source_id: &str,
+    start_secs: u32,
+) -> Result<(), String> {
+    // The edited clip lives in the segments cache dir, so we drop the page next
+    // to it and reference the local video by its (percent-encoded) bare
+    // filename — a relative reference resolved against the server root.
     let html_dir = edited
         .parent()
         .ok_or_else(|| "edited clip has no parent directory".to_string())?;
 
-    let edited_src = video_src(edited, html_dir);
-    let original_src = if same { edited_src.clone() } else { video_src(original, html_dir) };
+    // Serve the page over http://127.0.0.1 rather than opening it as a file://
+    // URL: the YouTube `<iframe>` embed on top rejects a file:// origin with
+    // "Fehler 153". The server also byte-serves the local edited clip (Range
+    // support) so it plays + scrubs in Safari/Chrome.
+    let port = preview_server::ensure_started(html_dir.to_path_buf())
+        .map_err(|e| format!("start preview server: {}", e))?;
+    let base = format!("http://127.0.0.1:{}", port);
 
-    let html = build_preview_html(&original_src, &edited_src, same);
+    let edited_src = video_src(edited, html_dir);
+    let original_src = video_src(original, html_dir);
+    let embed_url = if source_id.is_empty() {
+        None
+    } else {
+        // `enablejsapi=1` lets our step buttons drive the player; `origin` must
+        // match the page origin or YouTube errors (Fehler 153).
+        Some(format!(
+            "https://www.youtube.com/embed/{}?start={}&rel=0&modestbranding=1&enablejsapi=1&origin={}",
+            source_id, start_secs, base
+        ))
+    };
+    let same = source_id.is_empty() && original == edited;
+
+    let html = build_preview_html(embed_url.as_deref(), &original_src, &edited_src, same);
     let html_path = html_dir.join("_preview.html");
     std::fs::write(&html_path, html).map_err(|e| format!("write preview page: {}", e))?;
-    open::that(&html_path).map_err(|e| e.to_string())
+    open::that(format!("{}/_preview.html", base)).map_err(|e| e.to_string())
 }
 
 /// `src` for a local video referenced from the preview page in `html_dir`.
@@ -129,10 +148,11 @@ fn path_to_file_url(p: &std::path::Path) -> String {
     out
 }
 
-/// Build the self-contained preview page: two stacked video panes (original on
-/// top, edited below) with native HTML5 controls plus our own mm:ss / mm:ss
-/// readout that updates on every `timeupdate`.
-fn build_preview_html(original_src: &str, edited_src: &str, same: bool) -> String {
+/// Build the self-contained preview page. Top pane = the full original (a
+/// YouTube `<iframe>` embed when `embed_url` is set, else the local `original`
+/// segment as a `<video>`); bottom pane = the local edited clip as a `<video>`
+/// with mm:ss readout + step buttons + letterbox gutter.
+fn build_preview_html(embed_url: Option<&str>, original_src: &str, edited_src: &str, same: bool) -> String {
     let css = "\
 * { box-sizing: border-box; }\n\
 html, body { margin:0; padding:0; height:100%; background:#0b0b0d; color:#e8e8ea;\n\
@@ -157,7 +177,9 @@ html, body { margin:0; padding:0; height:100%; background:#0b0b0d; color:#e8e8ea
   color:#fff; background:#000; padding:3px 10px; border-radius:6px; letter-spacing:.5px; flex:0 0 auto; }\n\
 .vidwrap { flex:1 1 0; min-height:0; display:flex; align-items:flex-start; justify-content:center;\n\
   background:#000; overflow:hidden; }\n\
-video { width:100%; height:100%; object-fit:contain; object-position:center top; background:#000; display:block; }\n";
+video { width:100%; height:100%; object-fit:contain; object-position:center top; background:#000; display:block; }\n\
+.vidwrap.embed { display:block; }\n\
+.vidwrap.embed iframe { width:100%; height:100%; border:0; display:block; background:#000; }\n";
 
     let pane = |badge: &str, name: &str, sub: &str, vid_id: &str, time_id: &str, src: &str| -> String {
         format!(
@@ -182,12 +204,47 @@ video { width:100%; height:100%; object-fit:contain; object-position:center top;
         )
     };
 
+    // Top pane showing the full original video straight from YouTube. The step
+    // buttons drive YouTube's player via its IFrame API (`data-yt`), and we poll
+    // the player for the mm:ss readout.
+    let embed_pane = |badge: &str, name: &str, sub: &str, url: &str| -> String {
+        format!(
+            "<div class=\"pane\">\n\
+  <div class=\"bar\">\n\
+    <span class=\"badge\">{badge}</span>\n\
+    <span class=\"name\">{name}</span>\n\
+    <span class=\"sub\">{sub}</span>\n\
+    <span class=\"steps\">\n\
+      <button data-yt=\"1\" data-d=\"-1\" title=\"Back 1 second\">−1s</button>\n\
+      <button data-yt=\"1\" data-d=\"-0.04\" title=\"Back one frame\">−1f</button>\n\
+      <button data-yt=\"1\" data-d=\"0.04\" title=\"Forward one frame\">+1f</button>\n\
+      <button data-yt=\"1\" data-d=\"1\" title=\"Forward 1 second\">+1s</button>\n\
+    </span>\n\
+    <span class=\"time\" id=\"tyt\">0:00 / 0:00</span>\n\
+  </div>\n\
+  <div class=\"vidwrap embed\">\n\
+    <iframe id=\"ytplayer\" src=\"{url}\" allow=\"fullscreen; encrypted-media; picture-in-picture\" allowfullscreen></iframe>\n\
+  </div>\n\
+</div>",
+            badge = badge, name = name, sub = sub, url = url.replace('&', "&amp;"),
+        )
+    };
+
+    let top = match embed_url {
+        Some(url) => embed_pane(
+            "1", "Original (full video)",
+            "the whole original, straight from YouTube",
+            url,
+        ),
+        None => pane("1", "Original", "as downloaded", "v1", "t1", original_src),
+    };
+
     let body = if same {
         pane("▶", "Preview", "no edits applied", "v1", "t1", edited_src)
     } else {
         format!(
             "{}\n{}",
-            pane("1", "Original", "as downloaded — play to read its time", "v1", "t1", original_src),
+            top,
             pane("2", "Edited cut", "the version we'd upload", "v2", "t2", edited_src),
         )
     };
@@ -211,7 +268,12 @@ var GUT=48;\n\
 function layout(v){ if(!v||!v.videoWidth){return;} var w=v.parentElement; var availW=w.clientWidth, availH=w.clientHeight; var usableH=Math.max(availH-GUT,40); var s=Math.min(availW/v.videoWidth, usableH/v.videoHeight); var dw=Math.round(v.videoWidth*s), dh=Math.round(v.videoHeight*s); v.style.width=dw+'px'; v.style.height=(dh+GUT)+'px'; }\n\
 function wire(vidId,outId){ var v=document.getElementById(vidId), o=document.getElementById(outId); if(!v){return;} function u(){ if(o){o.textContent=fmt(v.currentTime)+' / '+fmt(v.duration);} } function ll(){ layout(v); } v.addEventListener('loadedmetadata',function(){u();ll();}); v.addEventListener('timeupdate',u); v.addEventListener('durationchange',u); v.addEventListener('seeked',u); window.addEventListener('resize',ll); u(); ll(); }\n\
 function step(vidId,delta){ var v=document.getElementById(vidId); if(!v){return;} v.pause(); var t=v.currentTime+delta; if(t<0){t=0;} var d=v.duration; if(isFinite(d)&&t>d){t=d;} v.currentTime=t; }\n\
-Array.prototype.forEach.call(document.querySelectorAll('button[data-v]'), function(b){ b.addEventListener('click', function(){ step(b.getAttribute('data-v'), parseFloat(b.getAttribute('data-d'))); }); });\n\
+var ytPlayer=null;\n\
+function ytTick(){ var o=document.getElementById('tyt'); if(!o||!ytPlayer||!ytPlayer.getCurrentTime){return;} o.textContent=fmt(ytPlayer.getCurrentTime())+' / '+fmt(ytPlayer.getDuration()); }\n\
+function ytStep(delta){ if(!ytPlayer||!ytPlayer.seekTo){return;} try{ytPlayer.pauseVideo();}catch(e){} var t=Math.max(0,(ytPlayer.getCurrentTime()||0)+delta); var d=ytPlayer.getDuration()||0; if(d){t=Math.min(t,d);} ytPlayer.seekTo(t,true); setTimeout(ytTick,120); }\n\
+window.onYouTubeIframeAPIReady=function(){ ytPlayer=new YT.Player('ytplayer',{events:{'onReady':function(){ ytTick(); setInterval(ytTick,250); }}}); };\n\
+if(document.getElementById('ytplayer')){ var _yt=document.createElement('script'); _yt.src='https://www.youtube.com/iframe_api'; document.head.appendChild(_yt); }\n\
+Array.prototype.forEach.call(document.querySelectorAll('button[data-d]'), function(b){ b.addEventListener('click', function(){ var dd=parseFloat(b.getAttribute('data-d')); if(b.getAttribute('data-yt')){ ytStep(dd); } else { step(b.getAttribute('data-v'), dd); } }); });\n\
 wire('v1','t1'); wire('v2','t2');\n\
 </script>\n\
 </body>\n\
@@ -1303,21 +1365,19 @@ impl App {
                         self.append_log(format!("DONE: {}", url));
                         still_running = false;
                     }
-                    Event::Preview { original, edited } => {
-                        if original == edited {
-                            self.append_log(format!("Opening preview: {}", edited.display()));
+                    Event::Preview { original, edited, source_id, start_secs } => {
+                        if source_id.is_empty() {
+                            self.append_log(format!("Opening split preview — original (top): {}", original.display()));
                         } else {
                             self.append_log(format!(
-                                "Opening split preview — original (top): {}",
-                                original.display()
+                                "Opening split preview — full original {} (top), edited (bottom): {}",
+                                source_id, edited.display()
                             ));
-                            self.append_log(format!("edited cut (bottom): {}", edited.display()));
                         }
-                        if let Err(e) = open_split_preview(&original, &edited) {
+                        if let Err(e) = open_split_preview(&original, &edited, &source_id, start_secs) {
                             self.last_error = Some(format!(
-                                "Could not open preview ({}). Files at {} and {}",
+                                "Could not open preview ({}). Edited clip at {}",
                                 e,
-                                original.display(),
                                 edited.display()
                             ));
                         }
@@ -1380,7 +1440,7 @@ impl App {
                         self.append_upload_log(format!("DONE: {}", url));
                         still_running = false;
                     }
-                    Event::Preview { .. } => {} // not used in direct upload
+                    Event::Preview { .. } => {} // not used in direct upload tab
                     Event::Error(e) => {
                         self.upload_last_error = Some(e.clone());
                         self.append_upload_log(format!("ERROR: {}", e));

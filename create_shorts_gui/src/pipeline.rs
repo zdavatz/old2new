@@ -20,12 +20,15 @@ pub enum Event {
     Log(String),
     Progress { phase: String, fraction: f32, detail: String },
     Done(String),
-    /// Preview finished. `original` is the raw start–end segment exactly as
-    /// downloaded (before any cut-out/stretch/title/fade edits); `edited` is
-    /// the final processed clip we'd upload. The UI opens them as two stacked
-    /// player windows (original on top). When no edits were applied the two
-    /// paths are equal and the UI just opens one.
-    Preview { original: PathBuf, edited: PathBuf },
+    /// Preview finished. The UI opens a split page with the **full original
+    /// video on top** and the edited clip below. `source_id` is the YouTube id
+    /// of the source (embedded on top so Jürg sees the whole, untrimmed
+    /// original, not just the downloaded start–end segment) and `start_secs`
+    /// deep-links the embed near the segment start. `edited` is the final
+    /// processed clip we'd upload (bottom, local file). `original` is the raw
+    /// downloaded start–end segment, kept only as an offline fallback for the
+    /// top pane when `source_id` can't be embedded.
+    Preview { original: PathBuf, edited: PathBuf, source_id: String, start_secs: u32 },
     Error(String),
     /// The user clicked Cancel; the worker stopped (and killed any running
     /// yt-dlp/ffmpeg child). Reported separately from `Error` so the UI can
@@ -635,9 +638,17 @@ pub fn run(job: Job, settings: Settings, tx: Sender<Event>, cancel: Arc<AtomicBo
 
     if job.preview_only {
         let _ = tx.send(Event::Log(format!("Preview file kept at {}", delivered.display())));
-        // `out` is the raw downloaded segment (before edits); `delivered` is
-        // the final edited clip. The UI shows them stacked (original on top).
-        let _ = tx.send(Event::Preview { original: out.clone(), edited: delivered.clone() });
+        // Top pane = the full original video (embedded from YouTube via
+        // `source_id`, deep-linked to the segment start); bottom = the edited
+        // clip (`delivered`). `out` (the raw start–end download) is passed only
+        // as an offline fallback for the top pane.
+        let start_secs = parse_timestamp(&job.start).unwrap_or(0.0).max(0.0) as u32;
+        let _ = tx.send(Event::Preview {
+            original: out.clone(),
+            edited: delivered.clone(),
+            source_id: video_id.clone(),
+            start_secs,
+        });
         return;
     }
 
