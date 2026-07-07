@@ -29,6 +29,12 @@ pub enum Event {
     /// downloaded start–end segment, kept only as an offline fallback for the
     /// top pane when `source_id` can't be embedded.
     Preview { original: PathBuf, edited: PathBuf, source_id: String, start_secs: u32 },
+    /// The start–end segment is downloaded and ready to watch in the window
+    /// (for marking cut points). `start_secs` lets the viewer show *absolute*
+    /// source time (segment offset + start) so the shown timestamps match what
+    /// the user types into the cut fields. Kept fractional (e.g. 587.5) so a
+    /// `9:47.5` start reads back exactly, not `9:47.0`.
+    SourceReady { path: PathBuf, start_secs: f64 },
     Error(String),
     /// The user clicked Cancel; the worker stopped (and killed any running
     /// yt-dlp/ffmpeg child). Reported separately from `Error` so the UI can
@@ -141,6 +147,11 @@ pub struct Job {
     pub description: String,
     pub privacy: String,
     pub preview_only: bool,
+    /// Just download the start–end segment and hand it back (via
+    /// `Event::SourceReady`) for the in-window "watch the original" viewer —
+    /// no cuts/title/fades, no preview, no upload. Skips even audio repair so
+    /// it's fast.
+    pub source_only: bool,
     pub overlay_title: bool,
     pub overlay_color: [u8; 3],
     /// Normalized title position [x, y] in 0.0..=1.0 (0,0 = top-left,
@@ -350,6 +361,16 @@ pub fn run(job: Job, settings: Settings, tx: Sender<Event>, cancel: Arc<AtomicBo
         }
     };
     let _ = tx.send(Event::Log(format!("Segment ready: {:.1} MB", size as f64 / 1_048_576.0)));
+
+    // "Watch the original" mode: hand the raw segment straight to the in-window
+    // viewer so the user can scrub it and read off cut-point timestamps. No
+    // edits, no audio repair (kept fast), no preview/upload.
+    if job.source_only {
+        let start_secs = parse_timestamp(&job.start).unwrap_or(0.0).max(0.0);
+        let _ = tx.send(Event::Log("Original ready — scrub it in the window to find your cut points.".into()));
+        let _ = tx.send(Event::SourceReady { path: out.clone(), start_secs });
+        return;
+    }
 
     // Guard against the yt-dlp merge desync that leaves the segment's audio
     // shorter than its video (sound stops early; the fade-out plays silent).
@@ -782,8 +803,8 @@ fn run_yt_dlp(
     let tx_e = tx.clone();
     let stderr_capture: LineBuf = Arc::new(Mutex::new(VecDeque::new()));
     let cap_for_thread = stderr_capture.clone();
-    let h_o = stdout.map(|r| std::thread::spawn(move || stream_progress(r, tx_o, segment_secs, None)));
-    let h_e = stderr.map(|r| std::thread::spawn(move || stream_progress(r, tx_e, segment_secs, Some(cap_for_thread))));
+    let h_o = stdout.map(|r| std::thread::spawn(move || stream_progress(r, tx_o, segment_secs, None, "Downloading segment".to_string())));
+    let h_e = stderr.map(|r| std::thread::spawn(move || stream_progress(r, tx_e, segment_secs, Some(cap_for_thread), "Downloading segment".to_string())));
     let status = wait_or_cancel(&mut child, cancel)?;
     if let Some(h) = h_o { let _ = h.join(); }
     if let Some(h) = h_e { let _ = h.join(); }
@@ -849,8 +870,8 @@ fn hw_transcode_segment(
         let tx_e = tx.clone();
         let stderr_capture: LineBuf = Arc::new(Mutex::new(VecDeque::new()));
         let cap_for_thread = stderr_capture.clone();
-        let h_o = stdout.map(|r| std::thread::spawn(move || stream_progress(r, tx_o, segment_secs, None)));
-        let h_e = stderr.map(|r| std::thread::spawn(move || stream_progress(r, tx_e, segment_secs, Some(cap_for_thread))));
+        let h_o = stdout.map(|r| std::thread::spawn(move || stream_progress(r, tx_o, segment_secs, None, "Preparing segment".to_string())));
+        let h_e = stderr.map(|r| std::thread::spawn(move || stream_progress(r, tx_e, segment_secs, Some(cap_for_thread), "Preparing segment".to_string())));
         let status = wait_or_cancel(&mut child, cancel)?;
         if let Some(h) = h_o { let _ = h.join(); }
         if let Some(h) = h_e { let _ = h.join(); }
@@ -918,8 +939,8 @@ fn download_tail_audio(
     let stderr_capture: LineBuf = Arc::new(Mutex::new(VecDeque::new()));
     let cap_for_thread = stderr_capture.clone();
     let secs = fade_secs as f64;
-    let h_o = stdout.map(|r| std::thread::spawn(move || stream_progress(r, tx_o, secs, None)));
-    let h_e = stderr.map(|r| std::thread::spawn(move || stream_progress(r, tx_e, secs, Some(cap_for_thread))));
+    let h_o = stdout.map(|r| std::thread::spawn(move || stream_progress(r, tx_o, secs, None, "Fetching fade audio".to_string())));
+    let h_e = stderr.map(|r| std::thread::spawn(move || stream_progress(r, tx_e, secs, Some(cap_for_thread), "Fetching fade audio".to_string())));
     let status = wait_or_cancel(&mut child, cancel)?;
     if let Some(h) = h_o { let _ = h.join(); }
     if let Some(h) = h_e { let _ = h.join(); }
@@ -973,8 +994,8 @@ fn download_section_audio(
     let tx_e = tx.clone();
     let stderr_capture: LineBuf = Arc::new(Mutex::new(VecDeque::new()));
     let cap_for_thread = stderr_capture.clone();
-    let h_o = stdout.map(|r| std::thread::spawn(move || stream_progress(r, tx_o, secs, None)));
-    let h_e = stderr.map(|r| std::thread::spawn(move || stream_progress(r, tx_e, secs, Some(cap_for_thread))));
+    let h_o = stdout.map(|r| std::thread::spawn(move || stream_progress(r, tx_o, secs, None, "Fetching aligned audio".to_string())));
+    let h_e = stderr.map(|r| std::thread::spawn(move || stream_progress(r, tx_e, secs, Some(cap_for_thread), "Fetching aligned audio".to_string())));
     let status = wait_or_cancel(&mut child, cancel)?;
     if let Some(h) = h_o { let _ = h.join(); }
     if let Some(h) = h_e { let _ = h.join(); }
@@ -1132,7 +1153,7 @@ fn summarize_yt_dlp_failure(buf: &LineBuf) -> String {
 /// in-place progress lines (which use carriage-return only) are
 /// captured. yt-dlp `[download] X.X%` and ffmpeg `time=HH:MM:SS` lines
 /// are intercepted as Progress events; everything else goes to Log.
-fn stream_progress<R: Read>(reader: R, tx: Sender<Event>, segment_secs: f64, capture: Option<LineBuf>) {
+fn stream_progress<R: Read>(reader: R, tx: Sender<Event>, segment_secs: f64, capture: Option<LineBuf>, phase: String) {
     let mut br = std::io::BufReader::new(reader);
     let mut buf = Vec::with_capacity(1024);
     let mut byte = [0u8; 1];
@@ -1144,7 +1165,7 @@ fn stream_progress<R: Read>(reader: R, tx: Sender<Event>, segment_secs: f64, cap
                 if b == b'\r' || b == b'\n' {
                     if !buf.is_empty() {
                         let line = String::from_utf8_lossy(&buf).to_string();
-                        emit_line(&line, &tx, segment_secs, capture.as_ref());
+                        emit_line(&line, &tx, segment_secs, capture.as_ref(), &phase);
                         buf.clear();
                     }
                 } else {
@@ -1156,11 +1177,11 @@ fn stream_progress<R: Read>(reader: R, tx: Sender<Event>, segment_secs: f64, cap
     }
     if !buf.is_empty() {
         let line = String::from_utf8_lossy(&buf).to_string();
-        emit_line(&line, &tx, segment_secs, capture.as_ref());
+        emit_line(&line, &tx, segment_secs, capture.as_ref(), &phase);
     }
 }
 
-fn emit_line(line: &str, tx: &Sender<Event>, segment_secs: f64, capture: Option<&LineBuf>) {
+fn emit_line(line: &str, tx: &Sender<Event>, segment_secs: f64, capture: Option<&LineBuf>, phase: &str) {
     if let Some(frac) = parse_yt_dlp_pct(line) {
         let _ = tx.send(Event::Progress {
             phase: "Downloading".into(),
@@ -1173,7 +1194,7 @@ fn emit_line(line: &str, tx: &Sender<Event>, segment_secs: f64, capture: Option<
         if segment_secs > 0.0 {
             let frac = ((t / segment_secs) as f32).clamp(0.0, 1.0);
             let _ = tx.send(Event::Progress {
-                phase: "Encoding segment".into(),
+                phase: phase.to_string(),
                 fraction: frac,
                 detail: format!("{:.1}s / {:.1}s", t, segment_secs),
             });
@@ -1427,6 +1448,17 @@ fn video_encoder_args() -> Vec<&'static str> {
     }
 }
 
+/// Decode-side acceleration hook for the re-encode stages (placed before `-i`).
+/// **Currently a no-op** on every platform: the apparent "hang" on heavy jobs
+/// turned out to be the mpv in-window-preview deadlock (fixed in `mpv.rs`), not
+/// CPU starvation from software-decoding 4K. Software decode is fast on Apple
+/// Silicon (multi-core ~7× realtime) and avoids the videotoolbox copy-back
+/// penalty (~2× slower wall-clock for the same output), so we keep it off. Kept
+/// as a helper so it can be flipped back on for genuinely slow/few-core hosts.
+fn hwaccel_decode_args() -> Vec<&'static str> {
+    vec![]
+}
+
 /// Filename-safe tag encoding all cut ranges, e.g. two cuts 0:10–0:15 and
 /// 0:30–0:40 → `0_10_0_15-0_30_0_40`. Folded into derived cache filenames so
 /// changing the cuts busts the cache.
@@ -1495,8 +1527,9 @@ fn apply_cut_middle(
     let filter = format!("{parts}{concat_inputs}concat=n={n}:v=1:a=1[v][a]");
 
     let mut cmd = Command::new("ffmpeg");
+    cmd.arg("-y");
+    cmd.args(hwaccel_decode_args());
     cmd.args([
-        "-y",
         "-i",
         input.to_str().ok_or("non-utf8 input path")?,
         "-filter_complex",
@@ -1524,8 +1557,8 @@ fn apply_cut_middle(
     let tx_e = tx.clone();
     let stderr_capture: LineBuf = Arc::new(Mutex::new(VecDeque::new()));
     let cap_for_thread = stderr_capture.clone();
-    let h_o = stdout.map(|r| std::thread::spawn(move || stream_progress(r, tx_o, progress_secs, None)));
-    let h_e = stderr.map(|r| std::thread::spawn(move || stream_progress(r, tx_e, progress_secs, Some(cap_for_thread))));
+    let h_o = stdout.map(|r| std::thread::spawn(move || stream_progress(r, tx_o, progress_secs, None, "Cutting out sections".to_string())));
+    let h_e = stderr.map(|r| std::thread::spawn(move || stream_progress(r, tx_e, progress_secs, Some(cap_for_thread), "Cutting out sections".to_string())));
     let status = wait_or_cancel(&mut child, cancel)?;
     if let Some(h) = h_o { let _ = h.join(); }
     if let Some(h) = h_e { let _ = h.join(); }
@@ -1565,8 +1598,9 @@ fn apply_title_overlay(
 
     let filter = "[0:v][1:v]overlay=0:0:enable='between(t,1,5)'";
     let mut cmd = Command::new("ffmpeg");
+    cmd.arg("-y");
+    cmd.args(hwaccel_decode_args()); // HW-decode the (4K) video input; PNG input unaffected
     cmd.args([
-        "-y",
         "-i",
         input.to_str().ok_or("non-utf8 input path")?,
         "-i",
@@ -1592,8 +1626,8 @@ fn apply_title_overlay(
     let tx_e = tx.clone();
     let stderr_capture: LineBuf = Arc::new(Mutex::new(VecDeque::new()));
     let cap_for_thread = stderr_capture.clone();
-    let h_o = stdout.map(|r| std::thread::spawn(move || stream_progress(r, tx_o, segment_secs, None)));
-    let h_e = stderr.map(|r| std::thread::spawn(move || stream_progress(r, tx_e, segment_secs, Some(cap_for_thread))));
+    let h_o = stdout.map(|r| std::thread::spawn(move || stream_progress(r, tx_o, segment_secs, None, "Burning in title".to_string())));
+    let h_e = stderr.map(|r| std::thread::spawn(move || stream_progress(r, tx_e, segment_secs, Some(cap_for_thread), "Burning in title".to_string())));
     let status = wait_or_cancel(&mut child, cancel)?;
     if let Some(h) = h_o { let _ = h.join(); }
     if let Some(h) = h_e { let _ = h.join(); }
@@ -1742,8 +1776,9 @@ fn apply_fade_out(
     });
 
     let mut cmd = Command::new("ffmpeg");
-    cmd.arg("-y")
-        .arg("-i")
+    cmd.arg("-y");
+    cmd.args(hwaccel_decode_args()); // HW-decode the (4K) video input
+    cmd.arg("-i")
         .arg(input.to_str().ok_or("non-utf8 input path")?);
     if use_tail {
         cmd.arg("-i")
@@ -1794,8 +1829,8 @@ fn apply_fade_out(
     let tx_e = tx.clone();
     let stderr_capture: LineBuf = Arc::new(Mutex::new(VecDeque::new()));
     let cap_for_thread = stderr_capture.clone();
-    let h_o = stdout.map(|r| std::thread::spawn(move || stream_progress(r, tx_o, total, None)));
-    let h_e = stderr.map(|r| std::thread::spawn(move || stream_progress(r, tx_e, total, Some(cap_for_thread))));
+    let h_o = stdout.map(|r| std::thread::spawn(move || stream_progress(r, tx_o, total, None, "Adding fade-out".to_string())));
+    let h_e = stderr.map(|r| std::thread::spawn(move || stream_progress(r, tx_e, total, Some(cap_for_thread), "Adding fade-out".to_string())));
     let status = wait_or_cancel(&mut child, cancel)?;
     if let Some(h) = h_o { let _ = h.join(); }
     if let Some(h) = h_e { let _ = h.join(); }
@@ -1850,8 +1885,9 @@ fn apply_fade_in(
     });
 
     let mut cmd = Command::new("ffmpeg");
-    cmd.arg("-y")
-        .arg("-i")
+    cmd.arg("-y");
+    cmd.args(hwaccel_decode_args()); // HW-decode the (4K) video input
+    cmd.arg("-i")
         .arg(input.to_str().ok_or("non-utf8 input path")?)
         .arg("-vf")
         .arg(&vf);
@@ -1879,8 +1915,8 @@ fn apply_fade_in(
     let tx_e = tx.clone();
     let stderr_capture: LineBuf = Arc::new(Mutex::new(VecDeque::new()));
     let cap_for_thread = stderr_capture.clone();
-    let h_o = stdout.map(|r| std::thread::spawn(move || stream_progress(r, tx_o, total, None)));
-    let h_e = stderr.map(|r| std::thread::spawn(move || stream_progress(r, tx_e, total, Some(cap_for_thread))));
+    let h_o = stdout.map(|r| std::thread::spawn(move || stream_progress(r, tx_o, total, None, "Adding fade-in".to_string())));
+    let h_e = stderr.map(|r| std::thread::spawn(move || stream_progress(r, tx_e, total, Some(cap_for_thread), "Adding fade-in".to_string())));
     let status = wait_or_cancel(&mut child, cancel)?;
     if let Some(h) = h_o { let _ = h.join(); }
     if let Some(h) = h_e { let _ = h.join(); }
@@ -1943,8 +1979,9 @@ fn apply_stretch(
     });
 
     let mut cmd = Command::new("ffmpeg");
-    cmd.arg("-y")
-        .arg("-i")
+    cmd.arg("-y");
+    cmd.args(hwaccel_decode_args()); // HW-decode the (4K) video input
+    cmd.arg("-i")
         .arg(input.to_str().ok_or("non-utf8 input path")?)
         .arg("-vf")
         .arg(&vf);
@@ -1971,8 +2008,8 @@ fn apply_stretch(
     let tx_e = tx.clone();
     let stderr_capture: LineBuf = Arc::new(Mutex::new(VecDeque::new()));
     let cap_for_thread = stderr_capture.clone();
-    let h_o = stdout.map(|r| std::thread::spawn(move || stream_progress(r, tx_o, target, None)));
-    let h_e = stderr.map(|r| std::thread::spawn(move || stream_progress(r, tx_e, target, Some(cap_for_thread))));
+    let h_o = stdout.map(|r| std::thread::spawn(move || stream_progress(r, tx_o, target, None, "Stretching clip".to_string())));
+    let h_e = stderr.map(|r| std::thread::spawn(move || stream_progress(r, tx_e, target, Some(cap_for_thread), "Stretching clip".to_string())));
     let status = wait_or_cancel(&mut child, cancel)?;
     if let Some(h) = h_o { let _ = h.join(); }
     if let Some(h) = h_e { let _ = h.join(); }

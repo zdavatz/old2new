@@ -15,7 +15,7 @@ use std::ffi::CString;
 use std::os::raw::{c_char, c_int, c_void};
 use std::ptr;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use libloading::{Library, Symbol};
 
@@ -35,9 +35,28 @@ const MPV_RENDER_PARAM_SW_POINTER: c_int = 20;
 // mpv_render_context_update() return-flag bit
 const MPV_RENDER_UPDATE_FRAME: u64 = 1;
 
+// mpv_event_id
+const MPV_EVENT_SHUTDOWN: c_int = 1;
+const MPV_EVENT_PROPERTY_CHANGE: c_int = 22;
+
 #[repr(C)]
 struct MpvRenderParam {
     type_: c_int,
+    data: *mut c_void,
+}
+
+#[repr(C)]
+struct MpvEvent {
+    event_id: c_int,
+    error: c_int,
+    reply_userdata: u64,
+    data: *mut c_void,
+}
+
+#[repr(C)]
+struct MpvEventProperty {
+    name: *const c_char,
+    format: c_int,
     data: *mut c_void,
 }
 
@@ -55,6 +74,8 @@ type FnRenderSetCb =
 type FnRenderUpdate = unsafe extern "C" fn(*mut c_void) -> u64;
 type FnRenderFree = unsafe extern "C" fn(*mut c_void);
 type FnTerminate = unsafe extern "C" fn(*mut c_void);
+type FnObserve = unsafe extern "C" fn(*mut c_void, u64, *const c_char, c_int) -> c_int;
+type FnWaitEvent = unsafe extern "C" fn(*mut c_void, f64) -> *mut MpvEvent;
 
 /// The loaded libmpv and its resolved entry points. Cheap to `Arc`-clone so
 /// several `Player`s share one library handle.
@@ -72,6 +93,8 @@ pub struct MpvLib {
     render_update: FnRenderUpdate,
     render_free: FnRenderFree,
     terminate: FnTerminate,
+    observe_property: FnObserve,
+    wait_event: FnWaitEvent,
 }
 
 // The raw function pointers are stable for the loaded library's lifetime, and
@@ -109,6 +132,11 @@ impl MpvLib {
     /// Try each platform-standard libmpv name/path until one loads and exports
     /// every symbol we need. `Err` lists what was tried so the caller can hint.
     pub fn load() -> Result<MpvLib, String> {
+        // Escape hatch: force the browser-preview fallback even when libmpv is
+        // present (for reproducing the mpv-absent path during testing).
+        if std::env::var_os("CS_NO_MPV").is_some() {
+            return Err("disabled via CS_NO_MPV".into());
+        }
         let mut last = String::new();
         for name in candidate_libs() {
             match unsafe { Self::load_from(name) } {
@@ -140,6 +168,8 @@ impl MpvLib {
             render_update: sym!(FnRenderUpdate, b"mpv_render_context_update\0"),
             render_free: sym!(FnRenderFree, b"mpv_render_context_free\0"),
             terminate: sym!(FnTerminate, b"mpv_terminate_destroy\0"),
+            observe_property: sym!(FnObserve, b"mpv_observe_property\0"),
+            wait_event: sym!(FnWaitEvent, b"mpv_wait_event\0"),
             _lib: lib,
         };
         Ok(out)
@@ -163,6 +193,19 @@ unsafe extern "C" fn update_cb(data: *mut c_void) {
     u.egui.request_repaint();
 }
 
+/// Latest property values, updated asynchronously by the event-pump thread and
+/// read (non-blocking) by the UI thread. **Never** read via a synchronous
+/// `mpv_get_property` on the UI thread: during video-output init mpv's core
+/// thread blocks in a render rendezvous, so a blocking property call from the
+/// render/UI thread deadlocks (core waits for a render, UI waits for core).
+#[derive(Default, Clone, Copy)]
+struct Cached {
+    time_pos: f64,
+    duration: f64,
+    width: u32,
+    height: u32,
+}
+
 /// One video surface. Loads a local file, decodes on the CPU, and renders the
 /// current frame into an RGBA buffer sized to the on-screen pane.
 pub struct Player {
@@ -175,6 +218,11 @@ pub struct Player {
     w: i32,
     h: i32,
     paused: bool,
+    /// Async-updated time-pos/duration/size (see `Cached`).
+    cached: Arc<Mutex<Cached>>,
+    /// Set on Drop to stop the event-pump thread.
+    ev_stop: Arc<AtomicBool>,
+    ev_thread: Option<std::thread::JoinHandle<()>>,
 }
 
 impl Player {
@@ -192,6 +240,15 @@ impl Player {
                 let cv = CString::new(v).unwrap();
                 (lib.set_option_string)(handle, ck.as_ptr(), cv.as_ptr())
             };
+            // CRITICAL: force the render-API video output. Without this, mpv
+            // running inside an app with a live NSApplication (eframe) picks the
+            // platform VO ("gpu"/cocoa) and opens its OWN native window — the
+            // frames go there instead of our software-render buffer (so the
+            // in-app pane stays black, an extra window/dock-icon appears, and it
+            // won't close). `vo=libmpv` makes the render context the only VO.
+            set_opt("vo", "libmpv");
+            // No auto window under any circumstance.
+            set_opt("force-window", "no");
             // Keep libmpv lean and predictable: no terminal spam, no config
             // files, no user scripts / key bindings / OSC.
             set_opt("terminal", "no");
@@ -237,6 +294,72 @@ impl Player {
             }));
             (lib.render_set_update_cb)(rctx, Some(update_cb), update_ctx as *mut c_void);
 
+            // Observe the properties we display so a background thread can keep
+            // them cached — we must NOT read them via a blocking
+            // mpv_get_property on the UI thread (deadlocks the render rendezvous).
+            (lib.observe_property)(handle, 1, b"time-pos\0".as_ptr() as *const c_char, MPV_FORMAT_DOUBLE);
+            (lib.observe_property)(handle, 2, b"duration\0".as_ptr() as *const c_char, MPV_FORMAT_DOUBLE);
+            (lib.observe_property)(handle, 3, b"dwidth\0".as_ptr() as *const c_char, MPV_FORMAT_INT64);
+            (lib.observe_property)(handle, 4, b"dheight\0".as_ptr() as *const c_char, MPV_FORMAT_INT64);
+
+            let cached = Arc::new(Mutex::new(Cached::default()));
+            let ev_stop = Arc::new(AtomicBool::new(false));
+            let ev_thread = {
+                // mpv's client API is thread-safe, so this dedicated event thread
+                // can pump events concurrently with the UI thread's rendering.
+                // Pass the handle as a usize address (Send) and cast back inside
+                // — a raw pointer can't cross the thread boundary directly.
+                let h_addr = handle as usize;
+                let lib2 = lib.clone();
+                let cached2 = cached.clone();
+                let stop2 = ev_stop.clone();
+                Some(std::thread::spawn(move || {
+                    let h = h_addr as *mut c_void;
+                    loop {
+                        if stop2.load(Ordering::SeqCst) {
+                            break;
+                        }
+                        // 0.1s timeout → we notice `stop` promptly. wait_event
+                        // dequeues client events and never blocks on the core
+                        // dispatch lock, so it can't deadlock during VO init.
+                        let ev = unsafe { (lib2.wait_event)(h, 0.1) };
+                        if ev.is_null() {
+                            continue;
+                        }
+                        let ev = unsafe { &*ev };
+                        if ev.event_id == MPV_EVENT_SHUTDOWN {
+                            break;
+                        }
+                        if ev.event_id == MPV_EVENT_PROPERTY_CHANGE && !ev.data.is_null() {
+                            let prop = unsafe { &*(ev.data as *const MpvEventProperty) };
+                            if prop.data.is_null() || prop.name.is_null() {
+                                continue;
+                            }
+                            let name = unsafe { std::ffi::CStr::from_ptr(prop.name) };
+                            if let Ok(mut c) = cached2.lock() {
+                                match name.to_bytes() {
+                                    b"time-pos" if prop.format == MPV_FORMAT_DOUBLE => {
+                                        c.time_pos = unsafe { *(prop.data as *const f64) };
+                                    }
+                                    b"duration" if prop.format == MPV_FORMAT_DOUBLE => {
+                                        c.duration = unsafe { *(prop.data as *const f64) };
+                                    }
+                                    b"dwidth" if prop.format == MPV_FORMAT_INT64 => {
+                                        let v = unsafe { *(prop.data as *const i64) };
+                                        if v > 0 { c.width = v as u32; }
+                                    }
+                                    b"dheight" if prop.format == MPV_FORMAT_INT64 => {
+                                        let v = unsafe { *(prop.data as *const i64) };
+                                        if v > 0 { c.height = v as u32; }
+                                    }
+                                    _ => {}
+                                }
+                            }
+                        }
+                    }
+                }))
+            };
+
             let mut p = Player {
                 lib,
                 handle,
@@ -247,6 +370,9 @@ impl Player {
                 w: 0,
                 h: 0,
                 paused: true,
+                cached,
+                ev_stop,
+                ev_thread,
             };
             p.load(path)?;
             Ok(p)
@@ -281,49 +407,12 @@ impl Player {
         }
     }
 
-    fn get_double(&self, name: &str) -> Option<f64> {
-        let cn = CString::new(name).unwrap();
-        let mut v: f64 = 0.0;
-        let rc = unsafe {
-            (self.lib.get_property)(
-                self.handle,
-                cn.as_ptr(),
-                MPV_FORMAT_DOUBLE,
-                &mut v as *mut f64 as *mut c_void,
-            )
-        };
-        if rc == 0 && v.is_finite() {
-            Some(v)
-        } else {
-            None
-        }
-    }
-
-    fn get_int(&self, name: &str) -> Option<i64> {
-        let cn = CString::new(name).unwrap();
-        let mut v: i64 = 0;
-        let rc = unsafe {
-            (self.lib.get_property)(
-                self.handle,
-                cn.as_ptr(),
-                MPV_FORMAT_INT64,
-                &mut v as *mut i64 as *mut c_void,
-            )
-        };
-        if rc == 0 {
-            Some(v)
-        } else {
-            None
-        }
-    }
-
-    /// The video's on-screen dimensions (post-aspect), once a frame has been
-    /// decoded. `None` until then. Used to size the pane to the real aspect.
+    /// The video's on-screen dimensions (post-aspect), once decoded. `None`
+    /// until then. Read from the async cache — never a blocking mpv call.
     pub fn video_size(&self) -> Option<(u32, u32)> {
-        let w = self.get_int("dwidth")?;
-        let h = self.get_int("dheight")?;
-        if w > 0 && h > 0 {
-            Some((w as u32, h as u32))
+        let c = self.cached.lock().ok()?;
+        if c.width > 0 && c.height > 0 {
+            Some((c.width, c.height))
         } else {
             None
         }
@@ -349,11 +438,11 @@ impl Player {
     }
 
     pub fn time_pos(&self) -> f64 {
-        self.get_double("time-pos").unwrap_or(0.0)
+        self.cached.lock().map(|c| c.time_pos).unwrap_or(0.0)
     }
 
     pub fn duration(&self) -> f64 {
-        self.get_double("duration").unwrap_or(0.0)
+        self.cached.lock().map(|c| c.duration).unwrap_or(0.0)
     }
 
     /// Render the current frame into the internal RGBA buffer if there is a new
@@ -404,6 +493,13 @@ impl Player {
 
 impl Drop for Player {
     fn drop(&mut self) {
+        // Stop the event-pump thread and wait for it to exit *before* tearing
+        // down the mpv handle it reads from (its 0.1s wait_event timeout means
+        // this returns promptly).
+        self.ev_stop.store(true, Ordering::SeqCst);
+        if let Some(t) = self.ev_thread.take() {
+            let _ = t.join();
+        }
         unsafe {
             if !self.rctx.is_null() {
                 // Unhook the callback before freeing so it can't fire mid-teardown.

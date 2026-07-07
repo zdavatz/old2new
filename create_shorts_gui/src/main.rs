@@ -407,22 +407,12 @@ impl Default for FormState {
     }
 }
 
-/// In-window video preview: two mpv players — the original downloaded segment
-/// (top) and the edited clip (bottom) — each rendered to an egui texture via
-/// libmpv's software render API. The hand-entered cut ranges are painted over
-/// the original's timeline so you see exactly what gets removed.
+/// In-window preview of the **final edited clip only** (the raw original is
+/// watched separately via "Load original"). A single mpv player rendered to an
+/// egui texture via libmpv's software render API.
 struct PreviewState {
-    orig: mpv::Player,
-    edited: mpv::Player,
-    orig_tex: Option<egui::TextureHandle>,
-    edited_tex: Option<egui::TextureHandle>,
-    /// original == edited (no edits applied) → collapse to a single pane.
-    same: bool,
-    /// Cut ranges relative to the segment start (seconds), for the overlay.
-    cuts: Vec<(f64, f64)>,
-    /// Segment length end−start (seconds); scales the overlay timeline before
-    /// mpv reports a real duration.
-    seg_secs: f64,
+    player: mpv::Player,
+    tex: Option<egui::TextureHandle>,
     title: String,
 }
 
@@ -521,6 +511,20 @@ struct App {
     mpv_load_err: Option<String>,
     /// Active in-window preview (two mpv players), or `None` when idle.
     preview: Option<PreviewState>,
+    /// The "watch the original" viewer: an mpv player of the raw start–end
+    /// segment, shown in a side panel so the user can scrub it and read cut
+    /// timestamps while editing. `source_start_secs` makes the readout show
+    /// *absolute* source time (segment offset + start).
+    source_player: Option<mpv::Player>,
+    source_tex: Option<egui::TextureHandle>,
+    source_start_secs: f64,
+    /// `brew install mpv` is running (from the "install mpv" banner).
+    mpv_installing: bool,
+    mpv_install_rx: Option<Receiver<BrewEvent>>,
+    /// Homebrew path, probed ONCE at startup (and on Re-check). The banners are
+    /// drawn every frame, so calling `deps::brew_path()` there would spawn
+    /// `brew --version` 60×/s and stutter the UI — cache it instead.
+    brew: Option<String>,
 }
 
 enum BrewEvent {
@@ -678,6 +682,15 @@ fn chrono_like_now() -> String {
 fn fmt_time(t: f64) -> String {
     let t = if t.is_finite() && t > 0.0 { t as u64 } else { 0 };
     format!("{}:{:02}", t / 60, t % 60)
+}
+
+/// mm:ss.s (tenths) for the "watch the original" readout, so the shown time
+/// matches the precision users type into the cut fields (e.g. `10:02.6`).
+fn fmt_time_tenths(t: f64) -> String {
+    let t = if t.is_finite() && t > 0.0 { t } else { 0.0 };
+    let m = (t / 60.0) as u64;
+    let s = t - (m as f64) * 60.0;
+    format!("{}:{:04.1}", m, s)
 }
 
 /// One preview pane: the mpv frame as an egui image, a play/pause button, an
@@ -854,6 +867,106 @@ fn draw_timeline(
     }
 }
 
+/// The "watch the original" pane: the raw segment as an egui image, a big
+/// **absolute source-time** readout (segment offset + start, tenths precision)
+/// so the shown time matches what the user types into the cut fields, the
+/// hand-entered cut ranges overlaid, and play/pause + frame-step + seek.
+fn draw_source_pane(
+    ui: &mut egui::Ui,
+    player: &mut mpv::Player,
+    tex: &mut Option<egui::TextureHandle>,
+    start_secs: f64,
+    cuts: &[(f64, f64)],
+    seg_secs: f64,
+) {
+    let aspect = player
+        .video_size()
+        .map(|(w, h)| w as f32 / h as f32)
+        .filter(|a| a.is_finite() && *a > 0.1)
+        .unwrap_or(16.0 / 9.0);
+    let w = ui.available_width().max(160.0);
+    // Leave room below the frame for the readout + controls + timeline.
+    let h = (w / aspect).min((ui.available_height() - 96.0).max(120.0));
+    let ppp = ui.ctx().pixels_per_point();
+    let pw = (w * ppp).round() as i32;
+    let ph = (h * ppp).round() as i32;
+
+    if let Some((fw, fh, rgba)) = player.poll_frame(pw, ph) {
+        let img = egui::ColorImage::from_rgba_unmultiplied([fw as usize, fh as usize], rgba);
+        match tex {
+            Some(t) => t.set(img, egui::TextureOptions::LINEAR),
+            None => *tex = Some(ui.ctx().load_texture("mpv-source", img, egui::TextureOptions::LINEAR)),
+        }
+    }
+
+    let pos = player.time_pos();
+    let dur = {
+        let d = player.duration();
+        if d.is_finite() && d > 0.0 { d } else { seg_secs }
+    };
+
+    let (rect, _) = ui.allocate_exact_size(egui::vec2(w, h), egui::Sense::hover());
+    ui.painter().rect_filled(rect, 2.0, egui::Color32::BLACK);
+    if let Some(t) = tex.as_ref() {
+        ui.painter().image(
+            t.id(),
+            rect,
+            egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
+            egui::Color32::WHITE,
+        );
+    }
+    if cuts.iter().any(|(a, b)| pos >= *a && pos < *b) {
+        let banner = egui::Rect::from_min_size(rect.left_top(), egui::vec2(rect.width(), 22.0));
+        ui.painter().rect_filled(banner, 0.0, egui::Color32::from_rgba_unmultiplied(200, 40, 40, 190));
+        ui.painter().text(
+            banner.center(),
+            egui::Align2::CENTER_CENTER,
+            "✂ cut out",
+            egui::FontId::proportional(13.0),
+            egui::Color32::WHITE,
+        );
+    }
+
+    // Big absolute-time readout — the value to copy into a cut field.
+    ui.add_space(4.0);
+    ui.horizontal(|ui| {
+        ui.label(RichText::new("Source time:").strong());
+        ui.label(
+            RichText::new(fmt_time_tenths(start_secs + pos))
+                .monospace()
+                .size(22.0)
+                .strong()
+                .color(egui::Color32::from_rgb(40, 110, 210)),
+        );
+        ui.label(
+            RichText::new(format!("(segment {} / {})", fmt_time(pos), fmt_time(dur)))
+                .small()
+                .weak(),
+        );
+    });
+
+    ui.horizontal(|ui| {
+        let sym = if player.is_paused() { "▶ Play" } else { "⏸ Pause" };
+        if ui.button(sym).clicked() {
+            player.toggle_pause();
+        }
+        if ui.button("−1s").on_hover_text("Back 1 second").clicked() {
+            player.seek_absolute((pos - 1.0).max(0.0));
+        }
+        if ui.button("−1f").on_hover_text("Back one frame").clicked() {
+            player.seek_absolute((pos - 0.04).max(0.0));
+        }
+        if ui.button("+1f").on_hover_text("Forward one frame").clicked() {
+            player.seek_absolute(pos + 0.04);
+        }
+        if ui.button("+1s").on_hover_text("Forward 1 second").clicked() {
+            player.seek_absolute(pos + 1.0);
+        }
+    });
+
+    draw_timeline(ui, w, player, pos, dur, Some(cuts));
+}
+
 impl App {
     fn new(cc: &eframe::CreationContext<'_>) -> Self {
         let mut settings = Settings::load();
@@ -967,6 +1080,12 @@ impl App {
             mpv_lib,
             mpv_load_err,
             preview: None,
+            source_player: None,
+            source_tex: None,
+            source_start_secs: 0.0,
+            mpv_installing: false,
+            mpv_install_rx: None,
+            brew: deps::brew_path(),
         };
         if let Some(e) = &s.mpv_load_err {
             s.append_log(format!(
@@ -1308,6 +1427,77 @@ impl App {
         });
     }
 
+    /// Install mpv (which provides libmpv) via Homebrew, streaming to the log.
+    /// On success we re-dlopen libmpv so the in-window preview lights up with
+    /// no restart. Kept separate from `start_brew_install` because mpv is
+    /// optional — its absence only downgrades Preview to the browser.
+    fn start_mpv_install(&mut self) {
+        if self.mpv_installing { return; }
+        let Some(brew) = deps::brew_path() else {
+            self.last_error = Some("Homebrew not installed".into());
+            return;
+        };
+        self.last_error = None;
+        let (tx, rx) = unbounded::<BrewEvent>();
+        self.mpv_install_rx = Some(rx);
+        self.mpv_installing = true;
+        self.append_log(format!("Running: {} install mpv", brew));
+        std::thread::spawn(move || {
+            use std::io::{BufRead, BufReader};
+            use std::process::{Command, Stdio};
+            let mut cmd = Command::new(&brew);
+            cmd.arg("install").arg("mpv");
+            cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
+            let mut child = match cmd.spawn() {
+                Ok(c) => c,
+                Err(e) => { let _ = tx.send(BrewEvent::Error(format!("brew spawn failed: {}", e))); return; }
+            };
+            let stdout = child.stdout.take();
+            let stderr = child.stderr.take();
+            let tx_o = tx.clone();
+            let tx_e = tx.clone();
+            let h_out = stdout.map(|r| std::thread::spawn(move || {
+                let mut buf = BufReader::new(r);
+                let mut line = String::new();
+                while buf.read_line(&mut line).map(|n| n > 0).unwrap_or(false) {
+                    let _ = tx_o.send(BrewEvent::Log(line.trim_end_matches(['\r','\n']).to_string()));
+                    line.clear();
+                }
+            }));
+            let h_err = stderr.map(|r| std::thread::spawn(move || {
+                let mut buf = BufReader::new(r);
+                let mut line = String::new();
+                while buf.read_line(&mut line).map(|n| n > 0).unwrap_or(false) {
+                    let _ = tx_e.send(BrewEvent::Log(line.trim_end_matches(['\r','\n']).to_string()));
+                    line.clear();
+                }
+            }));
+            let status = child.wait();
+            if let Some(h) = h_out { let _ = h.join(); }
+            if let Some(h) = h_err { let _ = h.join(); }
+            match status {
+                Ok(s) if s.success() => { let _ = tx.send(BrewEvent::Done); }
+                Ok(s) => { let _ = tx.send(BrewEvent::Error(format!("brew exited with {:?}", s.code()))); }
+                Err(e) => { let _ = tx.send(BrewEvent::Error(format!("brew wait failed: {}", e))); }
+            }
+        });
+    }
+
+    /// Retry loading libmpv (after the user installed mpv or clicked Re-check).
+    fn recheck_mpv(&mut self) {
+        match mpv::MpvLib::load() {
+            Ok(l) => {
+                self.mpv_lib = Some(Arc::new(l));
+                self.mpv_load_err = None;
+                self.append_log("mpv found — Preview will now play in the window.".into());
+            }
+            Err(e) => {
+                self.mpv_load_err = Some(e.clone());
+                self.append_log(format!("mpv still not found: {}", e));
+            }
+        }
+    }
+
     fn ensure_icon_texture(&mut self, ctx: &egui::Context) {
         if self.icon_texture.is_some() { return; }
         let Ok(img) = image::load_from_memory(ICON_PNG) else { return };
@@ -1398,8 +1588,11 @@ impl App {
         });
     }
 
-    fn start_job(&mut self) { self.kick_off(false); }
-    fn start_preview(&mut self) { self.kick_off(true); }
+    fn start_job(&mut self) { self.kick_off(false, false); }
+    fn start_preview(&mut self) { self.kick_off(true, false); }
+    /// Download the start–end segment and open it in the in-window viewer so
+    /// the user can scrub it and read off cut-point timestamps before editing.
+    fn start_load_source(&mut self) { self.kick_off(false, true); }
 
     /// Snapshot the currently-entered cut ranges as offsets (seconds) from the
     /// segment start, clamped to the segment. Empty when "Remove middle
@@ -1432,40 +1625,19 @@ impl App {
     fn open_in_window_preview(
         &mut self,
         ctx: &egui::Context,
-        original: &std::path::Path,
         edited: &std::path::Path,
     ) -> Result<(), String> {
         let lib = self
             .mpv_lib
             .clone()
             .ok_or_else(|| "libmpv not loaded".to_string())?;
-        // Drop any prior preview first so we don't hold three players at once.
+        // Drop any prior preview first.
         self.preview = None;
-
-        let same = original == edited;
-        let orig = mpv::Player::open(lib.clone(), ctx, &original.to_string_lossy())
-            .map_err(|e| format!("original: {}", e))?;
-        let edited_player = if same {
-            mpv::Player::open(lib.clone(), ctx, &edited.to_string_lossy())
-                .map_err(|e| format!("edited: {}", e))?
-        } else {
-            mpv::Player::open(lib, ctx, &edited.to_string_lossy())
-                .map_err(|e| format!("edited: {}", e))?
-        };
-
-        let start = pipeline::parse_timestamp(&self.form.start).unwrap_or(0.0);
-        let end = pipeline::parse_timestamp(&self.form.end).unwrap_or(start);
-        let seg_secs = (end - start).max(0.0);
-        let cuts = self.preview_cut_ranges(seg_secs);
-
+        let player = mpv::Player::open(lib, ctx, &edited.to_string_lossy())
+            .map_err(|e| format!("edited: {}", e))?;
         self.preview = Some(PreviewState {
-            orig,
-            edited: edited_player,
-            orig_tex: None,
-            edited_tex: None,
-            same,
-            cuts,
-            seg_secs,
+            player,
+            tex: None,
             title: self.form.title.trim().to_string(),
         });
         Ok(())
@@ -1474,11 +1646,56 @@ impl App {
     /// Draw the in-window preview panes (original on top, edited below) with
     /// per-pane play/pause, mm:ss readout, a seek timeline, and the cut-range
     /// overlay. No-op when no preview is active.
+    /// Draw the "watch the original" side panel: the raw segment playing so the
+    /// user can scrub it, with an absolute source-time readout and the live cut
+    /// overlay. No-op when no original is loaded.
+    fn draw_source_viewer(&mut self, ui: &mut egui::Ui) {
+        let playing = self.source_player.as_ref().map(|p| !p.is_paused()).unwrap_or(false);
+        if playing {
+            ui.ctx().request_repaint();
+        }
+        // Compute the overlay ranges before borrowing the player mutably.
+        let dur = self.source_player.as_ref().map(|p| p.duration()).unwrap_or(0.0);
+        let seg_secs = if dur > 0.0 {
+            dur
+        } else {
+            let s = pipeline::parse_timestamp(&self.form.start).unwrap_or(0.0);
+            let e = pipeline::parse_timestamp(&self.form.end).unwrap_or(s);
+            (e - s).max(0.0)
+        };
+        let cuts = self.preview_cut_ranges(seg_secs);
+        let start = self.source_start_secs;
+
+        let mut close = false;
+        ui.add_space(4.0);
+        ui.horizontal(|ui| {
+            ui.label(RichText::new("👁 Original — find your cut points").strong());
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if ui.button("✖ Close").clicked() {
+                    close = true;
+                }
+            });
+        });
+        ui.label(
+            RichText::new("Scrub the video, read “Source time”, and type it into a Cut out from/till field.")
+                .small()
+                .weak(),
+        );
+        ui.add_space(4.0);
+        if let Some(player) = self.source_player.as_mut() {
+            draw_source_pane(ui, player, &mut self.source_tex, start, &cuts, seg_secs);
+        }
+        if close {
+            self.source_player = None;
+            self.source_tex = None;
+        }
+    }
+
+    /// Draw the in-window preview of the **final edited clip only** (a single
+    /// pane). The raw original is watched separately via "Load original".
     fn draw_preview(&mut self, ui: &mut egui::Ui) {
         let Some(preview) = self.preview.as_mut() else { return; };
-        // Keep ticking while a pane plays so the frame + mm:ss readout advance;
-        // paused panes idle until mpv's update callback wakes the UI.
-        if !preview.orig.is_paused() || !preview.edited.is_paused() {
+        if !preview.player.is_paused() {
             ui.ctx().request_repaint();
         }
         let mut close = false;
@@ -1489,7 +1706,7 @@ impl App {
             .rounding(4.0)
             .show(ui, |ui| {
                 ui.horizontal(|ui| {
-                    ui.label(RichText::new("▶ Preview").strong().color(egui::Color32::WHITE));
+                    ui.label(RichText::new("▶ Preview — edited clip").strong().color(egui::Color32::WHITE));
                     if !preview.title.is_empty() {
                         ui.label(
                             RichText::new(&preview.title)
@@ -1504,30 +1721,14 @@ impl App {
                     });
                 });
                 ui.add_space(6.0);
-                let orig_label = if preview.same {
-                    "Original — no edits applied"
-                } else {
-                    "Original (this section, before your cuts/fades)"
-                };
                 draw_video_pane(
                     ui,
-                    &mut preview.orig,
-                    &mut preview.orig_tex,
-                    "1",
-                    orig_label,
-                    Some((preview.cuts.as_slice(), preview.seg_secs)),
+                    &mut preview.player,
+                    &mut preview.tex,
+                    "▶",
+                    "The final cut we'd upload",
+                    None,
                 );
-                if !preview.same {
-                    ui.add_space(10.0);
-                    draw_video_pane(
-                        ui,
-                        &mut preview.edited,
-                        &mut preview.edited_tex,
-                        "2",
-                        "Edited cut (what gets uploaded)",
-                        None,
-                    );
-                }
             });
         if close {
             self.preview = None;
@@ -1586,7 +1787,7 @@ impl App {
         std::thread::spawn(move || pipeline::run_upload(job, settings, tx, cancel));
     }
 
-    fn kick_off(&mut self, preview_only: bool) {
+    fn kick_off(&mut self, preview_only: bool, source_only: bool) {
         if self.running { return; }
         let missing = self.deps.missing();
         if !missing.is_empty() {
@@ -1605,7 +1806,8 @@ impl App {
             self.last_error = Some("Start and end timestamps are required".into());
             return;
         }
-        if self.form.cut_middle {
+        // Cuts / title / sign-in aren't needed to just watch the original.
+        if self.form.cut_middle && !source_only {
             let filled: Vec<&CutRange> = self
                 .form
                 .cuts
@@ -1624,11 +1826,11 @@ impl App {
             }
         }
         // Title is only required when actually uploading.
-        if !preview_only && self.form.title.trim().is_empty() {
+        if !preview_only && !source_only && self.form.title.trim().is_empty() {
             self.last_error = Some("Title is required".into());
             return;
         }
-        if !preview_only && !self.signed_in {
+        if !preview_only && !source_only && !self.signed_in {
             self.last_error = Some("Sign in to YouTube first (Settings)".into());
             return;
         }
@@ -1652,6 +1854,7 @@ impl App {
             description: self.form.description.trim().to_string(),
             privacy: self.form.privacy.clone(),
             preview_only,
+            source_only,
             overlay_title: self.form.overlay_title,
             overlay_color: self.form.overlay_color,
             overlay_pos: self.form.overlay_pos,
@@ -1730,12 +1933,11 @@ impl App {
                         // player fails to open.
                         let mut used_window = false;
                         if self.mpv_lib.is_some() {
-                            match self.open_in_window_preview(ctx, &original, &edited) {
+                            match self.open_in_window_preview(ctx, &edited) {
                                 Ok(()) => {
                                     used_window = true;
                                     self.append_log(
-                                        "Preview ready — playing in the window (original on top, edited below)."
-                                            .into(),
+                                        "Preview ready — the edited clip is playing in the window.".into(),
                                     );
                                 }
                                 Err(e) => self.append_log(format!(
@@ -1760,6 +1962,28 @@ impl App {
                                     edited.display()
                                 ));
                             }
+                        }
+                        still_running = false;
+                    }
+                    Event::SourceReady { path, start_secs } => {
+                        // Open the raw segment in the in-window viewer (if mpv
+                        // is available) so the user can scrub for cut points.
+                        if let Some(lib) = self.mpv_lib.clone() {
+                            match mpv::Player::open(lib, ctx, &path.to_string_lossy()) {
+                                Ok(p) => {
+                                    self.source_player = Some(p);
+                                    self.source_tex = None;
+                                    self.source_start_secs = start_secs;
+                                    self.append_log("Original loaded — scrub it to find cut points.".into());
+                                }
+                                Err(e) => {
+                                    self.last_error = Some(format!("Could not open the original in the window ({}).", e));
+                                }
+                            }
+                        } else {
+                            // No mpv: fall back to the system player.
+                            let _ = open::that(&path);
+                            self.append_log(format!("Opened original in your video player: {}", path.display()));
                         }
                         still_running = false;
                     }
@@ -1821,6 +2045,7 @@ impl App {
                         still_running = false;
                     }
                     Event::Preview { .. } => {} // not used in direct upload tab
+                    Event::SourceReady { .. } => {} // not used in direct upload tab
                     Event::Error(e) => {
                         self.upload_last_error = Some(e.clone());
                         self.append_upload_log(format!("ERROR: {}", e));
@@ -2149,6 +2374,30 @@ impl App {
             }
         }
 
+        // Clone so `recheck_mpv` (&mut self) can run after the channel drains.
+        if let Some(rx) = self.mpv_install_rx.clone() {
+            let mut done = false;
+            while let Ok(ev) = rx.try_recv() {
+                match ev {
+                    BrewEvent::Log(s) => self.append_log(s),
+                    BrewEvent::Done => {
+                        self.append_log("mpv install finished.".into());
+                        done = true;
+                    }
+                    BrewEvent::Error(e) => {
+                        self.last_error = Some(e.clone());
+                        self.append_log(format!("mpv install error: {}", e));
+                        done = true;
+                    }
+                }
+            }
+            if done {
+                self.mpv_installing = false;
+                self.mpv_install_rx = None;
+                self.recheck_mpv();
+            }
+        }
+
         if let Some(rx) = &self.ytdlp_update_rx {
             let mut done = false;
             while let Ok(ev) = rx.try_recv() {
@@ -2205,7 +2454,7 @@ impl eframe::App for App {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.drain_events(ctx);
         self.ensure_icon_texture(ctx);
-        if self.running || self.upload_running || self.signing_in || self.brew_installing || self.ytdlp_updating || self.update_checking || self.cookies_testing || self.installing || self.wa_sending || self.wa_setup_running || self.wa_login_running || self.davaz_posting || self.pdf_exporting || self.pdf_fetching {
+        if self.running || self.upload_running || self.signing_in || self.brew_installing || self.mpv_installing || self.ytdlp_updating || self.update_checking || self.cookies_testing || self.installing || self.wa_sending || self.wa_setup_running || self.wa_login_running || self.davaz_posting || self.pdf_exporting || self.pdf_fetching {
             ctx.request_repaint_after(std::time::Duration::from_millis(150));
         }
 
@@ -2265,6 +2514,18 @@ impl eframe::App for App {
             ui.add_space(2.0);
         });
 
+        // "Watch the original" side panel — the raw segment playing in the same
+        // window (never a popup), so the form (cut fields) stays visible beside
+        // it. Added before the CentralPanel so it docks to the right edge.
+        if self.source_player.is_some() {
+            egui::SidePanel::right("original_viewer")
+                .resizable(true)
+                .default_width(520.0)
+                .show(ctx, |ui| {
+                    self.draw_source_viewer(ui);
+                });
+        }
+
         egui::CentralPanel::default().show(ctx, |ui| {
             ui.add_space(6.0);
 
@@ -2318,7 +2579,7 @@ impl eframe::App for App {
 
             let missing = self.deps.missing();
             if !missing.is_empty() {
-                let brew = deps::brew_path();
+                let brew = self.brew.clone();
                 egui::Frame::none()
                     .fill(egui::Color32::from_rgb(255, 240, 205))
                     .stroke(egui::Stroke::new(1.0, egui::Color32::from_rgb(220, 170, 60)))
@@ -2333,6 +2594,7 @@ impl eframe::App for App {
                             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                                 if ui.button("Re-check").clicked() {
                                     self.deps = deps::DepStatus::check();
+                                    self.brew = deps::brew_path();
                                 }
                                 if cfg!(target_os = "macos") {
                                     if brew.is_some() {
@@ -2357,6 +2619,53 @@ impl eframe::App for App {
                         } else {
                             ui.label(deps::DepStatus::install_hint(&missing));
                         }
+                    });
+                ui.add_space(6.0);
+            }
+
+            // mpv (optional) banner: without libmpv the Preview can't play in
+            // this window and falls back to the browser split view. Offer a
+            // one-click install. Informational (not blocking) — mpv is optional.
+            if self.mpv_lib.is_none() {
+                let brew = self.brew.clone();
+                egui::Frame::none()
+                    .fill(egui::Color32::from_rgb(224, 238, 255))
+                    .stroke(egui::Stroke::new(1.0, egui::Color32::from_rgb(90, 150, 220)))
+                    .inner_margin(8.0)
+                    .rounding(4.0)
+                    .show(ui, |ui| {
+                        ui.horizontal_wrapped(|ui| {
+                            ui.colored_label(
+                                egui::Color32::from_rgb(30, 80, 150),
+                                "ℹ Preview opens in your browser because mpv isn't installed. Install mpv to play the preview inside this window (with the cut overlay).",
+                            );
+                        });
+                        ui.add_space(4.0);
+                        ui.horizontal(|ui| {
+                            if cfg!(target_os = "macos") {
+                                if brew.is_some() {
+                                    let label = if self.mpv_installing { "Installing mpv…" } else { "Install mpv with Homebrew" };
+                                    let resp = ui.add_enabled(!self.mpv_installing, egui::Button::new(label));
+                                    if resp.clicked() { self.start_mpv_install(); }
+                                } else if ui.button("How to install Homebrew").clicked() {
+                                    let _ = open::that("https://brew.sh");
+                                }
+                            }
+                            if ui.button("Re-check").clicked() {
+                                self.recheck_mpv();
+                            }
+                            ui.label(
+                                RichText::new(if cfg!(target_os = "macos") {
+                                    "or run 'brew install mpv' in Terminal"
+                                } else if cfg!(target_os = "windows") {
+                                    "install mpv (e.g. 'scoop install mpv' or from mpv.io), then Re-check"
+                                } else {
+                                    "install libmpv (e.g. 'sudo apt install -y libmpv2' or 'mpv'), then Re-check"
+                                })
+                                .small()
+                                .color(egui::Color32::from_gray(110)),
+                            );
+                        });
                     });
                 ui.add_space(6.0);
             }
@@ -2590,6 +2899,16 @@ impl eframe::App for App {
             ui.add_space(8.0);
             ui.horizontal(|ui| {
                 let deps_ok = self.deps.missing().is_empty();
+                // Watch the raw original in the window first, to find cut points.
+                let load_label = if self.source_player.is_some() { "👁 Reload original" } else { "👁 Load original" };
+                let load_btn = ui.add_enabled(
+                    !self.running && deps_ok,
+                    egui::Button::new(load_label).min_size(egui::vec2(140.0, 32.0)),
+                ).on_hover_text(
+                    "Download the start–end segment and play it here in the window, so you can scrub it and read off the timestamps for your cut points before editing",
+                );
+                if load_btn.clicked() { self.start_load_source(); }
+                ui.add_space(8.0);
                 let preview_btn = ui.add_enabled(
                     !self.running && deps_ok,
                     egui::Button::new("Preview").min_size(egui::vec2(110.0, 32.0)),
