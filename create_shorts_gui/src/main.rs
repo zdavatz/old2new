@@ -206,8 +206,11 @@ video { width:100%; height:100%; object-fit:contain; object-position:center top;
 
     // Top pane showing the full original video straight from YouTube. The step
     // buttons drive YouTube's player via its IFrame API (`data-yt`), and we poll
-    // the player for the mm:ss readout.
-    let embed_pane = |badge: &str, name: &str, sub: &str, url: &str| -> String {
+    // the player for the mm:ss readout. If the embed can't load (offline, or a
+    // content-blocker extension eats youtube.com/iframe_api), the JS reveals the
+    // hidden local `<video id="v1">` fallback (the original as downloaded) so the
+    // pane always shows a playing video with an mm:ss readout.
+    let embed_pane = |badge: &str, name: &str, sub: &str, url: &str, fallback: &str| -> String {
         format!(
             "<div class=\"pane\">\n\
   <div class=\"bar\">\n\
@@ -224,9 +227,10 @@ video { width:100%; height:100%; object-fit:contain; object-position:center top;
   </div>\n\
   <div class=\"vidwrap embed\">\n\
     <iframe id=\"ytplayer\" src=\"{url}\" allow=\"fullscreen; encrypted-media; picture-in-picture\" allowfullscreen></iframe>\n\
+    <video id=\"v1\" src=\"{fallback}\" controls preload=\"none\" playsinline style=\"display:none\"></video>\n\
   </div>\n\
 </div>",
-            badge = badge, name = name, sub = sub, url = url.replace('&', "&amp;"),
+            badge = badge, name = name, sub = sub, url = url.replace('&', "&amp;"), fallback = fallback,
         )
     };
 
@@ -234,7 +238,7 @@ video { width:100%; height:100%; object-fit:contain; object-position:center top;
         Some(url) => embed_pane(
             "1", "Original (full video)",
             "the whole original, straight from YouTube",
-            url,
+            url, original_src,
         ),
         None => pane("1", "Original", "as downloaded", "v1", "t1", original_src),
     };
@@ -268,13 +272,14 @@ var GUT=48;\n\
 function layout(v){ if(!v||!v.videoWidth){return;} var w=v.parentElement; var availW=w.clientWidth, availH=w.clientHeight; var usableH=Math.max(availH-GUT,40); var s=Math.min(availW/v.videoWidth, usableH/v.videoHeight); var dw=Math.round(v.videoWidth*s), dh=Math.round(v.videoHeight*s); v.style.width=dw+'px'; v.style.height=(dh+GUT)+'px'; }\n\
 function wire(vidId,outId){ var v=document.getElementById(vidId), o=document.getElementById(outId); if(!v){return;} function u(){ if(o){o.textContent=fmt(v.currentTime)+' / '+fmt(v.duration);} } function ll(){ layout(v); } v.addEventListener('loadedmetadata',function(){u();ll();}); v.addEventListener('timeupdate',u); v.addEventListener('durationchange',u); v.addEventListener('seeked',u); window.addEventListener('resize',ll); u(); ll(); }\n\
 function step(vidId,delta){ var v=document.getElementById(vidId); if(!v){return;} v.pause(); var t=v.currentTime+delta; if(t<0){t=0;} var d=v.duration; if(isFinite(d)&&t>d){t=d;} v.currentTime=t; }\n\
-var ytPlayer=null;\n\
+var ytPlayer=null, ytReady=false, ytFallback=false;\n\
 function ytTick(){ var o=document.getElementById('tyt'); if(!o||!ytPlayer||!ytPlayer.getCurrentTime){return;} o.textContent=fmt(ytPlayer.getCurrentTime())+' / '+fmt(ytPlayer.getDuration()); }\n\
 function ytStep(delta){ if(!ytPlayer||!ytPlayer.seekTo){return;} try{ytPlayer.pauseVideo();}catch(e){} var t=Math.max(0,(ytPlayer.getCurrentTime()||0)+delta); var d=ytPlayer.getDuration()||0; if(d){t=Math.min(t,d);} ytPlayer.seekTo(t,true); setTimeout(ytTick,120); }\n\
-window.onYouTubeIframeAPIReady=function(){ ytPlayer=new YT.Player('ytplayer',{events:{'onReady':function(){ ytTick(); setInterval(ytTick,250); }}}); };\n\
-if(document.getElementById('ytplayer')){ var _yt=document.createElement('script'); _yt.src='https://www.youtube.com/iframe_api'; document.head.appendChild(_yt); }\n\
-Array.prototype.forEach.call(document.querySelectorAll('button[data-d]'), function(b){ b.addEventListener('click', function(){ var dd=parseFloat(b.getAttribute('data-d')); if(b.getAttribute('data-yt')){ ytStep(dd); } else { step(b.getAttribute('data-v'), dd); } }); });\n\
-wire('v1','t1'); wire('v2','t2');\n\
+function useFallback(){ if(ytFallback){return;} ytFallback=true; var f=document.getElementById('ytplayer'); if(f){f.style.display='none';} var v=document.getElementById('v1'); if(v){ v.style.display='block'; try{v.load();}catch(e){} wire('v1','tyt'); } }\n\
+window.onYouTubeIframeAPIReady=function(){ try{ ytPlayer=new YT.Player('ytplayer',{events:{'onReady':function(){ ytReady=true; ytTick(); setInterval(ytTick,250); },'onError':function(){ useFallback(); }}}); }catch(e){ useFallback(); } };\n\
+if(document.getElementById('ytplayer')){ var _yt=document.createElement('script'); _yt.src='https://www.youtube.com/iframe_api'; _yt.onerror=function(){ useFallback(); }; document.head.appendChild(_yt); setTimeout(function(){ if(!ytReady){ useFallback(); } }, 6000); }\n\
+Array.prototype.forEach.call(document.querySelectorAll('button[data-d]'), function(b){ b.addEventListener('click', function(){ var dd=parseFloat(b.getAttribute('data-d')); if(b.getAttribute('data-yt')){ if(ytFallback){ step('v1', dd); } else { ytStep(dd); } } else { step(b.getAttribute('data-v'), dd); } }); });\n\
+if(!document.getElementById('ytplayer')){ wire('v1','t1'); } wire('v2','t2');\n\
 </script>\n\
 </body>\n\
 </html>";
