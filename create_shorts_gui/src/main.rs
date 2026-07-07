@@ -11,6 +11,7 @@ mod davaz;
 mod deps;
 mod history;
 mod installer;
+mod mpv;
 mod oauth;
 mod pdf;
 mod pipeline;
@@ -406,6 +407,25 @@ impl Default for FormState {
     }
 }
 
+/// In-window video preview: two mpv players — the original downloaded segment
+/// (top) and the edited clip (bottom) — each rendered to an egui texture via
+/// libmpv's software render API. The hand-entered cut ranges are painted over
+/// the original's timeline so you see exactly what gets removed.
+struct PreviewState {
+    orig: mpv::Player,
+    edited: mpv::Player,
+    orig_tex: Option<egui::TextureHandle>,
+    edited_tex: Option<egui::TextureHandle>,
+    /// original == edited (no edits applied) → collapse to a single pane.
+    same: bool,
+    /// Cut ranges relative to the segment start (seconds), for the overlay.
+    cuts: Vec<(f64, f64)>,
+    /// Segment length end−start (seconds); scales the overlay timeline before
+    /// mpv reports a real duration.
+    seg_secs: f64,
+    title: String,
+}
+
 struct App {
     settings: Settings,
     form: FormState,
@@ -495,6 +515,12 @@ struct App {
     upload_log: Arc<Mutex<Vec<String>>>,
     upload_last_done_url: Option<String>,
     upload_last_error: Option<String>,
+    /// Runtime-loaded libmpv (dlopen). `None` if mpv isn't installed — the
+    /// Preview then falls back to the browser split view.
+    mpv_lib: Option<Arc<mpv::MpvLib>>,
+    mpv_load_err: Option<String>,
+    /// Active in-window preview (two mpv players), or `None` when idle.
+    preview: Option<PreviewState>,
 }
 
 enum BrewEvent {
@@ -648,6 +674,186 @@ fn chrono_like_now() -> String {
     chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string()
 }
 
+/// mm:ss for the preview readouts (matches the old browser page's format).
+fn fmt_time(t: f64) -> String {
+    let t = if t.is_finite() && t > 0.0 { t as u64 } else { 0 };
+    format!("{}:{:02}", t / 60, t % 60)
+}
+
+/// One preview pane: the mpv frame as an egui image, a play/pause button, an
+/// mm:ss readout, and a seek timeline. `overlay` (original pane only) shades
+/// the hand-entered cut ranges red and flashes a "✂ cut out" banner over the
+/// picture whenever the playhead is inside a removed range.
+fn draw_video_pane(
+    ui: &mut egui::Ui,
+    player: &mut mpv::Player,
+    tex: &mut Option<egui::TextureHandle>,
+    badge: &str,
+    label: &str,
+    overlay: Option<(&[(f64, f64)], f64)>,
+) {
+    // Size the box to the real video aspect (16:9 until the first frame lands),
+    // capped so it stays sane on very wide windows.
+    let aspect = player
+        .video_size()
+        .map(|(w, h)| w as f32 / h as f32)
+        .filter(|a| a.is_finite() && *a > 0.1)
+        .unwrap_or(16.0 / 9.0);
+    let avail_w = ui.available_width().max(160.0);
+    let max_w = avail_w.min(760.0);
+    let max_h = 340.0_f32;
+    let (mut w, mut h) = (max_w, max_w / aspect);
+    if h > max_h {
+        h = max_h;
+        w = max_h * aspect;
+    }
+    let ppp = ui.ctx().pixels_per_point();
+    let pw = (w * ppp).round() as i32;
+    let ph = (h * ppp).round() as i32;
+
+    // Pull a fresh frame (if any) into the texture.
+    if let Some((fw, fh, rgba)) = player.poll_frame(pw, ph) {
+        let img = egui::ColorImage::from_rgba_unmultiplied([fw as usize, fh as usize], rgba);
+        match tex {
+            Some(t) => t.set(img, egui::TextureOptions::LINEAR),
+            None => {
+                *tex = Some(ui.ctx().load_texture(
+                    format!("mpv-pane-{}", badge),
+                    img,
+                    egui::TextureOptions::LINEAR,
+                ))
+            }
+        }
+    }
+
+    let pos = player.time_pos();
+    let dur = {
+        let d = player.duration();
+        if d.is_finite() && d > 0.0 {
+            d
+        } else {
+            overlay.map(|(_, s)| s).unwrap_or(0.0)
+        }
+    };
+
+    ui.vertical_centered(|ui| {
+        // Label row above the frame.
+        ui.allocate_ui(egui::vec2(w, 18.0), |ui| {
+            ui.horizontal(|ui| {
+                ui.label(
+                    RichText::new(format!(" {} ", badge))
+                        .strong()
+                        .color(egui::Color32::WHITE)
+                        .background_color(egui::Color32::from_rgb(59, 130, 246)),
+                );
+                ui.label(
+                    RichText::new(label)
+                        .small()
+                        .color(egui::Color32::from_gray(195)),
+                );
+            });
+        });
+        // The frame itself.
+        let (rect, _) = ui.allocate_exact_size(egui::vec2(w, h), egui::Sense::hover());
+        ui.painter().rect_filled(rect, 2.0, egui::Color32::BLACK);
+        if let Some(t) = tex.as_ref() {
+            ui.painter().image(
+                t.id(),
+                rect,
+                egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
+                egui::Color32::WHITE,
+            );
+        }
+        // "✂ cut out" banner when the playhead is inside a removed range.
+        if let Some((cuts, _)) = overlay {
+            if cuts.iter().any(|(a, b)| pos >= *a && pos < *b) {
+                let banner =
+                    egui::Rect::from_min_size(rect.left_top(), egui::vec2(rect.width(), 22.0));
+                ui.painter().rect_filled(
+                    banner,
+                    0.0,
+                    egui::Color32::from_rgba_unmultiplied(200, 40, 40, 190),
+                );
+                ui.painter().text(
+                    banner.center(),
+                    egui::Align2::CENTER_CENTER,
+                    "✂ cut out",
+                    egui::FontId::proportional(13.0),
+                    egui::Color32::WHITE,
+                );
+            }
+        }
+        // Controls row.
+        ui.allocate_ui(egui::vec2(w, 26.0), |ui| {
+            ui.horizontal(|ui| {
+                let sym = if player.is_paused() { "▶ Play" } else { "⏸ Pause" };
+                if ui.button(sym).clicked() {
+                    player.toggle_pause();
+                }
+                ui.label(
+                    RichText::new(format!("{} / {}", fmt_time(pos), fmt_time(dur)))
+                        .monospace()
+                        .color(egui::Color32::from_gray(215)),
+                );
+            });
+        });
+        // Timeline: seek + cut ranges + playhead.
+        draw_timeline(ui, w, player, pos, dur, overlay.map(|(c, _)| c));
+    });
+}
+
+/// A slim seek bar: grey track, blue played portion, red cut ranges, white
+/// playhead. Click or drag to seek.
+fn draw_timeline(
+    ui: &mut egui::Ui,
+    w: f32,
+    player: &mut mpv::Player,
+    pos: f64,
+    dur: f64,
+    cuts: Option<&[(f64, f64)]>,
+) {
+    let (rect, resp) = ui.allocate_exact_size(egui::vec2(w, 16.0), egui::Sense::click_and_drag());
+    let painter = ui.painter();
+    painter.rect_filled(rect, 3.0, egui::Color32::from_gray(55));
+    if dur > 0.0 {
+        let frac = (pos / dur).clamp(0.0, 1.0) as f32;
+        let px = rect.left() + frac * rect.width();
+        painter.rect_filled(
+            egui::Rect::from_min_max(rect.left_top(), egui::pos2(px, rect.bottom())),
+            3.0,
+            egui::Color32::from_rgb(59, 130, 246),
+        );
+        if let Some(cuts) = cuts {
+            for (a, b) in cuts {
+                let x0 = rect.left() + (*a / dur).clamp(0.0, 1.0) as f32 * rect.width();
+                let x1 = rect.left() + (*b / dur).clamp(0.0, 1.0) as f32 * rect.width();
+                painter.rect_filled(
+                    egui::Rect::from_min_max(
+                        egui::pos2(x0, rect.top()),
+                        egui::pos2(x1.max(x0 + 1.0), rect.bottom()),
+                    ),
+                    0.0,
+                    egui::Color32::from_rgba_unmultiplied(210, 50, 50, 205),
+                );
+            }
+        }
+        painter.rect_filled(
+            egui::Rect::from_min_max(
+                egui::pos2(px - 1.0, rect.top() - 2.0),
+                egui::pos2(px + 1.0, rect.bottom() + 2.0),
+            ),
+            0.0,
+            egui::Color32::WHITE,
+        );
+    }
+    if (resp.clicked() || resp.dragged()) && dur > 0.0 {
+        if let Some(p) = resp.interact_pointer_pos() {
+            let frac = ((p.x - rect.left()) / rect.width()).clamp(0.0, 1.0) as f64;
+            player.seek_absolute(frac * dur);
+        }
+    }
+}
+
 impl App {
     fn new(cc: &eframe::CreationContext<'_>) -> Self {
         let mut settings = Settings::load();
@@ -678,6 +884,10 @@ impl App {
             settings.default_privacy.clone()
         } else {
             "public".to_string()
+        };
+        let (mpv_lib, mpv_load_err) = match mpv::MpvLib::load() {
+            Ok(l) => (Some(Arc::new(l)), None),
+            Err(e) => (None, Some(e)),
         };
         let mut s = Self {
             form: FormState { privacy, ..saved_form },
@@ -754,7 +964,16 @@ impl App {
             upload_log: Arc::new(Mutex::new(Vec::new())),
             upload_last_done_url: None,
             upload_last_error: None,
+            mpv_lib,
+            mpv_load_err,
+            preview: None,
         };
+        if let Some(e) = &s.mpv_load_err {
+            s.append_log(format!(
+                "In-window video preview unavailable ({}). Preview will open in the browser instead. Install mpv to enable it.",
+                e
+            ));
+        }
         s.refresh_wa_status();
         // Auto-*check* yt-dlp freshness on launch (the deps probe above
         // already read its version). We only *log* staleness here and
@@ -1182,6 +1401,139 @@ impl App {
     fn start_job(&mut self) { self.kick_off(false); }
     fn start_preview(&mut self) { self.kick_off(true); }
 
+    /// Snapshot the currently-entered cut ranges as offsets (seconds) from the
+    /// segment start, clamped to the segment. Empty when "Remove middle
+    /// section(s)" is off. These paint red over the original's timeline.
+    fn preview_cut_ranges(&self, seg_secs: f64) -> Vec<(f64, f64)> {
+        if !self.form.cut_middle {
+            return Vec::new();
+        }
+        let start = pipeline::parse_timestamp(&self.form.start).unwrap_or(0.0);
+        let mut out = Vec::new();
+        for c in &self.form.cuts {
+            let (f, t) = (c.from.trim(), c.till.trim());
+            if f.is_empty() || t.is_empty() {
+                continue;
+            }
+            if let (Some(fa), Some(ta)) = (pipeline::parse_timestamp(f), pipeline::parse_timestamp(t)) {
+                let rf = (fa - start).clamp(0.0, seg_secs);
+                let rt = (ta - start).clamp(0.0, seg_secs);
+                if rt > rf {
+                    out.push((rf, rt));
+                }
+            }
+        }
+        out
+    }
+
+    /// Build the in-window preview: an mpv player for the original segment and
+    /// one for the edited clip, each showing its first frame. Stored in
+    /// `self.preview` and drawn in the central panel.
+    fn open_in_window_preview(
+        &mut self,
+        ctx: &egui::Context,
+        original: &std::path::Path,
+        edited: &std::path::Path,
+    ) -> Result<(), String> {
+        let lib = self
+            .mpv_lib
+            .clone()
+            .ok_or_else(|| "libmpv not loaded".to_string())?;
+        // Drop any prior preview first so we don't hold three players at once.
+        self.preview = None;
+
+        let same = original == edited;
+        let orig = mpv::Player::open(lib.clone(), ctx, &original.to_string_lossy())
+            .map_err(|e| format!("original: {}", e))?;
+        let edited_player = if same {
+            mpv::Player::open(lib.clone(), ctx, &edited.to_string_lossy())
+                .map_err(|e| format!("edited: {}", e))?
+        } else {
+            mpv::Player::open(lib, ctx, &edited.to_string_lossy())
+                .map_err(|e| format!("edited: {}", e))?
+        };
+
+        let start = pipeline::parse_timestamp(&self.form.start).unwrap_or(0.0);
+        let end = pipeline::parse_timestamp(&self.form.end).unwrap_or(start);
+        let seg_secs = (end - start).max(0.0);
+        let cuts = self.preview_cut_ranges(seg_secs);
+
+        self.preview = Some(PreviewState {
+            orig,
+            edited: edited_player,
+            orig_tex: None,
+            edited_tex: None,
+            same,
+            cuts,
+            seg_secs,
+            title: self.form.title.trim().to_string(),
+        });
+        Ok(())
+    }
+
+    /// Draw the in-window preview panes (original on top, edited below) with
+    /// per-pane play/pause, mm:ss readout, a seek timeline, and the cut-range
+    /// overlay. No-op when no preview is active.
+    fn draw_preview(&mut self, ui: &mut egui::Ui) {
+        let Some(preview) = self.preview.as_mut() else { return; };
+        // Keep ticking while a pane plays so the frame + mm:ss readout advance;
+        // paused panes idle until mpv's update callback wakes the UI.
+        if !preview.orig.is_paused() || !preview.edited.is_paused() {
+            ui.ctx().request_repaint();
+        }
+        let mut close = false;
+        ui.add_space(8.0);
+        egui::Frame::none()
+            .fill(egui::Color32::from_rgb(18, 18, 22))
+            .inner_margin(8.0)
+            .rounding(4.0)
+            .show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    ui.label(RichText::new("▶ Preview").strong().color(egui::Color32::WHITE));
+                    if !preview.title.is_empty() {
+                        ui.label(
+                            RichText::new(&preview.title)
+                                .small()
+                                .color(egui::Color32::from_gray(170)),
+                        );
+                    }
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if ui.button("✖ Close").clicked() {
+                            close = true;
+                        }
+                    });
+                });
+                ui.add_space(6.0);
+                let orig_label = if preview.same {
+                    "Original — no edits applied"
+                } else {
+                    "Original (this section, before your cuts/fades)"
+                };
+                draw_video_pane(
+                    ui,
+                    &mut preview.orig,
+                    &mut preview.orig_tex,
+                    "1",
+                    orig_label,
+                    Some((preview.cuts.as_slice(), preview.seg_secs)),
+                );
+                if !preview.same {
+                    ui.add_space(10.0);
+                    draw_video_pane(
+                        ui,
+                        &mut preview.edited,
+                        &mut preview.edited_tex,
+                        "2",
+                        "Edited cut (what gets uploaded)",
+                        None,
+                    );
+                }
+            });
+        if close {
+            self.preview = None;
+        }
+    }
+
     fn append_upload_log(&self, line: String) {
         let _ = append_to_log_file(&line);
         if let Ok(mut g) = self.upload_log.lock() {
@@ -1325,8 +1677,10 @@ impl App {
         std::thread::spawn(move || pipeline::run(job, settings, tx, cancel));
     }
 
-    fn drain_events(&mut self) {
-        if let Some(rx) = &self.rx {
+    fn drain_events(&mut self, ctx: &egui::Context) {
+        // Clone the Receiver so the loop doesn't hold an immutable borrow of
+        // `self` — the Preview arm needs `&mut self` to open the mpv players.
+        if let Some(rx) = self.rx.clone() {
             let mut still_running = true;
             loop {
                 let ev = match rx.try_recv() {
@@ -1371,20 +1725,41 @@ impl App {
                         still_running = false;
                     }
                     Event::Preview { original, edited, source_id, start_secs } => {
-                        if source_id.is_empty() {
-                            self.append_log(format!("Opening split preview — original (top): {}", original.display()));
-                        } else {
-                            self.append_log(format!(
-                                "Opening split preview — full original {} (top), edited (bottom): {}",
-                                source_id, edited.display()
-                            ));
+                        // Prefer the in-window mpv preview; fall back to the
+                        // browser split view if libmpv isn't available or a
+                        // player fails to open.
+                        let mut used_window = false;
+                        if self.mpv_lib.is_some() {
+                            match self.open_in_window_preview(ctx, &original, &edited) {
+                                Ok(()) => {
+                                    used_window = true;
+                                    self.append_log(
+                                        "Preview ready — playing in the window (original on top, edited below)."
+                                            .into(),
+                                    );
+                                }
+                                Err(e) => self.append_log(format!(
+                                    "In-window preview failed ({}); opening in the browser instead.",
+                                    e
+                                )),
+                            }
                         }
-                        if let Err(e) = open_split_preview(&original, &edited, &source_id, start_secs) {
-                            self.last_error = Some(format!(
-                                "Could not open preview ({}). Edited clip at {}",
-                                e,
-                                edited.display()
-                            ));
+                        if !used_window {
+                            if source_id.is_empty() {
+                                self.append_log(format!("Opening split preview — original (top): {}", original.display()));
+                            } else {
+                                self.append_log(format!(
+                                    "Opening split preview — full original {} (top), edited (bottom): {}",
+                                    source_id, edited.display()
+                                ));
+                            }
+                            if let Err(e) = open_split_preview(&original, &edited, &source_id, start_secs) {
+                                self.last_error = Some(format!(
+                                    "Could not open preview ({}). Edited clip at {}",
+                                    e,
+                                    edited.display()
+                                ));
+                            }
                         }
                         still_running = false;
                     }
@@ -1828,7 +2203,7 @@ impl eframe::App for App {
     }
 
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        self.drain_events();
+        self.drain_events(ctx);
         self.ensure_icon_texture(ctx);
         if self.running || self.upload_running || self.signing_in || self.brew_installing || self.ytdlp_updating || self.update_checking || self.cookies_testing || self.installing || self.wa_sending || self.wa_setup_running || self.wa_login_running || self.davaz_posting || self.pdf_exporting || self.pdf_fetching {
             ctx.request_repaint_after(std::time::Duration::from_millis(150));
@@ -2218,7 +2593,11 @@ impl eframe::App for App {
                 let preview_btn = ui.add_enabled(
                     !self.running && deps_ok,
                     egui::Button::new("Preview").min_size(egui::vec2(110.0, 32.0)),
-                ).on_hover_text("Download the segment and open it in your default video player without uploading");
+                ).on_hover_text(if self.mpv_lib.is_some() {
+                    "Build the clip and play it right here — original on top, your edited cut below — without uploading"
+                } else {
+                    "Download the segment and open it in your default video player without uploading"
+                });
                 if preview_btn.clicked() { self.start_preview(); }
                 ui.add_space(8.0);
                 let label = if self.running { "Working…" } else { "Create short and upload" };
@@ -2247,6 +2626,8 @@ impl eframe::App for App {
                     }
                 }
             });
+
+            self.draw_preview(ui);
 
             if let Some(url) = self.last_done_url.clone() {
                 ui.add_space(6.0);

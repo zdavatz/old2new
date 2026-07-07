@@ -1,6 +1,6 @@
 [package]
 name = "create_shorts_gui"
-version = "1.0.52"
+version = "1.0.53"
 edition = "2021"
 description = "Cross-platform GUI for extracting a YouTube segment and re-uploading it as a new video."
 license = "GPL-3.0-only"
@@ -29,6 +29,10 @@ chrono = { version = "0.4", default-features = false, features = ["clock"] }
 rfd = "0.15"
 ab_glyph = "0.2"
 printpdf = { version = "0.7", default-features = false }
+# Runtime dlopen of libmpv for the in-window video preview (software render →
+# egui texture). No build-time link, so the app still builds/launches with mpv
+# absent; the preview just falls back to the browser split view.
+libloading = "0.8"
 
 # Cancel kills the whole process group (yt-dlp + its ffmpeg grandchild), which
 # needs `kill(-pgid, SIGKILL)`. Already in the dependency tree transitively, so
