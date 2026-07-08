@@ -440,6 +440,11 @@ struct App {
     brew_rx: Option<Receiver<BrewEvent>>,
     ytdlp_updating: bool,
     ytdlp_update_rx: Option<Receiver<BrewEvent>>,
+    /// Background "keep dependencies current" run (brew update + upgrade of
+    /// yt-dlp/ffmpeg/mpv). Throttled to once/day at launch; also triggerable
+    /// manually from Settings.
+    dep_update_running: bool,
+    dep_update_rx: Option<Receiver<BrewEvent>>,
     pdf_exporting: bool,
     pdf_rx: Option<Receiver<Result<(std::path::PathBuf, usize, String), String>>>,
     /// Fetching the shorts list (network) for the preview modal.
@@ -531,6 +536,112 @@ enum BrewEvent {
     Log(String),
     Done,
     Error(String),
+}
+
+/// Run a child process, streaming its stdout+stderr line-by-line to the log
+/// channel. Returns whether it exited successfully. Shared by the dependency
+/// auto-updater's `brew update` / `brew upgrade` / `yt-dlp -U` steps.
+fn run_streamed(mut cmd: std::process::Command, tx: &Sender<BrewEvent>) -> bool {
+    use std::io::{BufRead, BufReader};
+    use std::process::Stdio;
+    cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
+    let mut child = match cmd.spawn() {
+        Ok(c) => c,
+        Err(e) => {
+            let _ = tx.send(BrewEvent::Log(format!("spawn failed: {}", e)));
+            return false;
+        }
+    };
+    let stdout = child.stdout.take();
+    let stderr = child.stderr.take();
+    let tx_o = tx.clone();
+    let tx_e = tx.clone();
+    let h_o = stdout.map(|r| std::thread::spawn(move || {
+        let mut b = BufReader::new(r);
+        let mut l = String::new();
+        while b.read_line(&mut l).map(|n| n > 0).unwrap_or(false) {
+            let _ = tx_o.send(BrewEvent::Log(l.trim_end_matches(['\r', '\n']).to_string()));
+            l.clear();
+        }
+    }));
+    let h_e = stderr.map(|r| std::thread::spawn(move || {
+        let mut b = BufReader::new(r);
+        let mut l = String::new();
+        while b.read_line(&mut l).map(|n| n > 0).unwrap_or(false) {
+            let _ = tx_e.send(BrewEvent::Log(l.trim_end_matches(['\r', '\n']).to_string()));
+            l.clear();
+        }
+    }));
+    let status = child.wait();
+    if let Some(h) = h_o { let _ = h.join(); }
+    if let Some(h) = h_e { let _ = h.join(); }
+    status.map(|s| s.success()).unwrap_or(false)
+}
+
+/// Background worker for [`App::start_dep_update`]. On macOS with Homebrew:
+/// `brew update` (refresh the formula index — the heavy step, done once),
+/// then `brew upgrade <installed app formulae>` with `HOMEBREW_NO_AUTO_UPDATE`
+/// so it doesn't update twice. Elsewhere: best-effort `yt-dlp -U` (ffmpeg/mpv
+/// can't be portably auto-upgraded). Everything streams to the log; the drain
+/// re-checks deps + re-dlopens libmpv on completion.
+fn dep_update_worker(brew: Option<String>, tx: Sender<BrewEvent>) {
+    use std::process::Command;
+    if let Some(brew) = brew {
+        let installed = deps::brew_installed_app_formulae(&brew);
+        if installed.is_empty() {
+            let _ = tx.send(BrewEvent::Log(
+                "No Homebrew-managed dependencies installed — nothing to update.".into(),
+            ));
+            let _ = tx.send(BrewEvent::Done);
+            return;
+        }
+        let _ = tx.send(BrewEvent::Log(format!(
+            "brew update, then upgrading if needed: {}",
+            installed.join(", ")
+        )));
+        // 1) Refresh Homebrew's formula index (the load-heavy part) once.
+        let mut upd = Command::new(&brew);
+        upd.arg("update")
+            .env("HOMEBREW_NO_ENV_HINTS", "1")
+            .env("HOMEBREW_NO_INSTALL_CLEANUP", "1");
+        let _ = run_streamed(upd, &tx);
+        // 2) Upgrade only our installed formulae; skip the auto-update we
+        //    just did. Already-current formulae are a no-op.
+        let mut up = Command::new(&brew);
+        up.arg("upgrade");
+        for f in &installed {
+            up.arg(f);
+        }
+        up.env("HOMEBREW_NO_AUTO_UPDATE", "1")
+            .env("HOMEBREW_NO_ENV_HINTS", "1")
+            .env("HOMEBREW_NO_INSTALL_CLEANUP", "1");
+        if run_streamed(up, &tx) {
+            let _ = tx.send(BrewEvent::Done);
+        } else {
+            let _ = tx.send(BrewEvent::Error("brew upgrade reported an error (see log)".into()));
+        }
+        return;
+    }
+
+    // No Homebrew.
+    #[cfg(target_os = "macos")]
+    {
+        let _ = tx.send(BrewEvent::Log(
+            "Homebrew not found — skipping dependency auto-update.".into(),
+        ));
+        let _ = tx.send(BrewEvent::Done);
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = tx.send(BrewEvent::Log("Updating yt-dlp (yt-dlp -U)…".into()));
+        let mut c = Command::new("yt-dlp");
+        c.arg("-U");
+        if run_streamed(c, &tx) {
+            let _ = tx.send(BrewEvent::Done);
+        } else {
+            let _ = tx.send(BrewEvent::Error("yt-dlp -U failed (see log)".into()));
+        }
+    }
 }
 
 /// "chrome (installed)" if detected, otherwise just the name.
@@ -1022,6 +1133,8 @@ impl App {
             brew_rx: None,
             ytdlp_updating: false,
             ytdlp_update_rx: None,
+            dep_update_running: false,
+            dep_update_rx: None,
             pdf_exporting: false,
             pdf_rx: None,
             pdf_fetching: false,
@@ -1094,13 +1207,17 @@ impl App {
             ));
         }
         s.refresh_wa_status();
-        // Auto-*check* yt-dlp freshness on launch (the deps probe above
-        // already read its version). We only *log* staleness here and
-        // surface a one-click "Update yt-dlp" banner — we deliberately do
-        // NOT auto-run the update, because on a Homebrew install that
-        // triggers a full `brew update` that pegs the machine (load spikes
-        // into the hundreds) right when the user wants to work.
-        if let Some(age) = s.deps.yt_dlp_age_days() {
+        // Keep the external tools current. When auto-update is on (default),
+        // fire a throttled background `brew update` + `brew upgrade` of
+        // yt-dlp/ffmpeg/mpv at launch — a stale yt-dlp/ffmpeg is the most
+        // common cause of download failures (the `[Errno 2] …raw.mp4.part`
+        // class of errors). Throttled to once/day so repeated launches don't
+        // re-trigger the heavy `brew update` (load spikes into the hundreds),
+        // and skipped entirely if the toggle is off — in which case we still
+        // just *log* yt-dlp staleness and leave the one-click banner to nag.
+        if s.settings.auto_update_deps {
+            s.start_dep_update(false);
+        } else if let Some(age) = s.deps.yt_dlp_age_days() {
             if s.deps.yt_dlp_is_stale() {
                 s.append_log(format!(
                     "yt-dlp is {} days old (> {} days) — update recommended (see banner)",
@@ -1109,6 +1226,43 @@ impl App {
             }
         }
         s
+    }
+
+    /// Keep the external CLIs the pipeline shells out to (yt-dlp, ffmpeg,
+    /// mpv) up to date. On macOS with Homebrew this runs `brew update` then
+    /// `brew upgrade` for whichever of [`deps::APP_BREW_FORMULAE`] are
+    /// installed; elsewhere it best-effort self-updates yt-dlp (`yt-dlp -U`).
+    ///
+    /// Runs on a background thread and streams to the log. `forced` bypasses
+    /// the once-per-day throttle (the Settings "Update dependencies now"
+    /// button); the launch path passes `false`. We deliberately never block
+    /// the UI on it and skip while a job is running so the heavy `brew
+    /// update` can't starve an in-flight cut.
+    fn start_dep_update(&mut self, forced: bool) {
+        if self.dep_update_running
+            || self.ytdlp_updating
+            || self.brew_installing
+            || self.mpv_installing
+        {
+            return;
+        }
+        if !forced && settings::dep_update_ran_today() {
+            return;
+        }
+        if self.running || self.upload_running {
+            // Don't kick a brew update off in the middle of a cut/upload.
+            return;
+        }
+        // Stamp now (even before it finishes) so repeated launches today
+        // don't re-run; a forced run refreshes the stamp too.
+        settings::mark_dep_update_ran();
+
+        let brew = deps::brew_path();
+        let (tx, rx) = unbounded::<BrewEvent>();
+        self.dep_update_rx = Some(rx);
+        self.dep_update_running = true;
+        self.append_log("Checking dependencies (yt-dlp, ffmpeg, mpv) for updates…".into());
+        std::thread::spawn(move || dep_update_worker(brew, tx));
     }
 
     /// Update yt-dlp in place, chosen by how it was installed (brew upgrade
@@ -1619,9 +1773,9 @@ impl App {
         out
     }
 
-    /// Build the in-window preview: an mpv player for the original segment and
-    /// one for the edited clip, each showing its first frame. Stored in
-    /// `self.preview` and drawn in the central panel.
+    /// Build the in-window preview of the edited clip (a single mpv player
+    /// showing its first frame). Stored in `self.preview` and drawn in the
+    /// right-hand side panel, stacked below the "Load original" viewer.
     fn open_in_window_preview(
         &mut self,
         ctx: &egui::Context,
@@ -2421,6 +2575,43 @@ impl App {
                 self.ytdlp_update_rx = None;
             }
         }
+
+        // Cloned so `recheck_mpv` (&mut self) can run after the channel drains
+        // — mpv may have just been upgraded/installed by the dep update.
+        if let Some(rx) = self.dep_update_rx.clone() {
+            let mut done = false;
+            while let Ok(ev) = rx.try_recv() {
+                match ev {
+                    BrewEvent::Log(s) => self.append_log(s),
+                    BrewEvent::Done => {
+                        self.deps = deps::DepStatus::check();
+                        self.brew = deps::brew_path();
+                        self.append_log(format!(
+                            "Dependencies up to date — yt-dlp {}, {}.",
+                            self.deps.yt_dlp.clone().unwrap_or_else(|| "missing".into()),
+                            self.deps
+                                .ffmpeg
+                                .as_deref()
+                                .and_then(|s| s.split_whitespace().nth(2))
+                                .map(|v| format!("ffmpeg {}", v))
+                                .unwrap_or_else(|| "ffmpeg missing".into()),
+                        ));
+                        done = true;
+                    }
+                    // Best-effort background task: log the failure, don't
+                    // raise a red error banner over it.
+                    BrewEvent::Error(e) => {
+                        self.append_log(format!("Dependency update: {}", e));
+                        done = true;
+                    }
+                }
+            }
+            if done {
+                self.dep_update_running = false;
+                self.dep_update_rx = None;
+                self.recheck_mpv();
+            }
+        }
     }
 
     fn start_signin(&mut self) {
@@ -2454,7 +2645,7 @@ impl eframe::App for App {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.drain_events(ctx);
         self.ensure_icon_texture(ctx);
-        if self.running || self.upload_running || self.signing_in || self.brew_installing || self.mpv_installing || self.ytdlp_updating || self.update_checking || self.cookies_testing || self.installing || self.wa_sending || self.wa_setup_running || self.wa_login_running || self.davaz_posting || self.pdf_exporting || self.pdf_fetching {
+        if self.running || self.upload_running || self.signing_in || self.brew_installing || self.mpv_installing || self.ytdlp_updating || self.dep_update_running || self.update_checking || self.cookies_testing || self.installing || self.wa_sending || self.wa_setup_running || self.wa_login_running || self.davaz_posting || self.pdf_exporting || self.pdf_fetching {
             ctx.request_repaint_after(std::time::Duration::from_millis(150));
         }
 
@@ -2514,15 +2705,31 @@ impl eframe::App for App {
             ui.add_space(2.0);
         });
 
-        // "Watch the original" side panel — the raw segment playing in the same
-        // window (never a popup), so the form (cut fields) stays visible beside
-        // it. Added before the CentralPanel so it docks to the right edge.
-        if self.source_player.is_some() {
+        // Right-hand video pane: the raw original ("Load original") on top and
+        // the edited **Preview** clip stacked directly below it, both playing
+        // in-window (never a popup) so the form (cut fields) stays visible
+        // beside them. Kept in this side panel — never the central panel — so
+        // the preview sits under the original instead of covering the log.
+        // Added before the CentralPanel so it docks to the right edge.
+        if self.source_player.is_some() || self.preview.is_some() {
             egui::SidePanel::right("original_viewer")
                 .resizable(true)
                 .default_width(520.0)
                 .show(ctx, |ui| {
-                    self.draw_source_viewer(ui);
+                    egui::ScrollArea::vertical()
+                        .auto_shrink([false, false])
+                        .show(ui, |ui| {
+                            if self.source_player.is_some() {
+                                self.draw_source_viewer(ui);
+                            }
+                            if self.source_player.is_some() && self.preview.is_some() {
+                                ui.add_space(6.0);
+                                ui.separator();
+                            }
+                            if self.preview.is_some() {
+                                self.draw_preview(ui);
+                            }
+                        });
                 });
         }
 
@@ -2946,7 +3153,9 @@ impl eframe::App for App {
                 }
             });
 
-            self.draw_preview(ui);
+            // The edited-clip Preview is drawn in the right-hand side panel
+            // (stacked below the original), not here — so it never covers the
+            // log. See the SidePanel above.
 
             if let Some(url) = self.last_done_url.clone() {
                 ui.add_space(6.0);
@@ -3822,6 +4031,35 @@ impl App {
                     let signin = ui.add_enabled(!self.signing_in, egui::Button::new(signin_label));
                     if signin.clicked() { self.start_signin(); }
                 });
+                ui.add_space(8.0);
+                ui.separator();
+                ui.add_space(4.0);
+                ui.label(RichText::new("Dependencies").strong());
+                ui.checkbox(
+                    &mut self.settings.auto_update_deps,
+                    "Keep yt-dlp, ffmpeg & mpv up to date automatically (once/day at launch)",
+                );
+                ui.horizontal(|ui| {
+                    let label = if self.dep_update_running { "Updating…" } else { "Update dependencies now" };
+                    if ui.add_enabled(!self.dep_update_running, egui::Button::new(label)).clicked() {
+                        self.start_dep_update(true);
+                    }
+                    ui.label(
+                        RichText::new(format!(
+                            "yt-dlp: {}",
+                            self.deps.yt_dlp.clone().unwrap_or_else(|| "missing".into())
+                        ))
+                        .weak(),
+                    );
+                });
+                if cfg!(target_os = "macos") && self.brew.is_none() {
+                    ui.label(
+                        RichText::new("Homebrew not found — install it (banner on the main screen) to enable auto-updates.")
+                            .weak()
+                            .small(),
+                    );
+                }
+
                 ui.add_space(8.0);
                 ui.separator();
                 ui.add_space(4.0);

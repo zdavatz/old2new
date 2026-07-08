@@ -31,10 +31,21 @@ pub struct Settings {
     /// the davaz.com server (one token per line).
     #[serde(default)]
     pub davaz_token: String,
+    /// Keep the external tools (yt-dlp, ffmpeg, mpv) up to date by running a
+    /// throttled Homebrew upgrade in the background at launch. Defaults on —
+    /// a stale yt-dlp/ffmpeg is the most common cause of download failures
+    /// (see the `07V4vfc4yKk` "[Errno 2] …raw.mp4.part" incident). Runs at
+    /// most once per calendar day (see [`dep_update_ran_today`]).
+    #[serde(default = "default_true")]
+    pub auto_update_deps: bool,
 }
 
 fn default_privacy() -> String {
     "public".to_string()
+}
+
+fn default_true() -> bool {
+    true
 }
 
 impl Default for Settings {
@@ -47,6 +58,7 @@ impl Default for Settings {
             whatsapp_dir: default_whatsapp_dir(),
             whatsapp_recipient: String::new(),
             davaz_token: String::new(),
+            auto_update_deps: true,
         }
     }
 }
@@ -78,6 +90,29 @@ pub fn token_path() -> PathBuf {
 
 pub fn log_path() -> PathBuf {
     config_dir().join("log.txt")
+}
+
+/// Stamp file recording the last calendar day the dependency auto-update
+/// ran, so a heavy `brew update` fires at most once/day no matter how often
+/// the app is launched.
+pub fn dep_update_stamp_path() -> PathBuf {
+    config_dir().join("dep_update_check")
+}
+
+/// True if the dependency auto-update already ran today (same local
+/// calendar day). Missing/unreadable stamp ⇒ false (run it).
+pub fn dep_update_ran_today() -> bool {
+    let today = chrono::Local::now().date_naive().to_string();
+    fs::read_to_string(dep_update_stamp_path())
+        .map(|s| s.trim() == today)
+        .unwrap_or(false)
+}
+
+/// Record that the dependency auto-update ran today.
+pub fn mark_dep_update_ran() {
+    let today = chrono::Local::now().date_naive().to_string();
+    let _ = fs::create_dir_all(config_dir());
+    let _ = fs::write(dep_update_stamp_path(), today);
 }
 
 impl Settings {

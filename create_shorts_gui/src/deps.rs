@@ -99,6 +99,33 @@ pub fn brew_path() -> Option<String> {
 /// (and auto-update) well before yt-dlp's own 90-day self-warning.
 pub const YT_DLP_STALE_DAYS: i64 = 30;
 
+/// The Homebrew formulae the app depends on and keeps up to date via the
+/// daily launch auto-update (`start_dep_update`). ffmpeg provides ffprobe;
+/// mpv provides libmpv for the in-window preview. Keep this the single
+/// source of truth for "which tools the app manages".
+pub const APP_BREW_FORMULAE: &[&str] = &["yt-dlp", "ffmpeg", "mpv"];
+
+/// Which of [`APP_BREW_FORMULAE`] are actually installed via Homebrew, so
+/// `brew upgrade` is only handed formulae it can upgrade (passing an
+/// un-installed formula makes `brew upgrade` error). Probes each with
+/// `brew list --versions <f>` — cheap, and only runs on the background
+/// update worker (never the UI thread).
+pub fn brew_installed_app_formulae(brew: &str) -> Vec<String> {
+    APP_BREW_FORMULAE
+        .iter()
+        .filter(|f| {
+            Command::new(brew)
+                .args(["list", "--versions", f])
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .status()
+                .map(|s| s.success())
+                .unwrap_or(false)
+        })
+        .map(|f| f.to_string())
+        .collect()
+}
+
 /// The command that updates yt-dlp in place, chosen by how it was
 /// installed. A Homebrew-managed yt-dlp must be updated via `brew upgrade`
 /// — `yt-dlp -U` refuses to self-update a package-manager install. Anything

@@ -107,11 +107,26 @@ fn candidate_libs() -> &'static [&'static str] {
     #[cfg(target_os = "macos")]
     {
         &[
+            // Versioned name via the dynamic-loader search paths.
             "libmpv.2.dylib",
+            // Homebrew "opt" prefix (Apple Silicon, then Intel). This is the
+            // version-stable canonical location and — crucially — resolves
+            // even when the flat `<prefix>/lib/libmpv.*.dylib` symlinks are
+            // broken, which is a common outcome of an interrupted
+            // `brew upgrade mpv` (the exact state that made the in-window
+            // preview silently fall back to the browser). Tried before the
+            // flat `lib` paths for that reason.
+            "/opt/homebrew/opt/mpv/lib/libmpv.2.dylib",
+            "/usr/local/opt/mpv/lib/libmpv.2.dylib",
+            // Flat Homebrew lib dir.
             "/opt/homebrew/lib/libmpv.2.dylib",
             "/usr/local/lib/libmpv.2.dylib",
+            // Unversioned fallbacks, same order.
             "libmpv.dylib",
+            "/opt/homebrew/opt/mpv/lib/libmpv.dylib",
+            "/usr/local/opt/mpv/lib/libmpv.dylib",
             "/opt/homebrew/lib/libmpv.dylib",
+            "/usr/local/lib/libmpv.dylib",
         ]
     }
     #[cfg(target_os = "linux")]
