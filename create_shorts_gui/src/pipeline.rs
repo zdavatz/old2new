@@ -239,7 +239,16 @@ pub fn run_upload(job: UploadJob, settings: Settings, tx: Sender<Event>, cancel:
 /// Convert "mm:ss", "hh:mm:ss", or a bare seconds value to seconds.
 pub fn parse_timestamp(s: &str) -> Option<f64> {
     let parts: Vec<&str> = s.split(':').collect();
-    let nums: Vec<f64> = parts.iter().map(|p| p.trim().parse().ok().unwrap_or(0.0)).collect();
+    // Accept a comma decimal separator (`11:38,5`) as well as a period —
+    // Jürg is Swiss-German and types the comma his OS locale uses. Rust's
+    // `f64::parse` only accepts `.`, so without this normalization the
+    // seconds part of `38,5` fails to parse and was silently swallowed as
+    // 0.0, collapsing the timestamp to `11:00` and putting the cut in the
+    // wrong place (looks like "the new cut time wasn't added").
+    let nums: Vec<f64> = parts
+        .iter()
+        .map(|p| p.trim().replace(',', ".").parse().ok().unwrap_or(0.0))
+        .collect();
     match nums.len() {
         1 => Some(nums[0]),
         2 => Some(nums[0] * 60.0 + nums[1]),
@@ -2036,5 +2045,25 @@ fn extract_video_id(input: &str) -> String {
         return rest[..end].to_string();
     }
     input.to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_timestamp_accepts_period_and_comma_decimals() {
+        // Whole seconds.
+        assert_eq!(parse_timestamp("14:07"), Some(847.0));
+        // Period decimal.
+        assert_eq!(parse_timestamp("11:38.5"), Some(698.5));
+        // Comma decimal (Swiss/German locale) — the regression this guards.
+        assert_eq!(parse_timestamp("11:38,5"), Some(698.5));
+        assert_eq!(parse_timestamp("9:47,5"), Some(587.5));
+        // hh:mm:ss with a comma decimal in the seconds.
+        assert_eq!(parse_timestamp("1:02:03,25"), Some(3723.25));
+        // Bare seconds with a comma.
+        assert_eq!(parse_timestamp("38,5"), Some(38.5));
+    }
 }
 
