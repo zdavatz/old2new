@@ -238,17 +238,41 @@ pub fn run_upload(job: UploadJob, settings: Settings, tx: Sender<Event>, cancel:
 
 /// Convert "mm:ss", "hh:mm:ss", or a bare seconds value to seconds.
 pub fn parse_timestamp(s: &str) -> Option<f64> {
-    let parts: Vec<&str> = s.split(':').collect();
+    let s = s.trim();
+    if s.is_empty() {
+        return None;
+    }
     // Accept a comma decimal separator (`11:38,5`) as well as a period —
     // Jürg is Swiss-German and types the comma his OS locale uses. Rust's
-    // `f64::parse` only accepts `.`, so without this normalization the
-    // seconds part of `38,5` fails to parse and was silently swallowed as
-    // 0.0, collapsing the timestamp to `11:00` and putting the cut in the
-    // wrong place (looks like "the new cut time wasn't added").
-    let nums: Vec<f64> = parts
-        .iter()
-        .map(|p| p.trim().replace(',', ".").parse().ok().unwrap_or(0.0))
+    // `f64::parse` only accepts `.`, so without this the seconds part of
+    // `38,5` failed to parse and was silently swallowed, collapsing the
+    // timestamp to `11:00`.
+    let s = s.replace(',', ".");
+    // Tolerate a period typed where the mm:ss (or hh:mm) colon belongs
+    // (`13.50.6` for `13:50.6`): keep the LAST dot as the decimal point and
+    // promote any earlier dots to `:` field separators. A well-formed
+    // single-dot timestamp like `11:38.5` is unaffected (its only dot is the
+    // last one). Without this, the stray `.` made `13.50.6` one un-parseable
+    // token that silently became 0.0, so the cut failed with the confusing
+    // "must lie within the segment" error.
+    let last_dot = s.rfind('.');
+    let s: String = s
+        .char_indices()
+        .map(|(i, c)| if c == '.' && Some(i) != last_dot { ':' } else { c })
         .collect();
+    // Parse each colon-separated field. An empty field (a stray trailing
+    // `:`) counts as 0, but any non-empty field that isn't a number makes
+    // the whole timestamp invalid (`None`) so the caller surfaces a clear
+    // "can't parse timestamp" error instead of a silent 0.
+    let mut nums: Vec<f64> = Vec::new();
+    for p in s.split(':') {
+        let p = p.trim();
+        if p.is_empty() {
+            nums.push(0.0);
+        } else {
+            nums.push(p.parse().ok()?);
+        }
+    }
     match nums.len() {
         1 => Some(nums[0]),
         2 => Some(nums[0] * 60.0 + nums[1]),
@@ -2055,6 +2079,8 @@ mod tests {
     fn parse_timestamp_accepts_period_and_comma_decimals() {
         // Whole seconds.
         assert_eq!(parse_timestamp("14:07"), Some(847.0));
+        // Canonical style mm:ss.s.
+        assert_eq!(parse_timestamp("13:50.6"), Some(830.6));
         // Period decimal.
         assert_eq!(parse_timestamp("11:38.5"), Some(698.5));
         // Comma decimal (Swiss/German locale) — the regression this guards.
@@ -2064,6 +2090,26 @@ mod tests {
         assert_eq!(parse_timestamp("1:02:03,25"), Some(3723.25));
         // Bare seconds with a comma.
         assert_eq!(parse_timestamp("38,5"), Some(38.5));
+    }
+
+    #[test]
+    fn parse_timestamp_tolerates_period_as_field_separator() {
+        // Period typed where the mm:ss colon belongs: last dot stays the
+        // decimal, earlier dots become field separators. `13.50.6` == `13:50.6`.
+        assert_eq!(parse_timestamp("13.50.6"), Some(830.6));
+        // hh.mm.ss.d all-dots.
+        assert_eq!(parse_timestamp("1.02.03.25"), Some(3723.25));
+    }
+
+    #[test]
+    fn parse_timestamp_rejects_garbage_and_empty() {
+        // Genuinely unreadable input returns None (so callers surface a clear
+        // error) instead of silently collapsing to 0.
+        assert_eq!(parse_timestamp(""), None);
+        assert_eq!(parse_timestamp("  "), None);
+        assert_eq!(parse_timestamp("abc"), None);
+        assert_eq!(parse_timestamp("13:xx"), None);
+        assert_eq!(parse_timestamp("1:2:3:4"), None);
     }
 }
 

@@ -377,6 +377,33 @@ struct CutRange {
 /// moment "Remove middle section(s)" is ticked.
 fn default_cuts() -> Vec<CutRange> { vec![CutRange::default()] }
 
+/// Draw a timestamp entry field that validates as you type: an empty field is
+/// neutral, but non-empty content that can't be read as a timestamp turns the
+/// text red, gets a red border, and explains the canonical `mm:ss.s` style
+/// (e.g. `13:50.6`) on hover. The parser tolerates a comma decimal and a
+/// period used where the colon belongs, so a red field means genuinely
+/// unreadable input — the visual cue teaches Jürg the expected style instead
+/// of letting a typo fail deep in the pipeline.
+fn timestamp_edit(ui: &mut egui::Ui, value: &mut String, width: f32) -> egui::Response {
+    let invalid = !value.trim().is_empty() && pipeline::parse_timestamp(value).is_none();
+    let red = egui::Color32::from_rgb(0xCB, 0x3B, 0x2F);
+    let mut te = egui::TextEdit::singleline(value)
+        .desired_width(width)
+        .hint_text("mm:ss.s");
+    if invalid {
+        te = te.text_color(red);
+    }
+    let resp = ui.add(te);
+    if invalid {
+        ui.painter()
+            .rect_stroke(resp.rect.expand(1.0), 2.0, egui::Stroke::new(1.5, red));
+        return resp.on_hover_text(
+            "Not a valid time. Use mm:ss.s — e.g. 13:50.6 (colon between minutes and seconds, a dot before the tenths).",
+        );
+    }
+    resp
+}
+
 fn default_overlay_color() -> [u8; 3] { [255, 255, 255] }
 fn default_overlay_pos() -> [f32; 2] { [0.0, 1.0] }
 fn default_fade_out() -> bool { true }
@@ -1960,6 +1987,18 @@ impl App {
             self.last_error = Some("Start and end timestamps are required".into());
             return;
         }
+        // Validate timestamp *format* up front so a typo is reported clearly
+        // against the named field instead of failing deep in the pipeline
+        // (or drawing the cut in the wrong place). Canonical style: mm:ss.s.
+        const TS_HINT: &str = "use mm:ss.s — e.g. 13:50.6";
+        if pipeline::parse_timestamp(&self.form.start).is_none() {
+            self.last_error = Some(format!("Start time \"{}\" isn't valid — {}", self.form.start.trim(), TS_HINT));
+            return;
+        }
+        if pipeline::parse_timestamp(&self.form.end).is_none() {
+            self.last_error = Some(format!("End time \"{}\" isn't valid — {}", self.form.end.trim(), TS_HINT));
+            return;
+        }
         // Cuts / title / sign-in aren't needed to just watch the original.
         if self.form.cut_middle && !source_only {
             let filled: Vec<&CutRange> = self
@@ -1977,6 +2016,29 @@ impl App {
                 self.last_error =
                     Some("Every cut-out row needs both a from and a till timestamp".into());
                 return;
+            }
+            // Per-row format + ordering validation, numbered so Jürg knows
+            // exactly which row to fix (e.g. the `13.50.6` typo).
+            for (idx, c) in filled.iter().enumerate() {
+                let (f, t) = (c.from.trim(), c.till.trim());
+                let fa = match pipeline::parse_timestamp(f) {
+                    Some(v) => v,
+                    None => {
+                        self.last_error = Some(format!("Cut #{} from \"{}\" isn't valid — {}", idx + 1, f, TS_HINT));
+                        return;
+                    }
+                };
+                let ta = match pipeline::parse_timestamp(t) {
+                    Some(v) => v,
+                    None => {
+                        self.last_error = Some(format!("Cut #{} till \"{}\" isn't valid — {}", idx + 1, t, TS_HINT));
+                        return;
+                    }
+                };
+                if ta <= fa {
+                    self.last_error = Some(format!("Cut #{}: till ({}) must be after from ({})", idx + 1, t, f));
+                    return;
+                }
             }
         }
         // Title is only required when actually uploading.
@@ -2919,11 +2981,11 @@ impl eframe::App for App {
                     ui.end_row();
 
                     ui.label("Start (mm:ss or hh:mm:ss):");
-                    ui.add(egui::TextEdit::singleline(&mut self.form.start).desired_width(160.0));
+                    timestamp_edit(ui, &mut self.form.start, 160.0);
                     ui.end_row();
 
                     ui.label("End:");
-                    ui.add(egui::TextEdit::singleline(&mut self.form.end).desired_width(160.0));
+                    timestamp_edit(ui, &mut self.form.end, 160.0);
                     ui.end_row();
 
                     ui.label("Title:");
@@ -3013,17 +3075,11 @@ impl eframe::App for App {
                             for (i, cut) in self.form.cuts.iter_mut().enumerate() {
                                 ui.horizontal(|ui| {
                                     ui.label("from");
-                                    ui.add(
-                                        egui::TextEdit::singleline(&mut cut.from)
-                                            .desired_width(70.0)
-                                            .hint_text("mm:ss"),
-                                    ).on_hover_text("Start of a section to remove (absolute in the source, e.g. 1:15).");
+                                    timestamp_edit(ui, &mut cut.from, 70.0)
+                                        .on_hover_text("Start of a section to remove (absolute in the source, e.g. 13:27.6).");
                                     ui.label("till");
-                                    ui.add(
-                                        egui::TextEdit::singleline(&mut cut.till)
-                                            .desired_width(70.0)
-                                            .hint_text("mm:ss"),
-                                    ).on_hover_text("End of that section (absolute in the source, e.g. 1:40).");
+                                    timestamp_edit(ui, &mut cut.till, 70.0)
+                                        .on_hover_text("End of that section (absolute in the source, e.g. 13:50.6).");
                                     if count > 1
                                         && ui.button("🗑").on_hover_text("Remove this cut").clicked()
                                     {
@@ -3031,6 +3087,11 @@ impl eframe::App for App {
                                     }
                                 });
                             }
+                            ui.label(
+                                RichText::new("Format: mm:ss.s — e.g. 13:50.6 (a red field means the time can't be read).")
+                                    .small()
+                                    .weak(),
+                            );
                             if let Some(i) = remove {
                                 self.form.cuts.remove(i);
                             }
