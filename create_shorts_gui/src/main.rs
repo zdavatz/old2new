@@ -316,10 +316,54 @@ fn run_export_pdf_cli(args: &[String]) -> ! {
     }
 }
 
+/// Headless `--block-subs <video-id-or-url> [--lang de]`: publish the blank
+/// caption track on a video that is *already* on YouTube. The checkbox only
+/// helps shorts uploaded from now on; this retro-fits the same fix onto the
+/// ones that already carry auto-generated subtitles.
+fn run_block_subs_cli(args: &[String]) -> ! {
+    let pos = args.iter().position(|a| a == "--block-subs").unwrap();
+    let raw = match args.get(pos + 1).filter(|s| !s.starts_with("--")) {
+        Some(s) => s,
+        None => {
+            eprintln!("usage: create_shorts_gui --block-subs <video-id-or-url> [--lang de]");
+            std::process::exit(2);
+        }
+    };
+    let video_id = pipeline::extract_video_id(raw);
+    let lang = args
+        .iter()
+        .position(|a| a == "--lang")
+        .and_then(|i| args.get(i + 1))
+        .cloned()
+        .unwrap_or_else(default_subs_language);
+
+    let settings = Settings::load();
+    let token = match oauth::refresh_access_token(&settings.client_id, &settings.client_secret) {
+        Ok(t) => t,
+        Err(e) => {
+            eprintln!("auth: {e}");
+            std::process::exit(1);
+        }
+    };
+    match youtube::insert_blank_caption(&token, &video_id, &lang) {
+        Ok(id) => {
+            println!("Blocked auto-subtitles on {video_id}: blank \"{lang}\" caption track {id}");
+            std::process::exit(0);
+        }
+        Err(e) => {
+            eprintln!("block-subs failed: {e}");
+            std::process::exit(1);
+        }
+    }
+}
+
 fn main() -> eframe::Result<()> {
     let args: Vec<String> = std::env::args().collect();
     if args.iter().any(|a| a == "--export-pdf") {
         run_export_pdf_cli(&args);
+    }
+    if args.iter().any(|a| a == "--block-subs") {
+        run_block_subs_cli(&args);
     }
     ensure_homebrew_on_path();
     let mut viewport = egui::ViewportBuilder::default()
@@ -363,6 +407,11 @@ struct FormState {
     // clip.
     #[serde(default)] cut_middle: bool,
     #[serde(default = "default_cuts")] cuts: Vec<CutRange>,
+    // Keep YouTube from stamping its own auto-generated subtitles on the
+    // short. Defaults on — Jürg doesn't want them, and YouTube offers no
+    // switch to turn ASR off (see `pipeline::block_auto_subtitles`).
+    #[serde(default = "default_true")] block_auto_subs: bool,
+    #[serde(default = "default_subs_language")] subs_language: String,
 }
 
 /// One "remove this middle section" range. Timestamps are strings in the
@@ -409,6 +458,56 @@ fn default_overlay_pos() -> [f32; 2] { [0.0, 1.0] }
 fn default_fade_out() -> bool { true }
 fn default_fade_secs() -> u32 { 10 }
 fn default_stretch_secs() -> u32 { 5 }
+fn default_true() -> bool { true }
+fn default_subs_language() -> String { "de".to_string() }
+
+/// Languages offerable as "what is spoken in this short". The picked one is
+/// declared as the video's audio language *and* is the language of the blank
+/// caption track we publish — the two must match, or YouTube's auto-caption in
+/// the other language survives. `zxx` is the ISO code for "no linguistic
+/// content", for shorts that are music/ambience only.
+const SUBS_LANGUAGES: &[(&str, &str)] = &[
+    ("de", "German"),
+    ("en", "English"),
+    ("fr", "French"),
+    ("it", "Italian"),
+    ("es", "Spanish"),
+    ("zxx", "No speech"),
+];
+
+fn subs_language_label(code: &str) -> String {
+    SUBS_LANGUAGES
+        .iter()
+        .find(|(c, _)| *c == code)
+        .map(|(c, name)| format!("{} ({})", name, c))
+        .unwrap_or_else(|| code.to_string())
+}
+
+/// The "Subtitles:" row shared by the main form and the direct-upload modal:
+/// a checkbox plus the spoken-language picker it depends on.
+fn subs_controls(ui: &mut egui::Ui, block: &mut bool, lang: &mut String, id_salt: &str) {
+    ui.checkbox(block, "Block YouTube's auto-generated subtitles")
+        .on_hover_text(
+            "YouTube adds its own auto-generated subtitles to uploads and gives creators no way \
+             to switch that off. Ticking this publishes an empty subtitle track in the language \
+             below, which takes precedence — so YouTube's own subtitles stop being shown.",
+        );
+    ui.add_enabled_ui(*block, |ui| {
+        egui::ComboBox::from_id_salt(id_salt)
+            .selected_text(subs_language_label(lang))
+            .show_ui(ui, |ui| {
+                for (code, _) in SUBS_LANGUAGES {
+                    ui.selectable_value(lang, code.to_string(), subs_language_label(code));
+                }
+            })
+            .response
+            .on_hover_text(
+                "The language spoken in this short. It has to be right: YouTube generates its \
+                 subtitles in the language it thinks it hears (it guessed Arabic on one of these \
+                 shorts), and an empty track only overrides the auto one in the same language.",
+            );
+    });
+}
 
 impl Default for FormState {
     fn default() -> Self {
@@ -430,6 +529,8 @@ impl Default for FormState {
             fade_in_secs: default_fade_secs(),
             cut_middle: false,
             cuts: default_cuts(),
+            block_auto_subs: default_true(),
+            subs_language: default_subs_language(),
         }
     }
 }
@@ -527,6 +628,8 @@ struct App {
     upload_title: String,
     upload_description: String,
     upload_privacy: String,
+    upload_block_auto_subs: bool,
+    upload_subs_language: String,
     upload_running: bool,
     /// Cancel flag for the direct-upload (Upload tab) job — same mechanism as
     /// `cancel`, kept separate so the two jobs can run and be cancelled
@@ -1210,6 +1313,8 @@ impl App {
             upload_title: String::new(),
             upload_description: String::new(),
             upload_privacy: "public".to_string(),
+            upload_block_auto_subs: default_true(),
+            upload_subs_language: default_subs_language(),
             upload_running: false,
             upload_cancel: Arc::new(AtomicBool::new(false)),
             upload_rx: None,
@@ -1963,6 +2068,8 @@ impl App {
             title: self.upload_title.trim().to_string(),
             description: self.upload_description.trim().to_string(),
             privacy: self.upload_privacy.clone(),
+            block_auto_subs: self.upload_block_auto_subs,
+            audio_language: self.upload_subs_language.clone(),
         };
         let settings = self.settings.clone();
         std::thread::spawn(move || pipeline::run_upload(job, settings, tx, cancel));
@@ -2091,6 +2198,8 @@ impl App {
             } else {
                 Vec::new()
             },
+            block_auto_subs: self.form.block_auto_subs,
+            audio_language: self.form.subs_language.clone(),
         };
         let settings = self.settings.clone();
         std::thread::spawn(move || pipeline::run(job, settings, tx, cancel));
@@ -3162,6 +3271,33 @@ impl eframe::App for App {
                         });
                     });
                     ui.end_row();
+
+                    ui.label("Subtitles:");
+                    ui.horizontal(|ui| {
+                        subs_controls(
+                            ui,
+                            &mut self.form.block_auto_subs,
+                            &mut self.form.subs_language,
+                            "subs_language_form",
+                        );
+                    });
+                    ui.end_row();
+
+                    // Only shown once we *know* the saved sign-in lacks the
+                    // captions scope (i.e. it was granted before 1.0.58) —
+                    // otherwise the blocking step would fail with a 403 only
+                    // after the upload had already gone out.
+                    if self.form.block_auto_subs && oauth::needs_reauth_for_captions() {
+                        ui.label("");
+                        ui.label(
+                            RichText::new(
+                                "Sign in to YouTube again (Settings) — blocking subtitles needs a permission your current sign-in doesn't have.",
+                            )
+                            .small()
+                            .color(egui::Color32::from_rgb(0xC9, 0x8A, 0x00)),
+                        );
+                        ui.end_row();
+                    }
                 });
 
             ui.add_space(8.0);
@@ -3706,6 +3842,17 @@ impl App {
                             for p in ["public", "unlisted", "private"] {
                                 ui.radio_value(&mut self.upload_privacy, p.to_string(), p);
                             }
+                        });
+                        ui.end_row();
+
+                        ui.label("Subtitles:");
+                        ui.horizontal(|ui| {
+                            subs_controls(
+                                ui,
+                                &mut self.upload_block_auto_subs,
+                                &mut self.upload_subs_language,
+                                "subs_language_upload",
+                            );
                         });
                         ui.end_row();
                     });

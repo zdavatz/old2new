@@ -11,7 +11,14 @@ use std::net::TcpListener;
 use std::time::Duration;
 
 pub const REDIRECT_PORT: u16 = 8093;
-pub const SCOPE: &str = "https://www.googleapis.com/auth/youtube.upload https://www.googleapis.com/auth/youtube";
+
+/// Publishing a caption track (which is how we hide YouTube's auto-generated
+/// subtitles) needs `youtube.force-ssl` — `captions.insert` rejects the plain
+/// `youtube` scope. It is *appended*, so a sign-in from before 1.0.58 keeps
+/// working for uploads; only the subtitle-blocking step will 403 until the
+/// user signs in again (see [`needs_reauth_for_captions`]).
+pub const CAPTIONS_SCOPE: &str = "https://www.googleapis.com/auth/youtube.force-ssl";
+pub const SCOPE: &str = "https://www.googleapis.com/auth/youtube.upload https://www.googleapis.com/auth/youtube https://www.googleapis.com/auth/youtube.force-ssl";
 
 #[derive(Default, Clone, Serialize, Deserialize)]
 pub struct Token {
@@ -22,6 +29,22 @@ pub struct Token {
     /// Unix epoch seconds when `access_token` expires.
     #[serde(default)]
     pub expires_at: i64,
+    /// Space-separated scopes Google actually granted, as echoed back by the
+    /// token endpoint. Empty when unknown (tokens saved before 1.0.58 — they
+    /// learn their scopes on the next refresh).
+    #[serde(default)]
+    pub scope: String,
+}
+
+/// True only when we *know* the saved sign-in lacks the captions scope, so the
+/// GUI can tell the user to sign in again before they hit a 403. An empty
+/// `scope` (pre-1.0.58 token, not yet refreshed) reports false — we don't warn
+/// on a guess.
+pub fn needs_reauth_for_captions() -> bool {
+    match load_token() {
+        Some(t) if !t.scope.is_empty() => !t.scope.split_whitespace().any(|s| s == CAPTIONS_SCOPE),
+        _ => false,
+    }
 }
 
 pub fn load_token() -> Option<Token> {
@@ -162,8 +185,13 @@ fn exchange_code(
         .and_then(|v| v.as_i64())
         .unwrap_or(3500);
     let expires_at = now_secs() + expires_in - 60;
+    let scope = body
+        .get("scope")
+        .and_then(|v| v.as_str())
+        .unwrap_or_default()
+        .to_string();
 
-    Ok(Token { access_token, refresh_token, expires_at })
+    Ok(Token { access_token, refresh_token, expires_at, scope })
 }
 
 /// Returns a fresh access token, refreshing via the saved refresh token
@@ -213,6 +241,11 @@ pub fn refresh_access_token(
 
     tok.access_token = access_token.clone();
     tok.expires_at = now_secs() + expires_in - 60;
+    // Google echoes the granted scopes on refresh, which is how a token saved
+    // before 1.0.58 finds out whether it can publish captions.
+    if let Some(s) = body.get("scope").and_then(|v| v.as_str()) {
+        tok.scope = s.to_string();
+    }
     save_token(&tok).ok();
     Ok(access_token)
 }

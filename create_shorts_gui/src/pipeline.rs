@@ -4,7 +4,7 @@
 
 use crate::oauth;
 use crate::settings::Settings;
-use crate::youtube::{upload_video, VideoBody, VideoSnippet, VideoStatus};
+use crate::youtube::{insert_blank_caption, upload_video, VideoBody, VideoSnippet, VideoStatus};
 use crossbeam_channel::Sender;
 use std::collections::VecDeque;
 use std::io::Read;
@@ -169,6 +169,13 @@ pub struct Job {
     /// remaining is concatenated into one clip.
     pub cut_middle: bool,
     pub cuts: Vec<(String, String)>,
+    /// Stop YouTube from putting its own auto-generated subtitles on the
+    /// upload, by declaring the audio language and publishing a blank caption
+    /// track in it (see [`block_auto_subtitles`]).
+    pub block_auto_subs: bool,
+    /// BCP-47 language spoken in the video (`de`, `en`, … or `zxx` for no
+    /// speech). Only meaningful when `block_auto_subs` is set.
+    pub audio_language: String,
 }
 
 pub struct UploadJob {
@@ -176,6 +183,57 @@ pub struct UploadJob {
     pub title: String,
     pub description: String,
     pub privacy: String,
+    pub block_auto_subs: bool,
+    pub audio_language: String,
+}
+
+/// Publish the blank caption track that hides YouTube's auto-generated
+/// subtitles, and log what happened.
+///
+/// Deliberately **never fatal**: by the time this runs the video is already on
+/// YouTube, so a caption failure must not turn a successful upload into a red
+/// error. It degrades to a warning line instead.
+///
+/// Right after `videos.insert` the video can still be registering, so a first
+/// attempt may 404 — hence the backoff. A missing-scope 403 is not retried:
+/// waiting won't grant the scope, only signing in again will.
+fn block_auto_subtitles(tx: &Sender<Event>, token: &str, video_id: &str, language: &str) {
+    let _ = tx.send(Event::Log(format!(
+        "Blocking YouTube auto-subtitles: publishing a blank \"{}\" caption track…",
+        language
+    )));
+    const DELAYS: [u64; 4] = [0, 5, 15, 30];
+    for (i, delay) in DELAYS.iter().enumerate() {
+        if *delay > 0 {
+            std::thread::sleep(std::time::Duration::from_secs(*delay));
+        }
+        match insert_blank_caption(token, video_id, language) {
+            Ok(id) => {
+                let _ = tx.send(Event::Log(format!(
+                    "✅ Auto-subtitles blocked — blank \"{}\" caption track published ({})",
+                    language, id
+                )));
+                return;
+            }
+            Err(e) => {
+                let hopeless = e.contains("Sign in to YouTube again");
+                let last = i + 1 == DELAYS.len();
+                if hopeless || last {
+                    let _ = tx.send(Event::Log(format!(
+                        "⚠ Could not block auto-subtitles: {} — the video itself uploaded fine.",
+                        e
+                    )));
+                    return;
+                }
+                let _ = tx.send(Event::Log(format!(
+                    "Caption attempt {} failed ({}); retrying in {}s…",
+                    i + 1,
+                    e,
+                    DELAYS[i + 1]
+                )));
+            }
+        }
+    }
 }
 
 /// Direct upload of a local video file to YouTube — no yt-dlp, no
@@ -207,11 +265,14 @@ pub fn run_upload(job: UploadJob, settings: Settings, tx: Sender<Event>, cancel:
         }
     };
 
+    let lang = job.audio_language.clone();
     let body = VideoBody {
         snippet: VideoSnippet {
             title: &job.title,
             description: &job.description,
             category_id: "22",
+            default_language: job.block_auto_subs.then_some(lang.as_str()),
+            default_audio_language: job.block_auto_subs.then_some(lang.as_str()),
         },
         status: VideoStatus {
             privacy_status: &job.privacy,
@@ -228,6 +289,9 @@ pub fn run_upload(job: UploadJob, settings: Settings, tx: Sender<Event>, cancel:
 
     match result {
         Ok(id) => {
+            if job.block_auto_subs {
+                block_auto_subtitles(&tx, &access_token, &id, &lang);
+            }
             let _ = tx.send(Event::Done(format!("https://www.youtube.com/watch?v={}", id)));
         }
         Err(e) => {
@@ -724,11 +788,14 @@ pub fn run(job: Job, settings: Settings, tx: Sender<Event>, cancel: Arc<AtomicBo
         job.description, original_url, job.start, job.end
     );
 
+    let lang = job.audio_language.clone();
     let body = VideoBody {
         snippet: VideoSnippet {
             title: &job.title,
             description: &description,
             category_id: "22",
+            default_language: job.block_auto_subs.then_some(lang.as_str()),
+            default_audio_language: job.block_auto_subs.then_some(lang.as_str()),
         },
         status: VideoStatus {
             privacy_status: &job.privacy,
@@ -755,6 +822,9 @@ pub fn run(job: Job, settings: Settings, tx: Sender<Event>, cancel: Arc<AtomicBo
 
     match result {
         Ok(id) => {
+            if job.block_auto_subs {
+                block_auto_subtitles(&tx, &access_token, &id, &lang);
+            }
             let _ = tx.send(Event::Done(format!("https://www.youtube.com/watch?v={}", id)));
         }
         Err(e) => {
@@ -2054,7 +2124,7 @@ fn apply_stretch(
     Ok(())
 }
 
-fn extract_video_id(input: &str) -> String {
+pub fn extract_video_id(input: &str) -> String {
     if !input.contains("://") && !input.contains('/') && !input.contains('?') {
         return input.to_string();
     }

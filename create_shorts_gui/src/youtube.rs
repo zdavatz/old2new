@@ -14,6 +14,23 @@ pub struct VideoSnippet<'a> {
     pub description: &'a str,
     #[serde(rename = "categoryId")]
     pub category_id: &'a str,
+    /// BCP-47 language of the metadata (title/description). Documented as
+    /// writable on insert.
+    #[serde(rename = "defaultLanguage", skip_serializing_if = "Option::is_none")]
+    pub default_language: Option<&'a str>,
+    /// BCP-47 language spoken in the video. Left unset, YouTube *guesses* it
+    /// for the auto-caption run — and guesses badly (it decided one of Jürg's
+    /// shorts was Arabic). Declaring it pins which language the ASR track is
+    /// generated in, which is what lets the blank caption track from
+    /// [`insert_blank_caption`] actually override it: an override only hides
+    /// the auto track of the *same* language.
+    ///
+    /// The `videos.insert` reference page omits this from its writable list
+    /// while the Videos-resource page marks it `@mutable youtube.videos.insert`.
+    /// It is sent optionally so that, if YouTube ever rejects or ignores it,
+    /// the upload itself still goes through.
+    #[serde(rename = "defaultAudioLanguage", skip_serializing_if = "Option::is_none")]
+    pub default_audio_language: Option<&'a str>,
 }
 
 #[derive(Serialize)]
@@ -146,4 +163,93 @@ pub fn upload_video(
     }
 
     Err("upload ended without final response".to_string())
+}
+
+const CAPTIONS_UPLOAD: &str =
+    "https://www.googleapis.com/upload/youtube/v3/captions?uploadType=multipart&part=snippet";
+
+/// A caption track with one cue holding a single space: enough for YouTube to
+/// accept the file (a track with no cues is rejected), invisible on screen.
+const BLANK_SRT: &str = "1\n00:00:00,000 --> 00:00:00,100\n \n";
+
+/// Publish a blank caption track so YouTube's auto-generated subtitles stop
+/// being offered.
+///
+/// YouTube gives creators **no** switch to turn ASR off — `captions.delete`
+/// refuses to remove an auto-generated track, and there is no channel setting.
+/// The one lever that works is precedence: the player only surfaces the
+/// "(auto-generated)" track for a language when no *published manual* track
+/// exists in it. So we publish an empty one and the auto track stops showing.
+///
+/// `language` must match the language YouTube's ASR ran in — see
+/// `VideoSnippet::default_audio_language`, which is what pins that down.
+///
+/// Hand-rolls the `multipart/related` body (metadata part + media part)
+/// because Google's media upload wants exactly that, while reqwest's
+/// `multipart` builds `multipart/form-data`.
+pub fn insert_blank_caption(
+    access_token: &str,
+    video_id: &str,
+    language: &str,
+) -> Result<String, String> {
+    let meta = serde_json::json!({
+        "snippet": {
+            "videoId": video_id,
+            "language": language,
+            "name": "",
+            "isDraft": false,
+        }
+    });
+
+    let boundary = "cs_caption_boundary_e3a1f0";
+    let body = format!(
+        "--{b}\r\n\
+         Content-Type: application/json; charset=UTF-8\r\n\r\n\
+         {meta}\r\n\
+         --{b}\r\n\
+         Content-Type: application/octet-stream\r\n\r\n\
+         {srt}\r\n\
+         --{b}--\r\n",
+        b = boundary,
+        meta = meta,
+        srt = BLANK_SRT,
+    );
+
+    let client = reqwest::blocking::Client::builder()
+        .connect_timeout(std::time::Duration::from_secs(15))
+        .timeout(std::time::Duration::from_secs(60))
+        .build()
+        .map_err(|e| format!("client build: {}", e))?;
+
+    let resp = client
+        .post(CAPTIONS_UPLOAD)
+        .bearer_auth(access_token)
+        .header(
+            "Content-Type",
+            format!("multipart/related; boundary={}", boundary),
+        )
+        .body(body)
+        .send()
+        .map_err(|e| format!("captions request: {}", e))?;
+
+    let status = resp.status();
+    let text = resp.text().unwrap_or_default();
+
+    if status.as_u16() == 403 && text.contains("insufficient") {
+        return Err(
+            "YouTube refused the caption upload: this sign-in predates the subtitle-blocking \
+             feature. Open Settings → Sign in to YouTube again, then re-run."
+                .to_string(),
+        );
+    }
+    if !status.is_success() {
+        return Err(format!("captions.insert {}: {}", status, text));
+    }
+
+    let body: serde_json::Value =
+        serde_json::from_str(&text).map_err(|e| format!("captions response parse: {}", e))?;
+    body.get("id")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string())
+        .ok_or_else(|| format!("captions response missing id: {}", body))
 }
