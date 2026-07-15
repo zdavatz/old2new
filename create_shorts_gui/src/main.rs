@@ -399,6 +399,14 @@ struct FormState {
     #[serde(default = "default_stretch_secs")] stretch_secs: u32,
     #[serde(default = "default_fade_out")] fade_out: bool,
     #[serde(default = "default_fade_secs")] fade_secs: u32,
+    // When fading out, hold the last frame bright instead of fading to black.
+    // Defaults off so existing saved forms keep the fade-to-black behaviour.
+    #[serde(default)] fade_out_hold_bright: bool,
+    // Optional end-card text burned onto the held last frame (Jürg fills it
+    // in). Empty = no end card.
+    #[serde(default)] end_text: String,
+    #[serde(default = "default_overlay_color")] end_text_color: [u8; 3],
+    #[serde(default = "default_end_text_pos")] end_text_pos: [f32; 2],
     #[serde(default)] fade_in: bool,
     #[serde(default = "default_fade_secs")] fade_in_secs: u32,
     // Remove one or more middle sections from the extracted segment: each
@@ -455,6 +463,9 @@ fn timestamp_edit(ui: &mut egui::Ui, value: &mut String, width: f32) -> egui::Re
 
 fn default_overlay_color() -> [u8; 3] { [255, 255, 255] }
 fn default_overlay_pos() -> [f32; 2] { [0.0, 1.0] }
+/// End-card text sits centred by default (unlike the title, which defaults
+/// bottom-left) since an end card usually reads best in the middle of the frame.
+fn default_end_text_pos() -> [f32; 2] { [0.5, 0.5] }
 fn default_fade_out() -> bool { true }
 fn default_fade_secs() -> u32 { 10 }
 fn default_stretch_secs() -> u32 { 5 }
@@ -525,6 +536,10 @@ impl Default for FormState {
             stretch_secs: default_stretch_secs(),
             fade_out: default_fade_out(),
             fade_secs: default_fade_secs(),
+            fade_out_hold_bright: false,
+            end_text: String::new(),
+            end_text_color: default_overlay_color(),
+            end_text_pos: default_end_text_pos(),
             fade_in: false,
             fade_in_secs: default_fade_secs(),
             cut_middle: false,
@@ -2185,6 +2200,10 @@ impl App {
             stretch_secs: self.form.stretch_secs,
             fade_out: self.form.fade_out,
             fade_secs: self.form.fade_secs,
+            fade_out_hold_bright: self.form.fade_out_hold_bright,
+            end_text: self.form.end_text.trim().to_string(),
+            end_text_color: self.form.end_text_color,
+            end_text_pos: self.form.end_text_pos,
             fade_in: self.form.fade_in,
             fade_in_secs: self.form.fade_in_secs,
             cut_middle: self.form.cut_middle,
@@ -3257,9 +3276,9 @@ impl eframe::App for App {
                     ui.horizontal(|ui| {
                         ui.checkbox(
                             &mut self.form.fade_out,
-                            "Freeze last frame and fade to black at the end",
+                            "Freeze last frame at the end",
                         ).on_hover_text(
-                            "Holds the last frame and fades it — picture and sound — to black/silence. The short ends up that many seconds longer. Applies to both Preview and Upload.",
+                            "Holds the last frame for the chosen number of seconds, so the short ends up that many seconds longer. Pick whether the held frame fades to black or stays bright. The sound keeps playing from the source and fades out under it. Applies to both Preview and Upload.",
                         );
                         ui.add_enabled_ui(self.form.fade_out, |ui| {
                             ui.add(
@@ -3267,8 +3286,62 @@ impl eframe::App for App {
                                     .speed(1.0)
                                     .range(1..=60)
                                     .suffix(" s"),
-                            ).on_hover_text("Fade-out duration in seconds (1–60).");
+                            ).on_hover_text("How long to hold the last frame, in seconds (1–60).");
+                            ui.add_space(10.0);
+                            ui.radio_value(&mut self.form.fade_out_hold_bright, false, "→ to black")
+                                .on_hover_text("Fade the held last frame down to black.");
+                            ui.radio_value(&mut self.form.fade_out_hold_bright, true, "→ hold bright")
+                                .on_hover_text("Keep the held last frame at full brightness — no darkening. Good for an end card you want to leave up.");
                         });
+                    });
+                    ui.end_row();
+
+                    // End card: optional text burned onto the held last frame.
+                    // Enabled only while the fade-out (the held frame) is on.
+                    let fade_on = self.form.fade_out;
+                    ui.label("End card:");
+                    ui.horizontal(|ui| {
+                        ui.add_enabled_ui(fade_on, |ui| {
+                            ui.add(
+                                egui::TextEdit::singleline(&mut self.form.end_text)
+                                    .desired_width(240.0)
+                                    .hint_text("optional text on the held frame"),
+                            ).on_hover_text(
+                                "Text burned onto the held last frame (the fade-out tail) — e.g. davaz.com or a closing line. Leave empty for no end card. Uses the colour and position below. Shows in Preview too.",
+                            );
+                            ui.add_space(8.0);
+                            ui.label("Color:");
+                            ui.color_edit_button_srgb(&mut self.form.end_text_color)
+                                .on_hover_text("Text colour for the end card. A thin black outline is added automatically for legibility over any frame.");
+                            if ui.input(|i| i.pointer.button_double_clicked(egui::PointerButton::Primary)) {
+                                ui.memory_mut(|mem| mem.close_popup());
+                            }
+                        });
+                    });
+                    ui.end_row();
+
+                    let endcard_on = fade_on && !self.form.end_text.trim().is_empty();
+                    ui.label("End-card position:");
+                    title_position_picker(ui, &mut self.form.end_text_pos, endcard_on);
+                    ui.end_row();
+
+                    ui.label("");
+                    ui.horizontal(|ui| {
+                        ui.label(
+                            egui::RichText::new(format!(
+                                "Drag the box above to place the end-card text — x: {:.0}%  y: {:.0}%",
+                                self.form.end_text_pos[0] * 100.0,
+                                self.form.end_text_pos[1] * 100.0,
+                            ))
+                            .weak(),
+                        );
+                        ui.add_space(8.0);
+                        if ui
+                            .add_enabled(endcard_on, egui::Button::new("Reset to centre").small())
+                            .clicked()
+                        {
+                            self.form.end_text_pos = default_end_text_pos();
+                        }
                     });
                     ui.end_row();
 

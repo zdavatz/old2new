@@ -161,6 +161,18 @@ pub struct Job {
     pub stretch_secs: u32,
     pub fade_out: bool,
     pub fade_secs: u32,
+    /// When `fade_out` is set: hold the last frame at full brightness for
+    /// `fade_secs` instead of fading it to black. The audio still ducks out
+    /// under the held frame either way — only the picture differs.
+    pub fade_out_hold_bright: bool,
+    /// Optional text burned onto the held last frame (the fade-out tail) — an
+    /// "end card" Jürg fills in himself. Empty = no end card. Only meaningful
+    /// when `fade_out` is set.
+    pub end_text: String,
+    pub end_text_color: [u8; 3],
+    /// Normalized end-card text position [x, y] in 0.0..=1.0, same convention
+    /// as `overlay_pos`. Default centred.
+    pub end_text_pos: [f32; 2],
     pub fade_in: bool,
     pub fade_in_secs: u32,
     /// Remove one or more middle sections from the extracted segment. Each
@@ -675,8 +687,21 @@ pub fn run(job: Job, settings: Settings, tx: Sender<Event>, cancel: Arc<AtomicBo
     // input as `<stem>_fadeout<secs>.mp4` so Preview → Upload of the same short
     // (and same duration) doesn't re-encode.
     let fade_secs = job.fade_secs.max(1);
+    let end_card: Option<(&str, [u8; 3], [f32; 2])> = {
+        let t = job.end_text.trim();
+        if t.is_empty() {
+            None
+        } else {
+            Some((t, job.end_text_color, job.end_text_pos))
+        }
+    };
     let delivered = if job.fade_out {
-        let fade_path = fade_output_path(&after_fade_in, fade_secs);
+        // The cached output depends on more than (input, secs): a "hold bright"
+        // ending and an end-card text produce a different file, so fold both
+        // into the cache key. With neither (the pre-1.0.59 behaviour) the tag
+        // is empty and the filename is unchanged, so old caches still match.
+        let variant = fade_variant_tag(job.fade_out_hold_bright, &job.end_text, job.end_text_color, job.end_text_pos);
+        let fade_path = fade_output_path(&after_fade_in, fade_secs, &variant);
         if fade_path.exists() {
             let _ = tx.send(Event::Log(format!(
                 "Reusing cached fade-out segment {}",
@@ -743,6 +768,8 @@ pub fn run(job: Job, settings: Settings, tx: Sender<Event>, cancel: Arc<AtomicBo
                 fade_secs,
                 tail_audio.as_deref(),
                 &cancel,
+                job.fade_out_hold_bright,
+                end_card,
             ) {
                 let _ = std::fs::remove_file(&fade_path);
                 report_fail(&tx, &cancel, format!("fade-out: {}", e));
@@ -1749,13 +1776,35 @@ fn apply_title_overlay(
 /// faded caches; keying on the duration means changing the fade length
 /// re-encodes rather than serving a stale cache. Preview → Upload of the
 /// same short and same duration reuses the file.
-fn fade_output_path(input: &std::path::Path, fade_secs: u32) -> PathBuf {
+fn fade_output_path(input: &std::path::Path, fade_secs: u32, variant: &str) -> PathBuf {
     let parent = input.parent().unwrap_or_else(|| std::path::Path::new("."));
     let stem = input
         .file_stem()
         .and_then(|s| s.to_str())
         .unwrap_or("segment");
-    parent.join(format!("{}_fadeout{}.mp4", stem, fade_secs))
+    parent.join(format!("{}_fadeout{}{}.mp4", stem, fade_secs, variant))
+}
+
+/// Cache discriminator for a fade-out variant. Empty when the ending is the
+/// classic fade-to-black with no end card (so pre-1.0.59 cache filenames stay
+/// valid); otherwise a short tag encoding the "hold bright" flag and a hash of
+/// the end-card text + colour + position, so changing any of those re-encodes
+/// instead of serving a stale file.
+fn fade_variant_tag(hold_bright: bool, end_text: &str, color: [u8; 3], pos: [f32; 2]) -> String {
+    use std::hash::{Hash, Hasher};
+    let mut tag = String::new();
+    if hold_bright {
+        tag.push('b');
+    }
+    if !end_text.trim().is_empty() {
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        end_text.trim().hash(&mut h);
+        color.hash(&mut h);
+        pos[0].to_bits().hash(&mut h);
+        pos[1].to_bits().hash(&mut h);
+        tag.push_str(&format!("t{:x}", h.finish()));
+    }
+    tag
 }
 
 /// Cache path for the faded-in variant of a segment: same directory and
@@ -1824,14 +1873,20 @@ fn probe_has_audio(input: &std::path::Path) -> bool {
         .unwrap_or(false)
 }
 
-/// Hold the last frame of `input` for `fade_secs` seconds and fade that held
-/// frame to black ("prolong"), so the short ends up N seconds longer. The
-/// **sound keeps running underneath the held frame and fades out with it**:
-/// `tail_audio` (a clip of the source's audio from the cut point onward,
-/// fetched by the caller) is concatenated after the input's own audio and the
-/// whole thing fades out over the held window. If no continuing audio is
-/// available (cut at the end of the source, or the input has no audio) we fall
-/// back to fading the input's own last N s of sound and holding silence.
+/// Hold the last frame of `input` for `fade_secs` seconds ("prolong"), so the
+/// short ends up N seconds longer. The held picture either fades to black
+/// (`hold_bright == false`, the original behaviour) or stays at full brightness
+/// (`hold_bright == true`) — a still end-frame Jürg can leave up. When
+/// `end_card` is given, its text is rendered to a frame-sized PNG (reusing the
+/// title renderer) and composited **only over the held tail**, so it appears as
+/// an end card; on the fade-to-black variant it darkens along with the frame.
+///
+/// The **sound keeps running underneath the held frame and fades out with it**
+/// in both variants: `tail_audio` (a clip of the source's audio from the cut
+/// point onward, fetched by the caller) is concatenated after the input's own
+/// audio and the whole thing fades out over the held window. If no continuing
+/// audio is available (cut at the end of the source, or the input has no audio)
+/// we fall back to fading the input's own last N s of sound and holding silence.
 fn apply_fade_out(
     input: &std::path::Path,
     output: &std::path::Path,
@@ -1840,6 +1895,8 @@ fn apply_fade_out(
     fade_secs: u32,
     tail_audio: Option<&std::path::Path>,
     cancel: &Arc<AtomicBool>,
+    hold_bright: bool,
+    end_card: Option<(&str, [u8; 3], [f32; 2])>,
 ) -> Result<(), String> {
     let fade: f64 = fade_secs.max(1) as f64;
     let dur = probe_duration(input).unwrap_or(segment_secs);
@@ -1851,8 +1908,23 @@ fn apply_fade_out(
         && tail_audio
             .map(|p| p.exists() && probe_has_audio(p))
             .unwrap_or(false);
+
+    // Render the end-card text (if any) to a frame-sized transparent PNG, the
+    // same way the title overlay does — so no `drawtext`/libfreetype needed.
+    let end_png: Option<PathBuf> = if let Some((text, color, pos)) = end_card {
+        let (video_w, video_h) = probe_video_size(input)?;
+        let p = std::env::temp_dir()
+            .join(format!("create_shorts_endcard_{}.png", std::process::id()));
+        render_title_png(text, color, pos, video_w, video_h, &p)?;
+        let _ = tx.send(Event::Log(format!("End-card text rendered: {:?}", text)));
+        Some(p)
+    } else {
+        None
+    };
+
     let _ = tx.send(Event::Log(format!(
-        "Freeze-frame fade-out: holding last frame {:.1}s–{:.1}s ({})",
+        "Freeze-frame {}: holding last frame {:.1}s–{:.1}s ({})",
+        if hold_bright { "hold (bright)" } else { "fade-out" },
         freeze_start,
         freeze_start + fade,
         if use_tail {
@@ -1864,13 +1936,17 @@ fn apply_fade_out(
         },
     )));
 
-    // Video: clone the last frame for `fade` seconds, then fade that held tail
-    // to black over the same window.
-    let vf = format!(
-        "tpad=stop_mode=clone:stop_duration={fade},fade=t=out:st={start:.3}:d={fade}",
-        fade = fade,
-        start = freeze_start,
-    );
+    // Video core: clone the last frame for `fade` seconds. Fading it to black is
+    // optional (skipped for the "hold bright" ending). Used directly on the
+    // simple `-vf` path (no end card, no continuing audio).
+    let mut vf = format!("tpad=stop_mode=clone:stop_duration={fade}", fade = fade);
+    if !hold_bright {
+        vf.push_str(&format!(
+            ",fade=t=out:st={start:.3}:d={fade}",
+            start = freeze_start,
+            fade = fade,
+        ));
+    }
 
     let _ = tx.send(Event::Progress {
         phase: "Adding fade-out".into(),
@@ -1878,31 +1954,103 @@ fn apply_fade_out(
         detail: String::new(),
     });
 
+    // An end-card overlay needs a second video input, and the tail-audio path
+    // already needs `-filter_complex`; either forces the complex branch.
+    let complex = use_tail || end_png.is_some();
+
     let mut cmd = Command::new("ffmpeg");
     cmd.arg("-y");
     cmd.args(hwaccel_decode_args()); // HW-decode the (4K) video input
     cmd.arg("-i")
         .arg(input.to_str().ok_or("non-utf8 input path")?);
-    if use_tail {
+    // Input indices: 0 = video; then (if present) the end-card PNG; then (if
+    // used) the continuing tail audio. Assigned in the same order they're added.
+    let mut next_idx = 1u32;
+    let png_idx = if let Some(p) = &end_png {
+        cmd.arg("-i").arg(p.to_str().ok_or("non-utf8 png path")?);
+        let i = next_idx;
+        next_idx += 1;
+        Some(i)
+    } else {
+        None
+    };
+    let tail_idx = if use_tail {
         cmd.arg("-i")
             .arg(tail_audio.unwrap().to_str().ok_or("non-utf8 tail path")?);
-        // Normalize both audio streams to a common format so concat accepts
-        // them, glue the continuing source audio after the input's own audio,
-        // then fade the whole thing out over the held window.
-        let fc = format!(
-            "[0:v]{vf}[v];\
-             [0:a]aresample=async=1,aformat=sample_rates=48000:channel_layouts=stereo[a0];\
-             [1:a]aresample=async=1,aformat=sample_rates=48000:channel_layouts=stereo[a1];\
-             [a0][a1]concat=n=2:v=0:a=1[acat];\
-             [acat]afade=t=out:st={start:.3}:d={fade}[a]",
-            vf = vf,
-            start = freeze_start,
+        let i = next_idx;
+        next_idx += 1;
+        Some(i)
+    } else {
+        None
+    };
+    let _ = next_idx;
+
+    if complex {
+        // Build the video chain step by step, threading the current label:
+        // tpad → (overlay end card over the held window) → (fade to black).
+        let mut fc = String::new();
+        let mut cur = String::from("0:v");
+        fc.push_str(&format!(
+            "[{cur}]tpad=stop_mode=clone:stop_duration={fade}[v0];",
+            cur = cur,
             fade = fade,
-        );
-        cmd.arg("-filter_complex").arg(&fc).args(["-map", "[v]", "-map", "[a]"]);
+        ));
+        cur = String::from("v0");
+        if let Some(pi) = png_idx {
+            fc.push_str(&format!(
+                "[{cur}][{pi}:v]overlay=0:0:enable='between(t,{s:.3},{e:.3})'[v1];",
+                cur = cur,
+                pi = pi,
+                s = freeze_start,
+                e = freeze_start + fade,
+            ));
+            cur = String::from("v1");
+        }
+        if !hold_bright {
+            fc.push_str(&format!(
+                "[{cur}]fade=t=out:st={s:.3}:d={fade}[v2];",
+                cur = cur,
+                s = freeze_start,
+                fade = fade,
+            ));
+            cur = String::from("v2");
+        }
+        let vlabel = format!("[{}]", cur);
+        // Audio: same as before — concat the continuing tail then fade, or fade
+        // the input's own tail and pad silence; drop audio entirely if none.
+        let have_audio = if use_tail {
+            let ti = tail_idx.unwrap();
+            fc.push_str(&format!(
+                "[0:a]aresample=async=1,aformat=sample_rates=48000:channel_layouts=stereo[a0];\
+                 [{ti}:a]aresample=async=1,aformat=sample_rates=48000:channel_layouts=stereo[a1];\
+                 [a0][a1]concat=n=2:v=0:a=1[acat];\
+                 [acat]afade=t=out:st={start:.3}:d={fade}[a];",
+                ti = ti,
+                start = freeze_start,
+                fade = fade,
+            ));
+            true
+        } else if has_audio {
+            let afade_start = (freeze_start - fade).max(0.0);
+            fc.push_str(&format!(
+                "[0:a]afade=t=out:st={s:.3}:d={fade},apad=pad_dur={fade}[a];",
+                s = afade_start,
+                fade = fade,
+            ));
+            true
+        } else {
+            false
+        };
+        let fc = fc.trim_end_matches(';').to_string();
+        cmd.arg("-filter_complex").arg(&fc).arg("-map").arg(&vlabel);
+        if have_audio {
+            cmd.args(["-map", "[a]"]);
+        } else {
+            cmd.arg("-an");
+        }
     } else if has_audio {
-        // No continuation: fade the input's own last N s of sound, then pad
-        // silence to fill the held frame.
+        // No continuation, no end card: fade the input's own last N s of sound,
+        // then pad silence to fill the held frame.
         let afade_start = (freeze_start - fade).max(0.0);
         let af = format!(
             "afade=t=out:st={s:.3}:d={fade},apad=pad_dur={fade}",
@@ -1934,9 +2082,14 @@ fn apply_fade_out(
     let cap_for_thread = stderr_capture.clone();
     let h_o = stdout.map(|r| std::thread::spawn(move || stream_progress(r, tx_o, total, None, "Adding fade-out".to_string())));
     let h_e = stderr.map(|r| std::thread::spawn(move || stream_progress(r, tx_e, total, Some(cap_for_thread), "Adding fade-out".to_string())));
-    let status = wait_or_cancel(&mut child, cancel)?;
+    let status = wait_or_cancel(&mut child, cancel);
     if let Some(h) = h_o { let _ = h.join(); }
     if let Some(h) = h_e { let _ = h.join(); }
+    // Drop the temp end-card PNG on every exit path (success, error, cancel).
+    if let Some(p) = &end_png {
+        let _ = std::fs::remove_file(p);
+    }
+    let status = status?;
     if !status.success() {
         let detail = summarize_yt_dlp_failure(&stderr_capture);
         let suffix = if detail.is_empty() { String::new() } else { format!(" — {}", detail) };
