@@ -11,6 +11,7 @@ mod davaz;
 mod deps;
 mod history;
 mod installer;
+mod linkedin;
 mod mpv;
 mod oauth;
 mod pdf;
@@ -635,6 +636,29 @@ struct App {
     /// `last_done_url` so the button can hide and the success line
     /// stays visible until the user dismisses the banner.
     davaz_posted: bool,
+    /// LinkedIn post in flight. Reports through `li_rx`, which carries the
+    /// post URL on success.
+    li_posting: bool,
+    li_rx: Option<Receiver<Result<String, String>>>,
+    /// Progress/status lines from the posting worker (the yt-dlp download step
+    /// has something to say before the upload starts).
+    li_log_rx: Option<Receiver<String>>,
+    li_status_msg: Option<String>,
+    /// Set once the current `last_done_url` has been posted, so the button
+    /// hides and the confirmation stays up until the banner is dismissed.
+    li_posted: bool,
+    /// Cancel flag for the in-flight LinkedIn post (a fresh one per post, so
+    /// an earlier Cancel can't abort the next).
+    li_cancel: Arc<AtomicBool>,
+    li_progress: Arc<Mutex<ProgressInfo>>,
+    li_signed_in: bool,
+    li_signing_in: bool,
+    li_signin_rx: Option<Receiver<SignInEvent>>,
+    /// The uploaded video still on disk, for a LinkedIn post that shouldn't
+    /// re-download what we just uploaded. `..._temp` marks it as ours to
+    /// delete (see `drop_done_file`).
+    last_done_file: Option<std::path::PathBuf>,
+    last_done_file_temp: bool,
     show_history: bool,
     history_filter: String,
     history_cache: Vec<history::UploadEntry>,
@@ -1320,6 +1344,18 @@ impl App {
             davaz_rx: None,
             davaz_status_msg: None,
             davaz_posted: false,
+            li_posting: false,
+            li_rx: None,
+            li_log_rx: None,
+            li_status_msg: None,
+            li_posted: false,
+            li_cancel: Arc::new(AtomicBool::new(false)),
+            li_progress: Arc::new(Mutex::new(ProgressInfo::default())),
+            li_signed_in: linkedin::is_signed_in(),
+            li_signing_in: false,
+            li_signin_rx: None,
+            last_done_file: None,
+            last_done_file_temp: false,
             show_history: false,
             history_filter: String::new(),
             history_cache: Vec::new(),
@@ -1566,6 +1602,138 @@ impl App {
             let result = davaz::post_video(&token, &url)
                 .map_err(|e| e.to_string());
             let _ = tx.send(result);
+        });
+    }
+
+    /// Delete the video we kept for a possible LinkedIn post, if it was ours
+    /// to delete. The direct-upload path reports the user's own file — that
+    /// one is only forgotten, never removed.
+    fn drop_done_file(&mut self) {
+        if let Some(p) = self.last_done_file.take() {
+            if self.last_done_file_temp {
+                let _ = std::fs::remove_file(&p);
+            }
+        }
+        self.last_done_file_temp = false;
+    }
+
+    /// Post the finished short to LinkedIn as a native video. Uses the file we
+    /// kept from the upload when it's still around; otherwise (an older short,
+    /// or after a restart) it re-downloads it from YouTube like the CLI does.
+    fn start_li_post(&mut self, url: String) {
+        if self.li_posting { return; }
+        if self.settings.linkedin_client_id.trim().is_empty()
+            || self.settings.linkedin_client_secret.trim().is_empty()
+        {
+            self.li_status_msg = Some("LinkedIn Client ID/Secret not set — open Settings.".into());
+            return;
+        }
+        if !linkedin::is_signed_in() {
+            self.li_status_msg = Some("Not signed in to LinkedIn — open Settings and sign in.".into());
+            return;
+        }
+
+        let title = self.form.title.trim().to_string();
+        // The commentary carries the link back to the source video, the way
+        // the CLI's posts do — the short itself is the video being posted.
+        let commentary = {
+            let mut c = title.clone();
+            let original = self.form.source.trim();
+            if !original.is_empty() {
+                c.push_str(&format!("\n\n{}", original));
+            }
+            c
+        };
+        // A file we kept from this run; None once dismissed or after a restart.
+        let local = self
+            .last_done_file
+            .clone()
+            .filter(|p| p.exists());
+        let settings = self.settings.clone();
+        let cancel = Arc::new(AtomicBool::new(false));
+        self.li_cancel = cancel.clone();
+        let progress = self.li_progress.clone();
+        let visibility = self.settings.linkedin_visibility.clone();
+
+        self.append_log(match &local {
+            Some(p) => format!("Posting {} to LinkedIn…", p.display()),
+            None => format!("Posting {} to LinkedIn (downloading it first)…", url),
+        });
+        self.li_status_msg = Some("Posting to LinkedIn…".into());
+        self.li_posting = true;
+        if let Ok(mut p) = progress.lock() {
+            *p = ProgressInfo::default();
+        }
+
+        let (tx, rx) = unbounded::<Result<String, String>>();
+        self.li_rx = Some(rx);
+        let (log_tx, log_rx) = unbounded::<String>();
+        self.li_log_rx = Some(log_rx);
+        std::thread::spawn(move || {
+            let log = |s: String| { let _ = log_tx.send(s); };
+            // Only a file we downloaded here is ours to clean up; the one the
+            // pipeline kept belongs to the GUI's banner state.
+            let (file, downloaded) = match local {
+                Some(p) => (p, false),
+                None => match linkedin::download_youtube(&url, &settings, &cancel, &log) {
+                    Ok((p, _title)) => (p, true),
+                    Err(e) => {
+                        let _ = tx.send(Err(e.to_string()));
+                        return;
+                    }
+                },
+            };
+
+            let result = linkedin::post_video(
+                &settings,
+                &file,
+                &title,
+                &commentary,
+                &visibility,
+                &cancel,
+                |sent, total| {
+                    let f = if total == 0 { 0.0 } else { sent as f32 / total as f32 };
+                    if let Ok(mut p) = progress.lock() {
+                        *p = ProgressInfo {
+                            phase: "Posting to LinkedIn".into(),
+                            fraction: f,
+                            detail: format!(
+                                "{:.1} / {:.1} MB",
+                                sent as f64 / 1_048_576.0,
+                                total as f64 / 1_048_576.0
+                            ),
+                        };
+                    }
+                },
+            );
+            if downloaded {
+                let _ = std::fs::remove_file(&file);
+            }
+            let _ = tx.send(result.map_err(|e| e.to_string()));
+        });
+    }
+
+    fn start_li_signin(&mut self) {
+        if self.li_signing_in { return; }
+        if self.settings.linkedin_client_id.trim().is_empty()
+            || self.settings.linkedin_client_secret.trim().is_empty()
+        {
+            self.last_error = Some("Enter the LinkedIn Client ID and Secret in Settings first".into());
+            return;
+        }
+        self.last_error = None;
+        let (tx, rx) = unbounded::<SignInEvent>();
+        self.li_signin_rx = Some(rx);
+        self.li_signing_in = true;
+        let cid = self.settings.linkedin_client_id.clone();
+        let csec = self.settings.linkedin_client_secret.clone();
+        std::thread::spawn(move || {
+            let log_tx = tx.clone();
+            let log_fn = move |s: String| { let _ = log_tx.send(SignInEvent::Log(s)); };
+            match linkedin::run_auth_flow(&cid, &csec, log_fn) {
+                Ok(_) => { let _ = tx.send(SignInEvent::Done); }
+                Err(e) => { let _ = tx.send(SignInEvent::Error(e)); }
+            }
         });
     }
 
@@ -2252,10 +2420,16 @@ impl App {
                             *p = ProgressInfo { phase, fraction, detail };
                         }
                     }
-                    Event::Done(url) => {
+                    Event::Done { url, file, temp } => {
+                        // A previous banner's kept file (if any) is stale now.
+                        self.drop_done_file();
                         self.last_done_url = Some(url.clone());
+                        self.last_done_file = file;
+                        self.last_done_file_temp = temp;
                         self.davaz_posted = false;
                         self.davaz_status_msg = None;
+                        self.li_posted = false;
+                        self.li_status_msg = None;
                         let entry = history::UploadEntry {
                             timestamp: chrono_like_now(),
                             url: url.clone(),
@@ -2371,7 +2545,7 @@ impl App {
                             *p = ProgressInfo { phase, fraction, detail };
                         }
                     }
-                    Event::Done(url) => {
+                    Event::Done { url, .. } => {
                         self.upload_last_done_url = Some(url.clone());
                         let entry = history::UploadEntry {
                             timestamp: chrono_like_now(),
@@ -2623,6 +2797,64 @@ impl App {
             }
         }
 
+        // Drain the LinkedIn worker's log lines before its result, so the
+        // "Downloading…"/"Downloaded N MB" lines land in order.
+        if let Some(rx) = &self.li_log_rx {
+            let lines: Vec<String> = rx.try_iter().collect();
+            for l in lines {
+                self.append_log(l);
+            }
+        }
+
+        if let Some(rx) = &self.li_rx {
+            if let Ok(result) = rx.try_recv() {
+                self.li_posting = false;
+                self.li_rx = None;
+                self.li_log_rx = None;
+                if let Ok(mut p) = self.li_progress.lock() {
+                    *p = ProgressInfo::default();
+                }
+                match result {
+                    Ok(post_url) => {
+                        self.li_posted = true;
+                        self.li_status_msg = Some(format!("✅ Posted to LinkedIn — {}", post_url));
+                        self.append_log(format!("LinkedIn post: {}", post_url));
+                    }
+                    Err(e) if e == linkedin::PostError::Cancelled.to_string() => {
+                        self.li_status_msg = Some("⏹ LinkedIn post cancelled.".into());
+                        self.append_log("LinkedIn post cancelled".into());
+                    }
+                    Err(e) => {
+                        self.li_status_msg = Some(format!("❌ LinkedIn: {}", e));
+                        self.append_log(format!("LinkedIn post failed: {}", e));
+                    }
+                }
+            }
+        }
+
+        if let Some(rx) = &self.li_signin_rx {
+            for ev in rx.try_iter().collect::<Vec<_>>() {
+                match ev {
+                    SignInEvent::Log(l) => self.append_log(l),
+                    SignInEvent::Done => {
+                        self.li_signing_in = false;
+                        self.li_signin_rx = None;
+                        self.li_signed_in = linkedin::is_signed_in();
+                        self.li_status_msg = Some("✅ Signed in to LinkedIn.".into());
+                        self.append_log("Signed in to LinkedIn.".into());
+                        break;
+                    }
+                    SignInEvent::Error(e) => {
+                        self.li_signing_in = false;
+                        self.li_signin_rx = None;
+                        self.li_status_msg = Some(format!("❌ LinkedIn sign-in: {}", e));
+                        self.append_log(format!("LinkedIn sign-in failed: {}", e));
+                        break;
+                    }
+                }
+            }
+        }
+
         if let Some(rx) = &self.wa_setup_rx {
             let mut done = false;
             while let Ok(ev) = rx.try_recv() {
@@ -2835,7 +3067,7 @@ impl eframe::App for App {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.drain_events(ctx);
         self.ensure_icon_texture(ctx);
-        if self.running || self.upload_running || self.signing_in || self.brew_installing || self.mpv_installing || self.ytdlp_updating || self.dep_update_running || self.update_checking || self.cookies_testing || self.installing || self.wa_sending || self.wa_setup_running || self.wa_login_running || self.davaz_posting || self.pdf_exporting || self.pdf_fetching {
+        if self.running || self.upload_running || self.signing_in || self.brew_installing || self.mpv_installing || self.ytdlp_updating || self.dep_update_running || self.update_checking || self.cookies_testing || self.installing || self.wa_sending || self.wa_setup_running || self.wa_login_running || self.davaz_posting || self.li_posting || self.li_signing_in || self.pdf_exporting || self.pdf_fetching {
             ctx.request_repaint_after(std::time::Duration::from_millis(150));
         }
 
@@ -3446,11 +3678,17 @@ impl eframe::App for App {
                                 RichText::new(format!("✅ Uploaded: {}", url)).strong(),
                             );
                             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                                if ui.button("Dismiss").clicked() {
+                                // Dismissing drops the video we kept on disk for
+                                // a LinkedIn post — nothing can reach it after
+                                // the banner is gone.
+                                if ui.add_enabled(!self.li_posting, egui::Button::new("Dismiss")).clicked() {
                                     self.last_done_url = None;
                                     self.wa_status_msg = None;
                                     self.davaz_status_msg = None;
                                     self.davaz_posted = false;
+                                    self.li_status_msg = None;
+                                    self.li_posted = false;
+                                    self.drop_done_file();
                                 }
                                 if ui.button("Copy URL").clicked() {
                                     ui.ctx().output_mut(|o| o.copied_text = url.clone());
@@ -3476,6 +3714,44 @@ impl eframe::App for App {
                                     egui::Button::new(davaz_label),
                                 ).on_hover_text(davaz_tooltip);
                                 if davaz_btn.clicked() { self.start_davaz_post(url.clone()); }
+
+                                // Post to LinkedIn — a *native* video upload, so
+                                // it needs the file: the one we kept from this
+                                // upload, else re-downloaded from YouTube.
+                                let li_configured = !self.settings.linkedin_client_id.trim().is_empty()
+                                    && !self.settings.linkedin_client_secret.trim().is_empty();
+                                let li_label = if self.li_posting {
+                                    "Posting…"
+                                } else if self.li_posted {
+                                    "✅ Posted to LinkedIn"
+                                } else {
+                                    "Post to LinkedIn"
+                                };
+                                let li_tooltip = if !li_configured {
+                                    "Set the LinkedIn Client ID + Secret in Settings first".to_string()
+                                } else if !self.li_signed_in {
+                                    "Click 'Sign in to LinkedIn' in Settings first".to_string()
+                                } else if self.last_done_file.as_ref().is_some_and(|p| p.exists()) {
+                                    "Post this video to LinkedIn (uses the file just uploaded)".to_string()
+                                } else {
+                                    "Post this video to LinkedIn (downloads it from YouTube first)".to_string()
+                                };
+                                let li_btn = ui.add_enabled(
+                                    li_configured && self.li_signed_in && !self.li_posting && !self.li_posted,
+                                    egui::Button::new(li_label),
+                                ).on_hover_text(li_tooltip);
+                                if li_btn.clicked() { self.start_li_post(url.clone()); }
+                                if self.li_posting {
+                                    let cancelling = self.li_cancel.load(Ordering::SeqCst);
+                                    let c = ui.add_enabled(
+                                        !cancelling,
+                                        egui::Button::new(if cancelling { "Cancelling…" } else { "✖" }),
+                                    ).on_hover_text("Cancel the LinkedIn post");
+                                    if c.clicked() {
+                                        self.li_cancel.store(true, Ordering::SeqCst);
+                                    }
+                                }
+
                                 let label = if self.wa_sending { "Sending…" } else { "Send via WA" };
                                 let tooltip = if wa_configured {
                                     format!("Send YouTube link to {}", self.settings.whatsapp_recipient)
@@ -3527,6 +3803,29 @@ impl eframe::App for App {
                                 egui::Color32::from_rgb(20, 90, 20)
                             };
                             ui.colored_label(color, RichText::new(msg).small().strong());
+                        }
+                        if let Some(msg) = &self.li_status_msg {
+                            let color = if msg.starts_with('❌') {
+                                egui::Color32::from_rgb(180, 60, 60)
+                            } else {
+                                egui::Color32::from_rgb(20, 90, 20)
+                            };
+                            ui.colored_label(color, RichText::new(msg).small().strong());
+                        }
+                        // A LinkedIn post uploads the whole video again, so it
+                        // gets its own bar rather than a silent "Posting…".
+                        if self.li_posting {
+                            let p = self.li_progress.lock().map(|g| g.clone()).unwrap_or_default();
+                            let bar = if p.fraction > 0.0 {
+                                egui::ProgressBar::new(p.fraction).show_percentage().animate(true)
+                            } else {
+                                egui::ProgressBar::new(0.0).animate(true)
+                            };
+                            let label = if p.phase.is_empty() { "Preparing video".to_string() } else { p.phase.clone() };
+                            ui.add(bar.text(label));
+                            if !p.detail.is_empty() {
+                                ui.label(RichText::new(p.detail).weak().small());
+                            }
                         }
                     });
             }
@@ -4286,6 +4585,54 @@ impl App {
                         );
                         ui.end_row();
 
+                        ui.label("LinkedIn Client ID:");
+                        ui.add(
+                            egui::TextEdit::singleline(&mut self.settings.linkedin_client_id)
+                                .hint_text("from your app at developer.linkedin.com")
+                                .desired_width(f32::INFINITY),
+                        );
+                        ui.end_row();
+
+                        ui.label("LinkedIn Secret:");
+                        ui.add(
+                            egui::TextEdit::singleline(&mut self.settings.linkedin_client_secret)
+                                .password(true)
+                                .desired_width(f32::INFINITY),
+                        );
+                        ui.end_row();
+
+                        ui.label("LinkedIn post visibility:");
+                        ui.horizontal(|ui| {
+                            for (v, label) in [("PUBLIC", "public"), ("CONNECTIONS", "connections only")] {
+                                ui.radio_value(&mut self.settings.linkedin_visibility, v.to_string(), label);
+                            }
+                        });
+                        ui.end_row();
+
+                        // Newlines, not one long line: a Grid cell doesn't wrap,
+                        // so a single-line hint just gets clipped at the edge.
+                        ui.label("");
+                        ui.label(
+                            RichText::new(
+                                "Your LinkedIn app needs:\n\
+                                 • redirect URI http://localhost:8092/callback\n\
+                                 • products 'Sign In with LinkedIn using OpenID Connect'\n\
+                                 \u{00a0}\u{00a0}and 'Share on LinkedIn'",
+                            )
+                            .small()
+                            .weak(),
+                        );
+                        ui.end_row();
+
+                        // Sign-in outcome. Also shown here, not just in the
+                        // success banner, because signing in happens from this
+                        // dialog — usually with no banner on screen to read.
+                        if let Some(msg) = &self.li_status_msg {
+                            ui.label("LinkedIn status:");
+                            ui.label(RichText::new(msg).small());
+                            ui.end_row();
+                        }
+
                         ui.label("davaz.com tag color:");
                         ui.label(
                             RichText::new(
@@ -4312,6 +4659,17 @@ impl App {
                     let signin_label = if self.signing_in { "Signing in…" } else if self.signed_in { "Re-sign in to YouTube" } else { "Sign in to YouTube" };
                     let signin = ui.add_enabled(!self.signing_in, egui::Button::new(signin_label));
                     if signin.clicked() { self.start_signin(); }
+
+                    let li_label = if self.li_signing_in {
+                        "Signing in…"
+                    } else if self.li_signed_in {
+                        "Re-sign in to LinkedIn"
+                    } else {
+                        "Sign in to LinkedIn"
+                    };
+                    let li_signin = ui.add_enabled(!self.li_signing_in, egui::Button::new(li_label))
+                        .on_hover_text("Authorize this app to post videos to your LinkedIn feed");
+                    if li_signin.clicked() { self.start_li_signin(); }
                 });
                 ui.add_space(8.0);
                 ui.separator();

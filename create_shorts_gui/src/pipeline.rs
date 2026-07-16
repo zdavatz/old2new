@@ -19,7 +19,13 @@ type LineBuf = Arc<Mutex<VecDeque<String>>>;
 pub enum Event {
     Log(String),
     Progress { phase: String, fraction: f32, detail: String },
-    Done(String),
+    /// Upload finished. `url` is the new YouTube URL. `file` is a copy of the
+    /// uploaded video still on disk — the Post-to-LinkedIn button reuses it
+    /// instead of re-downloading what we just uploaded. `temp` marks it as
+    /// *ours* to delete once the user is done with the success banner; the
+    /// direct-upload path reports the user's own file with `temp: false`, so
+    /// we never delete something we didn't create.
+    Done { url: String, file: Option<PathBuf>, temp: bool },
     /// Preview finished. The UI opens a split page with the **full original
     /// video on top** and the edited clip below. `source_id` is the YouTube id
     /// of the source (embedded on top so Jürg sees the whole, untrimmed
@@ -52,7 +58,7 @@ pub const CANCEL_MSG: &str = "cancelled by user";
 /// cancel sentinel error so the caller can unwind cleanly. This is what makes
 /// an in-flight yt-dlp download or ffmpeg encode actually stop the moment the
 /// user clicks Cancel — `Child::wait` alone blocks until the process finishes.
-fn wait_or_cancel(child: &mut Child, cancel: &AtomicBool) -> Result<ExitStatus, String> {
+pub(crate) fn wait_or_cancel(child: &mut Child, cancel: &AtomicBool) -> Result<ExitStatus, String> {
     loop {
         if cancel.load(Ordering::SeqCst) {
             kill_tree(child);
@@ -73,7 +79,7 @@ fn wait_or_cancel(child: &mut Child, cancel: &AtomicBool) -> Result<ExitStatus, 
 /// `child.kill()` only hits yt-dlp and would orphan that ffmpeg — it keeps
 /// downloading after the user "cancelled". Making the child a group leader lets
 /// `kill_tree` signal the group. No-op on non-Unix. Call before `.spawn()`.
-fn detach_group(cmd: &mut Command) {
+pub(crate) fn detach_group(cmd: &mut Command) {
     #[cfg(unix)]
     {
         use std::os::unix::process::CommandExt;
@@ -304,7 +310,13 @@ pub fn run_upload(job: UploadJob, settings: Settings, tx: Sender<Event>, cancel:
             if job.block_auto_subs {
                 block_auto_subtitles(&tx, &access_token, &id, &lang);
             }
-            let _ = tx.send(Event::Done(format!("https://www.youtube.com/watch?v={}", id)));
+            // The user's own file — LinkedIn can post it as-is, but it isn't
+            // ours to clean up.
+            let _ = tx.send(Event::Done {
+                url: format!("https://www.youtube.com/watch?v={}", id),
+                file: Some(job.file.clone()),
+                temp: false,
+            });
         }
         Err(e) => {
             report_fail(&tx, &cancel, format!("upload: {}", e));
@@ -839,12 +851,21 @@ pub fn run(job: Job, settings: Settings, tx: Sender<Event>, cancel: Arc<AtomicBo
         let _ = progress_tx.send(Event::Progress { phase: "Uploading".into(), fraction: f, detail });
     });
 
-    // Remove the delivered file plus any distinct intermediates
-    // (fade-out, fade-in, titled overlay, raw segment) so the cache dir
-    // doesn't accumulate. Removing the same path twice is a harmless
-    // ignored error.
-    for f in [&delivered, &after_fade_in, &final_out, &base, &clip, &out] {
-        let _ = std::fs::remove_file(f);
+    // Remove the intermediates (fade-out, fade-in, titled overlay, raw
+    // segment) so the cache dir doesn't accumulate. Removing the same path
+    // twice is a harmless ignored error.
+    //
+    // `delivered` is deliberately KEPT: the success banner's Post-to-LinkedIn
+    // button needs the actual video file, and re-downloading from YouTube what
+    // we just uploaded is both slow and lower quality (YouTube may still be
+    // processing). The GUI deletes it once the banner is dismissed. Skipping it
+    // here has to be by *path*, because with no fade-out `delivered` IS
+    // `after_fade_in` (and possibly `final_out`/`base` too) — deleting those
+    // blind would delete the delivered file with them.
+    for f in [&after_fade_in, &final_out, &base, &clip, &out] {
+        if f != &delivered {
+            let _ = std::fs::remove_file(f);
+        }
     }
 
     match result {
@@ -852,9 +873,16 @@ pub fn run(job: Job, settings: Settings, tx: Sender<Event>, cancel: Arc<AtomicBo
             if job.block_auto_subs {
                 block_auto_subtitles(&tx, &access_token, &id, &lang);
             }
-            let _ = tx.send(Event::Done(format!("https://www.youtube.com/watch?v={}", id)));
+            let _ = tx.send(Event::Done {
+                url: format!("https://www.youtube.com/watch?v={}", id),
+                file: Some(delivered.clone()),
+                temp: true,
+            });
         }
         Err(e) => {
+            // Nothing reached YouTube, so there's no success banner to post
+            // from — the kept file has no reader and would just leak.
+            let _ = std::fs::remove_file(&delivered);
             report_fail(&tx, &cancel, format!("upload: {}", e));
         }
     }

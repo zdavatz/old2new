@@ -31,6 +31,18 @@ pub struct Settings {
     /// the davaz.com server (one token per line).
     #[serde(default)]
     pub davaz_token: String,
+    /// LinkedIn app credentials, from an app registered at
+    /// developer.linkedin.com with redirect URI `http://localhost:8092/callback`
+    /// and the products *Sign In with LinkedIn using OpenID Connect* + *Share
+    /// on LinkedIn*. Empty = the Post to LinkedIn button is disabled. Same
+    /// bring-your-own-client model as the Google credentials above.
+    #[serde(default)]
+    pub linkedin_client_id: String,
+    #[serde(default)]
+    pub linkedin_client_secret: String,
+    /// Visibility of the created LinkedIn post: PUBLIC or CONNECTIONS.
+    #[serde(default = "default_linkedin_visibility")]
+    pub linkedin_visibility: String,
     /// Keep the external tools (yt-dlp, ffmpeg, mpv) up to date by running a
     /// throttled Homebrew upgrade in the background at launch. Defaults on —
     /// a stale yt-dlp/ffmpeg is the most common cause of download failures
@@ -48,6 +60,10 @@ fn default_true() -> bool {
     true
 }
 
+fn default_linkedin_visibility() -> String {
+    "PUBLIC".to_string()
+}
+
 impl Default for Settings {
     fn default() -> Self {
         Self {
@@ -58,6 +74,9 @@ impl Default for Settings {
             whatsapp_dir: default_whatsapp_dir(),
             whatsapp_recipient: String::new(),
             davaz_token: String::new(),
+            linkedin_client_id: String::new(),
+            linkedin_client_secret: String::new(),
+            linkedin_visibility: default_linkedin_visibility(),
             auto_update_deps: true,
         }
     }
