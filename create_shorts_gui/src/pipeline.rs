@@ -1391,10 +1391,11 @@ fn probe_video_size(input: &std::path::Path) -> Result<(u32, u32), String> {
 }
 
 /// Render the title as a transparent RGBA PNG sized to the video
-/// frame, with the text painted in the bottom-left corner inside a
-/// translucent black box. Using a frame-sized PNG keeps the ffmpeg
-/// overlay invocation trivial (overlay defaults to 0:0). The font is
-/// bundled into the binary so we don't depend on any system fonts.
+/// frame, painted at the normalized `pos`. Using a frame-sized PNG keeps
+/// the ffmpeg overlay invocation trivial (overlay defaults to 0:0). The
+/// font is bundled into the binary so we don't depend on any system fonts.
+/// `title` may contain newlines — the lines are stacked and aligned inside
+/// the block by the same `pos[0]` that places the block in the frame.
 fn render_title_png(
     title: &str,
     fill_color: [u8; 3],
@@ -1410,11 +1411,27 @@ fn render_title_png(
     let font = FontRef::try_from_slice(FONT_BYTES)
         .map_err(|e| format!("bundled font load: {}", e))?;
 
-    let font_size = (video_h as f32 / 16.92).max(23.4);
+    // Split on newlines so an end card can be several lines. A string without
+    // newlines yields exactly one line, so the single-line path is unchanged.
+    let raw_lines: Vec<&str> = title.split('\n').map(|l| l.trim_end_matches('\r')).collect();
+    let n_lines = raw_lines.len().max(1) as f32;
+
+    let mut font_size = (video_h as f32 / 16.92).max(23.4);
+    // Shrink the font if a tall multi-line block would overflow the frame.
+    // One line is far below the limit, so this never touches single-line text.
+    {
+        let probe = font.as_scaled(PxScale::from(font_size));
+        let block_h = (probe.height() + probe.line_gap()) * (n_lines - 1.0)
+            + (probe.ascent() - probe.descent());
+        let max_h = video_h as f32 * 0.85;
+        if block_h > max_h {
+            font_size = (font_size * max_h / block_h).max(10.0);
+        }
+    }
     let scale = PxScale::from(font_size);
     let scaled = font.as_scaled(scale);
     let ascent = scaled.ascent();
-    let _ = scaled.height(); // line height unused; bottom-left placement uses ascent/descent
+    let line_advance = scaled.height() + scaled.line_gap();
 
     // Measure full title width.
     let measure = |s: &str| -> f32 {
@@ -1431,27 +1448,32 @@ fn render_title_png(
         x
     };
 
-    // If the title would overflow ~85% of the video width, truncate it
-    // with an ellipsis. Simple char-by-char shrink; titles are short so
-    // we don't need anything smarter.
+    // If a line would overflow ~85% of the video width, truncate it with an
+    // ellipsis. Simple char-by-char shrink; lines are short so we don't need
+    // anything smarter.
     let max_text_w = video_w as f32 * 0.85;
-    let mut display = title.to_string();
-    if measure(&display) > max_text_w {
-        let ellipsis = "…";
-        let mut chars: Vec<char> = display.chars().collect();
-        while chars.len() > 1 {
-            chars.pop();
-            let candidate: String = chars.iter().collect::<String>() + ellipsis;
-            if measure(&candidate) <= max_text_w {
-                display = candidate;
-                break;
+    let truncate = |s: &str| -> String {
+        let mut display = s.to_string();
+        if measure(&display) > max_text_w {
+            let ellipsis = "…";
+            let mut chars: Vec<char> = display.chars().collect();
+            while chars.len() > 1 {
+                chars.pop();
+                let candidate: String = chars.iter().collect::<String>() + ellipsis;
+                if measure(&candidate) <= max_text_w {
+                    display = candidate;
+                    break;
+                }
             }
         }
-    }
+        display
+    };
+    let lines: Vec<String> = raw_lines.iter().map(|l| truncate(l)).collect();
 
     let descent = scaled.descent();
-    let text_height = ascent - descent;
-    let text_width = measure(&display);
+    // The block is as wide as its widest line and as tall as the stacked lines.
+    let text_height = line_advance * (lines.len() as f32 - 1.0) + (ascent - descent);
+    let text_width = lines.iter().map(|l| measure(l)).fold(0.0f32, f32::max);
 
     // Place the text block according to the normalized position. The handle's
     // relative position in the picker maps to the text block's relative
@@ -1512,34 +1534,39 @@ fn render_title_png(
 
     // Lay out once; render outline pass + fill pass per glyph so we
     // don't have to clone OutlinedGlyph or walk the layout twice.
-    let mut x = text_origin_x;
-    let mut prev: Option<ab_glyph::GlyphId> = None;
-    for c in display.chars() {
-        let mut g = scaled.scaled_glyph(c);
-        if let Some(p) = prev {
-            x += scaled.kern(p, g.id);
-        }
-        prev = Some(g.id);
-        g.position = ab_glyph::point(x, text_origin_y);
-        let advance = scaled.h_advance(g.id);
-        if let Some(outlined) = font.outline_glyph(g) {
-            let bounds = outlined.px_bounds();
-            let bx = bounds.min.x as i32;
-            let by = bounds.min.y as i32;
+    for (i, line) in lines.iter().enumerate() {
+        // Each line sits inside the block the same way the block sits in the
+        // frame: flush left at x=0, centred at x=0.5, flush right at x=1.
+        let mut x = text_origin_x + (text_width - measure(line)) * nx;
+        let baseline = text_origin_y + i as f32 * line_advance;
+        let mut prev: Option<ab_glyph::GlyphId> = None;
+        for c in line.chars() {
+            let mut g = scaled.scaled_glyph(c);
+            if let Some(p) = prev {
+                x += scaled.kern(p, g.id);
+            }
+            prev = Some(g.id);
+            g.position = ab_glyph::point(x, baseline);
+            let advance = scaled.h_advance(g.id);
+            if let Some(outlined) = font.outline_glyph(g) {
+                let bounds = outlined.px_bounds();
+                let bx = bounds.min.x as i32;
+                let by = bounds.min.y as i32;
 
-            // Outline: rasterize the glyph N times at small offsets in
-            // black so the visible halo wraps the eventual white fill.
-            for (ox, oy) in &offsets {
+                // Outline: rasterize the glyph N times at small offsets in
+                // black so the visible halo wraps the eventual white fill.
+                for (ox, oy) in &offsets {
+                    outlined.draw(|gx, gy, coverage| {
+                        blend(&mut img, bx + gx as i32 + ox, by + gy as i32 + oy, [0, 0, 0], coverage);
+                    });
+                }
+                // Fill: chosen text color on top of the black halo.
                 outlined.draw(|gx, gy, coverage| {
-                    blend(&mut img, bx + gx as i32 + ox, by + gy as i32 + oy, [0, 0, 0], coverage);
+                    blend(&mut img, bx + gx as i32, by + gy as i32, fill_color, coverage);
                 });
             }
-            // Fill: chosen text color on top of the black halo.
-            outlined.draw(|gx, gy, coverage| {
-                blend(&mut img, bx + gx as i32, by + gy as i32, fill_color, coverage);
-            });
+            x += advance;
         }
-        x += advance;
     }
 
     img.save(output)

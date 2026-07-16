@@ -3303,11 +3303,12 @@ impl eframe::App for App {
                     ui.horizontal(|ui| {
                         ui.add_enabled_ui(fade_on, |ui| {
                             ui.add(
-                                egui::TextEdit::singleline(&mut self.form.end_text)
-                                    .desired_width(240.0)
-                                    .hint_text("optional text on the held frame"),
+                                egui::TextEdit::multiline(&mut self.form.end_text)
+                                    .desired_width(460.0)
+                                    .desired_rows(3)
+                                    .hint_text("optional text on the held frame\n(one line per line)"),
                             ).on_hover_text(
-                                "Text burned onto the held last frame (the fade-out tail) — e.g. davaz.com or a closing line. Leave empty for no end card. Uses the colour and position below. Shows in Preview too.",
+                                "Text burned onto the held last frame (the fade-out tail) — e.g. davaz.com or a closing line. Press Enter for a new line; the lines are stacked and aligned by the position below. Leave empty for no end card. Shows in Preview too.",
                             );
                             ui.add_space(8.0);
                             ui.label("Color:");
