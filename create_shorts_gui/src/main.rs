@@ -3436,11 +3436,19 @@ impl eframe::App for App {
                     ui.end_row();
 
                     ui.label("Description:");
-                    ui.add(
-                        egui::TextEdit::multiline(&mut self.form.description)
-                            .desired_rows(3)
-                            .desired_width(f32::INFINITY),
-                    );
+                    // Constant-height cell: a multiline TextEdit that grows
+                    // with its content makes this Grid row paint over the
+                    // rows below it. Cap the height and scroll inside instead.
+                    egui::ScrollArea::vertical()
+                        .id_salt("description_scroll")
+                        .max_height(64.0)
+                        .show(ui, |ui| {
+                            ui.add(
+                                egui::TextEdit::multiline(&mut self.form.description)
+                                    .desired_rows(3)
+                                    .desired_width(f32::INFINITY),
+                            );
+                        });
                     ui.end_row();
 
                     ui.label("Privacy:");
@@ -3617,14 +3625,23 @@ impl eframe::App for App {
                     ui.label("End card:");
                     ui.horizontal(|ui| {
                         ui.add_enabled_ui(fade_on, |ui| {
-                            ui.add(
-                                egui::TextEdit::multiline(&mut self.form.end_text)
-                                    .desired_width(460.0)
-                                    .desired_rows(3)
-                                    .hint_text("optional text on the held frame\n(one line per line)"),
-                            ).on_hover_text(
-                                "Text burned onto the held last frame (the fade-out tail) — e.g. davaz.com or a closing line. Press Enter for a new line; the lines are stacked and aligned by the position below. Leave empty for no end card. Shows in Preview too.",
-                            );
+                            // Constant-height cell: the growing field used to
+                            // paint over the position picker below (the
+                            // "SIKKIM hidden behind the drag box" bug). Past
+                            // ~4 lines the text scrolls inside instead.
+                            egui::ScrollArea::vertical()
+                                .id_salt("end_text_scroll")
+                                .max_height(80.0)
+                                .show(ui, |ui| {
+                                    ui.add(
+                                        egui::TextEdit::multiline(&mut self.form.end_text)
+                                            .desired_width(460.0)
+                                            .desired_rows(4)
+                                            .hint_text("optional text on the held frame\n(one line per line)"),
+                                    ).on_hover_text(
+                                        "Text burned onto the held last frame (the fade-out tail) — e.g. davaz.com or a closing line. Press Enter for a new line; the lines are stacked and aligned by the position below. Leave empty for no end card. Shows in Preview too.",
+                                    );
+                                });
                             ui.add_space(8.0);
                             ui.label("Color:");
                             ui.color_edit_button_srgb(&mut self.form.end_text_color)
