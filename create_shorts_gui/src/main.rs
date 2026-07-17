@@ -382,7 +382,7 @@ fn main() -> eframe::Result<()> {
     )
 }
 
-#[derive(Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 struct FormState {
     #[serde(default)] source: String,
     #[serde(default)] start: String,
@@ -425,7 +425,7 @@ struct FormState {
 
 /// One "remove this middle section" range. Timestamps are strings in the
 /// same mm:ss / hh:mm:ss style as start/end (absolute in the source video).
-#[derive(Clone, Default, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
 struct CutRange {
     #[serde(default)] from: String,
     #[serde(default)] till: String,
@@ -1736,7 +1736,10 @@ impl App {
         if self.settings.linkedin_client_id.trim().is_empty()
             || self.settings.linkedin_client_secret.trim().is_empty()
         {
-            self.last_error = Some("Enter the LinkedIn Client ID and Secret in Settings first".into());
+            // Shown inside the Settings dialog (the "LinkedIn status:" row) —
+            // last_error alone renders behind this dialog where nobody sees it.
+            self.li_status_msg =
+                Some("❌ Fill in the LinkedIn Client ID and Secret above first.".into());
             return;
         }
         self.last_error = None;
@@ -2299,19 +2302,18 @@ impl App {
             self.last_error = Some(format!("Local video file not found: {}", src));
             return;
         }
-        if self.form.start.trim().is_empty() || self.form.end.trim().is_empty() {
-            self.last_error = Some("Start and end timestamps are required".into());
-            return;
-        }
+        // Empty Start/End are allowed: they mean "from the beginning" and
+        // "to the end" — the pipeline resolves the real times (whole video
+        // when both are blank). Only *non-empty* fields must parse.
         // Validate timestamp *format* up front so a typo is reported clearly
         // against the named field instead of failing deep in the pipeline
         // (or drawing the cut in the wrong place). Canonical style: mm:ss.s.
         const TS_HINT: &str = "use mm:ss.s — e.g. 13:50.6";
-        if pipeline::parse_timestamp(&self.form.start).is_none() {
+        if !self.form.start.trim().is_empty() && pipeline::parse_timestamp(&self.form.start).is_none() {
             self.last_error = Some(format!("Start time \"{}\" isn't valid — {}", self.form.start.trim(), TS_HINT));
             return;
         }
-        if pipeline::parse_timestamp(&self.form.end).is_none() {
+        if !self.form.end.trim().is_empty() && pipeline::parse_timestamp(&self.form.end).is_none() {
             self.last_error = Some(format!("End time \"{}\" isn't valid — {}", self.form.end.trim(), TS_HINT));
             return;
         }
@@ -2464,6 +2466,7 @@ impl App {
                             start: self.form.start.trim().to_string(),
                             end: self.form.end.trim().to_string(),
                             privacy: self.form.privacy.clone(),
+                            form: Some(self.form.clone()),
                         };
                         if let Err(e) = history::append(&entry) {
                             self.append_log(format!("history append failed: {}", e));
@@ -2582,6 +2585,7 @@ impl App {
                             start: String::new(),
                             end: String::new(),
                             privacy: self.upload_privacy.clone(),
+                            form: None, // direct file upload — no edit settings to restore
                         };
                         if let Err(e) = history::append(&entry) {
                             self.append_upload_log(format!("history append failed: {}", e));
@@ -3415,7 +3419,12 @@ impl eframe::App for App {
                     ui.end_row();
 
                     ui.label("Start (mm:ss or hh:mm:ss):");
-                    timestamp_edit(ui, &mut self.form.start, 160.0);
+                    ui.horizontal(|ui| {
+                        timestamp_edit(ui, &mut self.form.start, 160.0);
+                        if self.form.start.trim().is_empty() && self.form.end.trim().is_empty() {
+                            ui.label(RichText::new("empty = the whole video").small().weak());
+                        }
+                    });
                     ui.end_row();
 
                     ui.label("End:");
@@ -4110,8 +4119,31 @@ impl App {
         }
     }
 
+    /// Load a history entry back into the main form for re-editing. Entries
+    /// written since 1.0.64 carry the full form snapshot (cut-out times,
+    /// fades, end card, …); older lines restore what they recorded.
+    fn apply_history_entry(&mut self, entry: &history::UploadEntry) {
+        if let Some(form) = &entry.form {
+            self.form = form.clone();
+        } else {
+            self.form.source = entry.source.clone();
+            self.form.start = entry.start.clone();
+            self.form.end = entry.end.clone();
+            self.form.title = entry.title.clone();
+            if !entry.privacy.is_empty() {
+                self.form.privacy = entry.privacy.clone();
+            }
+        }
+        self.last_error = None;
+        let what = if entry.title.is_empty() { entry.url.as_str() } else { entry.title.as_str() };
+        self.append_log(format!("Re-edit: loaded '{}' from history.", what));
+    }
+
     fn draw_history_modal(&mut self, ctx: &egui::Context) {
         let mut open = self.show_history;
+        // Deferred: clicking Re-edit inside the window closure can't touch
+        // self.form (the entry list is a clone) — applied after show().
+        let mut load_requested: Option<history::UploadEntry> = None;
         egui::Window::new("Upload history")
             .open(&mut open)
             .collapsible(false)
@@ -4177,6 +4209,16 @@ impl App {
                             if !entry.privacy.is_empty() {
                                 ui.label(RichText::new(format!("[{}]", entry.privacy)).small().weak());
                             }
+                            let tip = if entry.form.is_some() {
+                                "Load this upload's full edit — start/end, cut-out times, \
+                                 title, fades, end card — back into the form for re-editing"
+                            } else {
+                                "Load source, start and end back into the form \
+                                 (older entry — the full edit wasn't saved yet)"
+                            };
+                            if ui.small_button("↩ Re-edit").on_hover_text(tip).clicked() {
+                                load_requested = Some(entry.clone());
+                            }
                         });
                         ui.horizontal_wrapped(|ui| {
                             ui.add_space(120.0);
@@ -4194,6 +4236,10 @@ impl App {
                 });
             });
         self.show_history = open;
+        if let Some(entry) = load_requested {
+            self.apply_history_entry(&entry);
+            self.show_history = false;
+        }
     }
 
     fn draw_upload_modal(&mut self, ctx: &egui::Context) {
@@ -4720,10 +4766,19 @@ impl App {
                             self.append_log("Settings saved.".into());
                         }
                     }
+                    // Both sign-in buttons grey out until their credentials
+                    // are filled in — a click used to silently do nothing
+                    // (the error landed in the main window, hidden behind
+                    // this dialog), which read as "the button is broken".
+                    let yt_configured = !self.settings.client_id.trim().is_empty()
+                        && !self.settings.client_secret.trim().is_empty();
                     let signin_label = if self.signing_in { "Signing in…" } else if self.signed_in { "Re-sign in to YouTube" } else { "Sign in to YouTube" };
-                    let signin = ui.add_enabled(!self.signing_in, egui::Button::new(signin_label));
+                    let signin = ui.add_enabled(yt_configured && !self.signing_in, egui::Button::new(signin_label))
+                        .on_disabled_hover_text("Fill in the YouTube Client ID and Client Secret above first");
                     if signin.clicked() { self.start_signin(); }
 
+                    let li_configured = !self.settings.linkedin_client_id.trim().is_empty()
+                        && !self.settings.linkedin_client_secret.trim().is_empty();
                     let li_label = if self.li_signing_in {
                         "Signing in…"
                     } else if self.li_signed_in {
@@ -4731,8 +4786,9 @@ impl App {
                     } else {
                         "Sign in to LinkedIn"
                     };
-                    let li_signin = ui.add_enabled(!self.li_signing_in, egui::Button::new(li_label))
-                        .on_hover_text("Authorize this app to post videos to your LinkedIn feed");
+                    let li_signin = ui.add_enabled(li_configured && !self.li_signing_in, egui::Button::new(li_label))
+                        .on_hover_text("Authorize this app to post videos to your LinkedIn feed")
+                        .on_disabled_hover_text("Fill in the LinkedIn Client ID and Secret above first");
                     if li_signin.clicked() { self.start_li_signin(); }
                 });
                 ui.add_space(8.0);

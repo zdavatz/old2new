@@ -369,6 +369,49 @@ pub fn parse_timestamp(s: &str) -> Option<f64> {
     }
 }
 
+/// Format seconds in the same mm:ss.s style `parse_timestamp` reads, so a
+/// resolved "whole video" end time round-trips through the cache stamp and
+/// every downstream parse.
+fn format_timestamp(secs: f64) -> String {
+    let s = secs.max(0.0);
+    let h = (s / 3600.0).floor();
+    let rem = s - h * 3600.0;
+    let m = (rem / 60.0).floor();
+    let sec = rem - m * 60.0;
+    if h > 0.0 {
+        format!("{}:{:02}:{:04.1}", h as u64, m as u64, sec)
+    } else {
+        format!("{}:{:04.1}", m as u64, sec)
+    }
+}
+
+/// Ask yt-dlp for the video's duration in seconds (metadata only, nothing
+/// downloaded — `--print` implies skip-download). Used when the End field is
+/// left empty: empty = the whole video.
+fn fetch_youtube_duration(url: &str, settings: &Settings) -> Result<f64, String> {
+    let mut cmd = Command::new("yt-dlp");
+    cmd.args(["--print", "duration", "--no-warnings"]);
+    if !settings.cookies_browser.is_empty() {
+        cmd.arg("--cookies-from-browser").arg(&settings.cookies_browser);
+    }
+    cmd.arg(url);
+    cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
+    detach_group(&mut cmd);
+    let out = cmd.output().map_err(|e| {
+        format!("yt-dlp not found ({}). Install with `brew install yt-dlp`.", e)
+    })?;
+    if !out.status.success() {
+        let err = String::from_utf8_lossy(&out.stderr);
+        let last = err.lines().rev().find(|l| !l.trim().is_empty()).unwrap_or("").trim().to_string();
+        return Err(format!("yt-dlp could not read the video's duration ({})", last));
+    }
+    String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .find_map(|l| l.trim().parse::<f64>().ok())
+        .filter(|d| *d > 0.0)
+        .ok_or_else(|| "yt-dlp returned no duration for this video (live stream?)".into())
+}
+
 fn parse_yt_dlp_pct(line: &str) -> Option<f32> {
     let s = line.trim_start();
     let after = s.strip_prefix("[download]")?.trim_start();
@@ -390,11 +433,8 @@ fn parse_ffmpeg_time(line: &str) -> Option<f64> {
     Some(h * 3600.0 + m * 60.0 + sec)
 }
 
-pub fn run(job: Job, settings: Settings, tx: Sender<Event>, cancel: Arc<AtomicBool>) {
+pub fn run(mut job: Job, settings: Settings, tx: Sender<Event>, cancel: Arc<AtomicBool>) {
     let _ = tx.send(Event::Log(format!("Starting job for {}", job.source)));
-    let segment_secs: f64 = parse_timestamp(&job.end)
-        .and_then(|e| parse_timestamp(&job.start).map(|s| (e - s).max(0.0)))
-        .unwrap_or(0.0);
 
     // A source that is an absolute path to an existing file is edited
     // locally — no yt-dlp involved, the segment is cut straight out of the
@@ -415,6 +455,39 @@ pub fn run(job: Job, settings: Settings, tx: Sender<Event>, cancel: Arc<AtomicBo
         format!("https://www.youtube.com/watch?v={}", video_id)
     };
     let original_url = format!("https://www.youtube.com/watch?v={}", video_id);
+
+    // Empty Start/End mean "the whole video": start falls back to 0:00, and
+    // an empty end resolves to the source's full duration (ffprobe for a
+    // local file, a yt-dlp metadata call for YouTube). Resolved here, before
+    // the cache stamp, so a full-video job caches and resumes like any other.
+    if job.start.trim().is_empty() {
+        job.start = "0:00".into();
+    }
+    if job.end.trim().is_empty() {
+        let _ = tx.send(Event::Progress { phase: "Reading duration".into(), fraction: 0.0, detail: String::new() });
+        let dur = if is_local {
+            probe_duration(&src_path).ok_or_else(|| "could not read the file's duration".to_string())
+        } else {
+            fetch_youtube_duration(&url, &settings)
+        };
+        match dur {
+            Ok(d) => {
+                job.end = format_timestamp(d);
+                let _ = tx.send(Event::Log(format!(
+                    "No end time given — using the whole video ({}-{})",
+                    job.start, job.end
+                )));
+            }
+            Err(e) => {
+                report_fail(&tx, &cancel, format!("read duration: {}", e));
+                return;
+            }
+        }
+    }
+
+    let segment_secs: f64 = parse_timestamp(&job.end)
+        .and_then(|e| parse_timestamp(&job.start).map(|s| (e - s).max(0.0)))
+        .unwrap_or(0.0);
 
     // Cache cut segments at <cache_dir>/segments/<video_id>_<start>_<end>.mp4.
     // If the exact same (video_id, start, end) is requested again — same
@@ -2533,6 +2606,20 @@ pub fn extract_video_id(input: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn format_timestamp_round_trips_through_parse() {
+        // Exact renderings, all parseable by parse_timestamp.
+        assert_eq!(format_timestamp(0.0), "0:00.0");
+        assert_eq!(format_timestamp(83.5), "1:23.5");
+        assert_eq!(format_timestamp(348.0), "5:48.0");
+        assert_eq!(format_timestamp(3723.2), "1:02:03.2");
+        // Round trip within the 0.1s the format keeps.
+        for secs in [0.0, 12.3, 59.9, 60.0, 599.4, 3599.9, 3600.0, 7345.6] {
+            let back = parse_timestamp(&format_timestamp(secs)).expect("parses back");
+            assert!((back - secs).abs() < 0.05001, "{} -> {}", secs, back);
+        }
+    }
 
     #[test]
     fn parse_timestamp_accepts_period_and_comma_decimals() {

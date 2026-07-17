@@ -24,6 +24,12 @@ pub struct UploadEntry {
     pub end: String,
     #[serde(default)]
     pub privacy: String,
+    /// Full form snapshot at upload time (cut-out times, fades, end card,
+    /// overlay, …) so the entry can be loaded back for re-editing without
+    /// retyping anything. Lines written before this field existed parse as
+    /// `None` and restore only source/start/end/title.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub form: Option<crate::FormState>,
 }
 
 pub fn history_path() -> PathBuf {
@@ -55,4 +61,39 @@ pub fn load_all() -> Vec<UploadEntry> {
         .collect();
     entries.reverse();
     entries
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn history_form_snapshot_round_trips_and_old_lines_parse() {
+        // Lines written before the `form` field existed must keep parsing.
+        let old = r#"{"timestamp":"t","url":"u","title":"x","start":"0:01","end":"0:02"}"#;
+        let e: UploadEntry = serde_json::from_str(old).expect("old line parses");
+        assert!(e.form.is_none());
+
+        // Every FormState field has a serde default, so `{}` builds one.
+        let mut form: crate::FormState = serde_json::from_str("{}").unwrap();
+        form.cut_middle = true;
+        form.cuts = vec![crate::CutRange { from: "0:52.9".into(), till: "1:51.3".into() }];
+        let entry = UploadEntry {
+            timestamp: "t".into(),
+            url: "u".into(),
+            title: String::new(),
+            source: "src".into(),
+            start: "0:40.8".into(),
+            end: "6:29.3".into(),
+            privacy: "public".into(),
+            form: Some(form),
+        };
+        let line = serde_json::to_string(&entry).unwrap();
+        let back: UploadEntry = serde_json::from_str(&line).unwrap();
+        let f = back.form.expect("form snapshot survives the round trip");
+        assert!(f.cut_middle);
+        assert_eq!(f.cuts.len(), 1);
+        assert_eq!(f.cuts[0].from, "0:52.9");
+        assert_eq!(f.cuts[0].till, "1:51.3");
+    }
 }
