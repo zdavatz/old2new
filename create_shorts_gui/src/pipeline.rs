@@ -396,7 +396,19 @@ pub fn run(job: Job, settings: Settings, tx: Sender<Event>, cancel: Arc<AtomicBo
         .and_then(|e| parse_timestamp(&job.start).map(|s| (e - s).max(0.0)))
         .unwrap_or(0.0);
 
-    let video_id = extract_video_id(&job.source);
+    // A source that is an absolute path to an existing file is edited
+    // locally — no yt-dlp involved, the segment is cut straight out of the
+    // file with ffmpeg. (The form's 📂 Select… button fills the field with
+    // such a path.) A bare YouTube URL/ID is never an absolute path, so the
+    // two can't be confused.
+    let src_path = PathBuf::from(job.source.trim());
+    let is_local = src_path.is_absolute() && src_path.is_file();
+
+    let video_id = if is_local {
+        local_source_id(&src_path)
+    } else {
+        extract_video_id(&job.source)
+    };
     let url = if job.source.contains("://") {
         job.source.clone()
     } else {
@@ -423,6 +435,28 @@ pub fn run(job: Job, settings: Settings, tx: Sender<Event>, cancel: Arc<AtomicBo
             cached.display(),
             cached.metadata().map(|m| m.len()).unwrap_or(0) as f64 / 1_048_576.0,
         )));
+        cached.clone()
+    } else if is_local {
+        let _ = tx.send(Event::Log(format!(
+            "Extracting {}-{} from local file {} → {}",
+            job.start, job.end, src_path.display(), cached.display()
+        )));
+        let _ = tx.send(Event::Progress { phase: "Extracting".into(), fraction: 0.0, detail: String::new() });
+        cleanup_partial_download(&cached);
+        // Same atomic build-at-a-temp contract as the download path: a crash
+        // mid-encode leaves only the `.partial.mp4` (swept next run), never a
+        // truncated file under the canonical cache name.
+        let partial = cache_dir.join(format!("{}_{}.partial.mp4", video_id, stamp));
+        if let Err(e) = extract_local_segment(&src_path, &partial, &job.start, &job.end, &tx, segment_secs, &cancel) {
+            cleanup_partial_download(&cached);
+            report_fail(&tx, &cancel, format!("extract segment: {}", e));
+            return;
+        }
+        if let Err(e) = std::fs::rename(&partial, &cached) {
+            cleanup_partial_download(&cached);
+            report_fail(&tx, &cancel, format!("finalize segment: {}", e));
+            return;
+        }
         cached.clone()
     } else {
         let _ = tx.send(Event::Log(format!("Downloading {} ({}-{}) → {}", url, job.start, job.end, cached.display())));
@@ -497,10 +531,14 @@ pub fn run(job: Job, settings: Settings, tx: Sender<Event>, cancel: Arc<AtomicBo
     // shorter than its video (sound stops early; the fade-out plays silent).
     // Re-fetches and remuxes aligned audio in place when a shortfall is found,
     // then purges the stale derived caches. No-op for healthy segments.
-    repair_segment_audio(&out, &url, &job.start, &job.end, &cache_dir, &video_id, &stamp, &settings, &tx, &cancel);
-    if cancel.load(Ordering::SeqCst) {
-        let _ = tx.send(Event::Cancelled);
-        return;
+    // A locally-extracted segment can't have this desync (one ffmpeg encode,
+    // no separate audio download), so it skips the check.
+    if !is_local {
+        repair_segment_audio(&out, &url, &job.start, &job.end, &cache_dir, &video_id, &stamp, &settings, &tx, &cancel);
+        if cancel.load(Ordering::SeqCst) {
+            let _ = tx.send(Event::Cancelled);
+            return;
+        }
     }
 
     // Optional: remove one or more middle sections from the segment and
@@ -742,7 +780,12 @@ pub fn run(job: Job, settings: Settings, tx: Sender<Event>, cancel: Arc<AtomicBo
                         "Fetching {}s of audio after the cut for the fade-out…",
                         fade_secs
                     )));
-                    match download_tail_audio(&url, end_secs, fade_secs, &tail_path, &settings, &tx, &cancel) {
+                    let fetched = if is_local {
+                        extract_local_tail_audio(&src_path, end_secs, fade_secs, &tail_path, &tx, &cancel)
+                    } else {
+                        download_tail_audio(&url, end_secs, fade_secs, &tail_path, &settings, &tx, &cancel)
+                    };
+                    match fetched {
                         Ok(()) if tail_path.exists() => Some(tail_path),
                         Ok(()) => None,
                         // A cancel mid-fetch surfaces here as an Err too. Bail
@@ -803,7 +846,9 @@ pub fn run(job: Job, settings: Settings, tx: Sender<Event>, cancel: Arc<AtomicBo
         let _ = tx.send(Event::Preview {
             original: out.clone(),
             edited: delivered.clone(),
-            source_id: video_id.clone(),
+            // A local source has no YouTube id to embed — the empty id makes
+            // the browser-fallback top pane show the local segment instead.
+            source_id: if is_local { String::new() } else { video_id.clone() },
             start_secs,
         });
         return;
@@ -822,10 +867,16 @@ pub fn run(job: Job, settings: Settings, tx: Sender<Event>, cancel: Arc<AtomicBo
         }
     };
 
-    let description = format!(
-        "{}\n\nOriginal: {} ({}-{})",
-        job.description, original_url, job.start, job.end
-    );
+    // The "Original: <url>" suffix only makes sense for a YouTube source — a
+    // local file has no public original to link (and its path stays private).
+    let description = if is_local {
+        job.description.clone()
+    } else {
+        format!(
+            "{}\n\nOriginal: {} ({}-{})",
+            job.description, original_url, job.start, job.end
+        )
+    };
 
     let lang = job.audio_language.clone();
     let body = VideoBody {
@@ -1047,6 +1098,136 @@ fn hw_transcode_segment(
         }
     }
     Err(last_err)
+}
+
+/// Stable cache id for a local source file — the local counterpart of the
+/// YouTube video id in every cache filename. A sanitized file stem (so the
+/// cache dir stays human-readable) plus a short hash of (path, size, mtime),
+/// so the same file reuses its cached segments across Preview → Upload while
+/// any change to the file's content busts them.
+fn local_source_id(path: &std::path::Path) -> String {
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash, Hasher};
+    let stem: String = path
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("video")
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
+        .take(40)
+        .collect();
+    let mut h = DefaultHasher::new();
+    path.hash(&mut h);
+    if let Ok(m) = path.metadata() {
+        m.len().hash(&mut h);
+        if let Ok(t) = m.modified() {
+            t.hash(&mut h);
+        }
+    }
+    format!("local_{}_{:08x}", stem, h.finish() as u32)
+}
+
+/// Cut the start–end segment straight out of a local file with ffmpeg — the
+/// local-source counterpart of the yt-dlp download. `-ss` before `-i`
+/// fast-seeks to the window and the re-encode makes the cut frame-accurate,
+/// producing the same H.264 mp4 (hardware-encoded on macOS via
+/// `video_encoder_args`) that every downstream stage and the cache contract
+/// expect.
+fn extract_local_segment(
+    input: &std::path::Path,
+    out: &std::path::Path,
+    start: &str,
+    end: &str,
+    tx: &Sender<Event>,
+    segment_secs: f64,
+    cancel: &Arc<AtomicBool>,
+) -> Result<(), String> {
+    let start_secs = parse_timestamp(start).ok_or_else(|| format!("can't parse start {:?}", start))?;
+    let end_secs = parse_timestamp(end).ok_or_else(|| format!("can't parse end {:?}", end))?;
+    if end_secs <= start_secs {
+        return Err(format!("end ({}) must be after start ({})", end, start));
+    }
+    let mut cmd = Command::new("ffmpeg");
+    cmd.arg("-y");
+    cmd.args(["-ss", &format!("{:.3}", start_secs)]);
+    cmd.args(["-i", input.to_str().ok_or("non-utf8 input path")?]);
+    cmd.args(["-t", &format!("{:.3}", end_secs - start_secs)]);
+    // Map video + (optional) audio explicitly so a silent clip doesn't error.
+    cmd.args(["-map", "0:v:0", "-map", "0:a:0?"]);
+    cmd.args(video_encoder_args());
+    cmd.args(["-c:a", "aac", "-movflags", "+faststart"]);
+    cmd.arg(out.to_str().ok_or("non-utf8 output path")?);
+    cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
+
+    detach_group(&mut cmd);
+    let mut child = cmd.spawn().map_err(|e| format!("ffmpeg spawn ({}): install ffmpeg", e))?;
+    let stdout = child.stdout.take();
+    let stderr = child.stderr.take();
+    let tx_o = tx.clone();
+    let tx_e = tx.clone();
+    let stderr_capture: LineBuf = Arc::new(Mutex::new(VecDeque::new()));
+    let cap_for_thread = stderr_capture.clone();
+    let h_o = stdout.map(|r| std::thread::spawn(move || stream_progress(r, tx_o, segment_secs, None, "Extracting segment".to_string())));
+    let h_e = stderr.map(|r| std::thread::spawn(move || stream_progress(r, tx_e, segment_secs, Some(cap_for_thread), "Extracting segment".to_string())));
+    let status = wait_or_cancel(&mut child, cancel)?;
+    if let Some(h) = h_o { let _ = h.join(); }
+    if let Some(h) = h_e { let _ = h.join(); }
+    if !status.success() {
+        let detail = summarize_yt_dlp_failure(&stderr_capture);
+        let suffix = if detail.is_empty() { String::new() } else { format!(" — {}", detail) };
+        return Err(format!("exited with {:?}{}", status.code(), suffix));
+    }
+    Ok(())
+}
+
+/// Extract the `fade_secs` seconds of audio that follow the cut point from a
+/// local source file — the local counterpart of `download_tail_audio`.
+/// Best-effort like its sibling: an error (nothing after the cut, no audio
+/// stream) is logged and tolerated by the caller, which falls back to a
+/// silent hold.
+fn extract_local_tail_audio(
+    input: &std::path::Path,
+    end_secs: f64,
+    fade_secs: u32,
+    out: &std::path::Path,
+    tx: &Sender<Event>,
+    cancel: &Arc<AtomicBool>,
+) -> Result<(), String> {
+    let mut cmd = Command::new("ffmpeg");
+    cmd.arg("-y");
+    cmd.args(["-ss", &format!("{:.3}", end_secs)]);
+    cmd.args(["-i", input.to_str().ok_or("non-utf8 input path")?]);
+    cmd.args(["-t", &fade_secs.to_string()]);
+    cmd.args(["-vn", "-c:a", "aac"]);
+    cmd.arg(out.to_str().ok_or("non-utf8 output path")?);
+    cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
+
+    detach_group(&mut cmd);
+    let mut child = cmd.spawn().map_err(|e| format!("ffmpeg spawn ({})", e))?;
+    let stdout = child.stdout.take();
+    let stderr = child.stderr.take();
+    let tx_o = tx.clone();
+    let tx_e = tx.clone();
+    let stderr_capture: LineBuf = Arc::new(Mutex::new(VecDeque::new()));
+    let cap_for_thread = stderr_capture.clone();
+    let secs = fade_secs as f64;
+    let h_o = stdout.map(|r| std::thread::spawn(move || stream_progress(r, tx_o, secs, None, "Fetching fade audio".to_string())));
+    let h_e = stderr.map(|r| std::thread::spawn(move || stream_progress(r, tx_e, secs, Some(cap_for_thread), "Fetching fade audio".to_string())));
+    let status = wait_or_cancel(&mut child, cancel)?;
+    if let Some(h) = h_o { let _ = h.join(); }
+    if let Some(h) = h_e { let _ = h.join(); }
+    if !status.success() {
+        let detail = summarize_yt_dlp_failure(&stderr_capture);
+        let suffix = if detail.is_empty() { String::new() } else { format!(" — {}", detail) };
+        return Err(format!("exited with {:?}{}", status.code(), suffix));
+    }
+    // A seek past the end of the file can "succeed" with a header-only file —
+    // treat that as no continuing audio so the caller falls back cleanly.
+    if out.metadata().map(|m| m.len()).unwrap_or(0) < 1024 {
+        let _ = std::fs::remove_file(out);
+        return Err("no audio after the cut point".to_string());
+    }
+    Ok(())
 }
 
 /// Download just the audio of the `fade_secs` seconds that follow the cut
@@ -2388,6 +2569,53 @@ mod tests {
         assert_eq!(parse_timestamp("abc"), None);
         assert_eq!(parse_timestamp("13:xx"), None);
         assert_eq!(parse_timestamp("1:2:3:4"), None);
+    }
+
+    /// End-to-end check of the local-file source path: generates a 10 s test
+    /// video, cuts a 2.0–5.5 s segment out of it via `extract_local_segment`
+    /// and pulls the 3 s of audio after the cut via `extract_local_tail_audio`
+    /// — the exact functions the 📂 Select… flow runs.
+    #[test]
+    #[ignore = "shells out to ffmpeg — run with `cargo test -- --ignored`"]
+    fn extract_local_segment_cuts_the_requested_window() {
+        let dir = std::env::temp_dir().join("cs_local_extract_test");
+        let _ = std::fs::create_dir_all(&dir);
+        let src = dir.join("test source.mp4"); // space on purpose
+        let ok = Command::new("ffmpeg")
+            .args([
+                "-y",
+                "-f", "lavfi", "-i", "testsrc=duration=10:size=320x240:rate=25",
+                "-f", "lavfi", "-i", "sine=frequency=440:duration=10",
+                "-c:v", "libx264", "-c:a", "aac", "-shortest",
+                src.to_str().unwrap(),
+            ])
+            .status()
+            .expect("ffmpeg not installed")
+            .success();
+        assert!(ok, "test-source generation failed");
+
+        let (tx, _rx) = crossbeam_channel::unbounded();
+        let cancel = Arc::new(AtomicBool::new(false));
+
+        let out = dir.join("seg.mp4");
+        extract_local_segment(&src, &out, "0:02", "0:05,5", &tx, 3.5, &cancel).unwrap();
+        let dur = probe_duration(&out).expect("segment has no duration");
+        assert!((dur - 3.5).abs() < 0.3, "segment is {dur}s, expected ~3.5s");
+
+        let tail = dir.join("tail.m4a");
+        extract_local_tail_audio(&src, 5.5, 3, &tail, &tx, &cancel).unwrap();
+        assert!(tail.metadata().unwrap().len() > 1024);
+        // Past the end of the file there is no audio to continue with —
+        // must error so the fade-out falls back to a silent hold.
+        let none = dir.join("tail_none.m4a");
+        assert!(extract_local_tail_audio(&src, 60.0, 3, &none, &tx, &cancel).is_err());
+
+        // Cache id: filename-safe, stable across calls on the same file.
+        let id = local_source_id(&src);
+        assert!(id.starts_with("local_test_source_"), "unexpected id {id}");
+        assert_eq!(id, local_source_id(&src));
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
 

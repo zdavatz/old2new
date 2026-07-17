@@ -462,6 +462,20 @@ fn timestamp_edit(ui: &mut egui::Ui, value: &mut String, width: f32) -> egui::Re
     resp
 }
 
+/// The system video-file picker, starting in the user's Downloads folder —
+/// that's where a video to be edited usually lands (browser download,
+/// AirDrop). Shared by the main form's 📂 Select… and the Upload modal's
+/// Choose file… buttons.
+fn video_file_dialog() -> rfd::FileDialog {
+    let mut dlg = rfd::FileDialog::new()
+        .add_filter("Video", &["mp4", "mov", "m4v", "mkv", "webm", "avi"])
+        .add_filter("Any file", &["*"]);
+    if let Some(dir) = dirs::download_dir().or_else(dirs::home_dir) {
+        dlg = dlg.set_directory(dir);
+    }
+    dlg
+}
+
 fn default_overlay_color() -> [u8; 3] { [255, 255, 255] }
 fn default_overlay_pos() -> [f32; 2] { [0.0, 1.0] }
 /// End-card text sits centred by default (unlike the title, which defaults
@@ -2269,8 +2283,16 @@ impl App {
             ));
             return;
         }
-        if self.form.source.trim().is_empty() {
-            self.last_error = Some("URL or video ID is required".into());
+        let src = self.form.source.trim();
+        if src.is_empty() {
+            self.last_error = Some("YouTube URL/ID or a local video file is required".into());
+            return;
+        }
+        // A path-shaped source must actually exist — otherwise it would fall
+        // through to yt-dlp, which would garble it into a bogus YouTube URL.
+        let src_path = std::path::Path::new(src);
+        if src_path.is_absolute() && !src_path.is_file() {
+            self.last_error = Some(format!("Local video file not found: {}", src));
             return;
         }
         if self.form.start.trim().is_empty() || self.form.end.trim().is_empty() {
@@ -3336,8 +3358,26 @@ impl eframe::App for App {
                 .num_columns(2)
                 .spacing([10.0, 8.0])
                 .show(ui, |ui| {
-                    ui.label("YouTube URL or ID:");
-                    ui.add(egui::TextEdit::singleline(&mut self.form.source).desired_width(f32::INFINITY));
+                    ui.label("YouTube URL, ID or file:");
+                    ui.horizontal(|ui| {
+                        if ui
+                            .button("📂 Select…")
+                            .on_hover_text(
+                                "Pick a local video file to edit instead of a YouTube video. \
+                                 The picker starts in your Downloads folder.",
+                            )
+                            .clicked()
+                        {
+                            if let Some(path) = video_file_dialog().pick_file() {
+                                self.form.source = path.to_string_lossy().into_owned();
+                            }
+                        }
+                        ui.add(
+                            egui::TextEdit::singleline(&mut self.form.source)
+                                .hint_text("https://youtube.com/watch?v=…  or  /path/to/video.mp4")
+                                .desired_width(f32::INFINITY),
+                        );
+                    });
                     ui.end_row();
 
                     ui.label("Start (mm:ss or hh:mm:ss):");
@@ -4179,11 +4219,7 @@ impl App {
                                 .on_hover_text("Open the system file picker")
                                 .clicked()
                             {
-                                if let Some(path) = rfd::FileDialog::new()
-                                    .add_filter("Video", &["mp4", "mov", "m4v", "mkv", "webm", "avi"])
-                                    .add_filter("Any file", &["*"])
-                                    .pick_file()
-                                {
+                                if let Some(path) = video_file_dialog().pick_file() {
                                     self.upload_file = path.to_string_lossy().into_owned();
                                 }
                             }
