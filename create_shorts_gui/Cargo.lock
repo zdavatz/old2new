@@ -666,7 +666,7 @@ dependencies = [
 
 [[package]]
 name = "create_shorts_gui"
-version = "1.0.62"
+version = "1.0.63"
 dependencies = [
  "ab_glyph",
  "chrono",

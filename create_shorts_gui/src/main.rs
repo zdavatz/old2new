@@ -673,6 +673,9 @@ struct App {
     /// delete (see `drop_done_file`).
     last_done_file: Option<std::path::PathBuf>,
     last_done_file_temp: bool,
+    /// One-shot: scroll the form to the green Uploaded banner the frame after
+    /// it appears, so the share buttons are visible even on small screens.
+    scroll_to_done: bool,
     show_history: bool,
     history_filter: String,
     history_cache: Vec<history::UploadEntry>,
@@ -1359,6 +1362,7 @@ impl App {
             davaz_status_msg: None,
             davaz_posted: false,
             li_posting: false,
+            scroll_to_done: false,
             li_rx: None,
             li_log_rx: None,
             li_status_msg: None,
@@ -2465,6 +2469,7 @@ impl App {
                             self.append_log(format!("history append failed: {}", e));
                         }
                         self.append_log(format!("DONE: {}", url));
+                        self.scroll_to_done = true;
                         still_running = false;
                     }
                     Event::Preview { original, edited, source_id, start_secs } => {
@@ -3177,7 +3182,36 @@ impl eframe::App for App {
                 });
         }
 
+        // The log lives in its own bottom panel (not inside the central
+        // panel) so the form above can scroll: on small screens the action
+        // buttons and the post-upload share bar used to fall below the
+        // window edge with no way to reach them.
+        egui::TopBottomPanel::bottom("log_panel")
+            .resizable(true)
+            .default_height(140.0)
+            .min_height(60.0)
+            .show(ctx, |ui| {
+                ui.add_space(4.0);
+                ui.label(RichText::new("Log").strong());
+                egui::ScrollArea::vertical()
+                    .auto_shrink([false; 2])
+                    .stick_to_bottom(true)
+                    .show(ui, |ui| {
+                        if let Ok(g) = self.log.lock() {
+                            for line in g.iter() {
+                                ui.monospace(line);
+                            }
+                        }
+                    });
+            });
+
         egui::CentralPanel::default().show(ctx, |ui| {
+            // Everything in the form scrolls — the share buttons after an
+            // upload must stay reachable however small the window is.
+            egui::ScrollArea::vertical()
+                .auto_shrink([false; 2])
+                .id_salt("form_scroll")
+                .show(ui, |ui| {
             ui.add_space(6.0);
 
             if let Some(info) = self.update_info.clone() {
@@ -3706,7 +3740,7 @@ impl eframe::App for App {
                     && !self.settings.whatsapp_recipient.trim().is_empty()
                     && self.wa_provisioned
                     && self.wa_linked;
-                egui::Frame::none()
+                let banner = egui::Frame::none()
                     .fill(egui::Color32::from_rgb(220, 245, 220))
                     .stroke(egui::Stroke::new(1.0, egui::Color32::from_rgb(80, 160, 80)))
                     .inner_margin(10.0)
@@ -3868,6 +3902,13 @@ impl eframe::App for App {
                             }
                         }
                     });
+                // The banner appears below a long form — jump the scroll
+                // area to it once so the share buttons are actually seen.
+                if self.scroll_to_done {
+                    banner.response.scroll_to_me(Some(egui::Align::Max));
+                    ui.ctx().request_repaint();
+                    self.scroll_to_done = false;
+                }
             }
 
             if self.running {
@@ -3911,20 +3952,7 @@ impl eframe::App for App {
                 }
             }
 
-            ui.add_space(6.0);
-            ui.separator();
-            ui.label(RichText::new("Log").strong());
-
-            egui::ScrollArea::vertical()
-                .auto_shrink([false; 2])
-                .stick_to_bottom(true)
-                .show(ui, |ui| {
-                    if let Ok(g) = self.log.lock() {
-                        for line in g.iter() {
-                            ui.monospace(line);
-                        }
-                    }
-                });
+                }); // form_scroll
         });
 
         if self.show_settings {
