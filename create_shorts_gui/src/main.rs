@@ -658,9 +658,14 @@ struct App {
     /// has something to say before the upload starts).
     li_log_rx: Option<Receiver<String>>,
     li_status_msg: Option<String>,
-    /// Set once the current `last_done_url` has been posted, so the button
-    /// hides and the confirmation stays up until the banner is dismissed.
+    /// Set once `li_post_url` has been posted, so its button turns into a
+    /// confirmation instead of allowing an accidental duplicate post.
     li_posted: bool,
+    /// The YouTube URL of the in-flight (or last successful) LinkedIn post.
+    /// Both the success banner and every History row share the one posting
+    /// slot, so each button needs this to know whether "Posting…"/"Posted"
+    /// is about *its* video.
+    li_post_url: Option<String>,
     /// Cancel flag for the in-flight LinkedIn post (a fresh one per post, so
     /// an earlier Cancel can't abort the next).
     li_cancel: Arc<AtomicBool>,
@@ -1367,6 +1372,7 @@ impl App {
             li_log_rx: None,
             li_status_msg: None,
             li_posted: false,
+            li_post_url: None,
             li_cancel: Arc::new(AtomicBool::new(false)),
             li_progress: Arc::new(Mutex::new(ProgressInfo::default())),
             li_signed_in: linkedin::is_signed_in(),
@@ -1639,6 +1645,26 @@ impl App {
     /// kept from the upload when it's still around; otherwise (an older short,
     /// or after a restart) it re-downloads it from YouTube like the CLI does.
     fn start_li_post(&mut self, url: String) {
+        let title = self.form.title.trim().to_string();
+        let original = self.form.source.trim().to_string();
+        // A file we kept from this run; None once dismissed or after a restart.
+        let local = self
+            .last_done_file
+            .clone()
+            .filter(|p| p.exists());
+        self.start_li_post_with(url, title, original, local);
+    }
+
+    /// The shared LinkedIn-post starter — called from the success banner
+    /// (which may still have the uploaded file on disk) and from a History
+    /// entry (never a local file; re-downloaded from YouTube).
+    fn start_li_post_with(
+        &mut self,
+        url: String,
+        title: String,
+        original: String,
+        local: Option<std::path::PathBuf>,
+    ) {
         if self.li_posting { return; }
         if self.settings.linkedin_client_id.trim().is_empty()
             || self.settings.linkedin_client_secret.trim().is_empty()
@@ -1651,22 +1677,20 @@ impl App {
             return;
         }
 
-        let title = self.form.title.trim().to_string();
         // The commentary carries the link back to the source video, the way
         // the CLI's posts do — the short itself is the video being posted.
+        // A local file path is nothing the public post should carry, so only
+        // web sources (URL or YouTube id) make it in.
         let commentary = {
             let mut c = title.clone();
-            let original = self.form.source.trim();
-            if !original.is_empty() {
+            let original = original.trim();
+            if !original.is_empty() && !std::path::Path::new(original).is_absolute() {
                 c.push_str(&format!("\n\n{}", original));
             }
             c
         };
-        // A file we kept from this run; None once dismissed or after a restart.
-        let local = self
-            .last_done_file
-            .clone()
-            .filter(|p| p.exists());
+        self.li_posted = false;
+        self.li_post_url = Some(url.clone());
         let settings = self.settings.clone();
         let cancel = Arc::new(AtomicBool::new(false));
         self.li_cancel = cancel.clone();
@@ -3788,6 +3812,7 @@ impl eframe::App for App {
                                     self.davaz_posted = false;
                                     self.li_status_msg = None;
                                     self.li_posted = false;
+                                    self.li_post_url = None;
                                     self.drop_done_file();
                                 }
                                 if ui.button("Copy URL").clicked() {
@@ -3820,9 +3845,16 @@ impl eframe::App for App {
                                 // upload, else re-downloaded from YouTube.
                                 let li_configured = !self.settings.linkedin_client_id.trim().is_empty()
                                     && !self.settings.linkedin_client_secret.trim().is_empty();
-                                let li_label = if self.li_posting {
+                                // The one posting slot is shared with the History
+                                // rows — only claim Posting…/Posted when the
+                                // in-flight post is about *this* banner's video.
+                                let li_posting_this = self.li_posting
+                                    && self.li_post_url.as_deref() == Some(url.as_str());
+                                let li_posted_this = self.li_posted
+                                    && self.li_post_url.as_deref() == Some(url.as_str());
+                                let li_label = if li_posting_this {
                                     "Posting…"
-                                } else if self.li_posted {
+                                } else if li_posted_this {
                                     "✅ Posted to LinkedIn"
                                 } else {
                                     "Post to LinkedIn"
@@ -3837,7 +3869,7 @@ impl eframe::App for App {
                                     "Post this video to LinkedIn (downloads it from YouTube first)".to_string()
                                 };
                                 let li_btn = ui.add_enabled(
-                                    li_configured && self.li_signed_in && !self.li_posting && !self.li_posted,
+                                    li_configured && self.li_signed_in && !self.li_posting && !li_posted_this,
                                     egui::Button::new(li_label),
                                 ).on_hover_text(li_tooltip);
                                 if li_btn.clicked() { self.start_li_post(url.clone()); }
@@ -4161,6 +4193,7 @@ impl App {
         // Deferred: clicking Re-edit inside the window closure can't touch
         // self.form (the entry list is a clone) — applied after show().
         let mut load_requested: Option<history::UploadEntry> = None;
+        let mut li_post_requested: Option<history::UploadEntry> = None;
         egui::Window::new("Upload history")
             .open(&mut open)
             .collapsible(false)
@@ -4182,6 +4215,49 @@ impl App {
                         );
                     });
                 });
+
+                // LinkedIn feedback lives here too — a post started from a
+                // history row must not depend on the success banner (which
+                // usually isn't open) to show its status and progress.
+                if self.li_posting || self.li_status_msg.is_some() {
+                    if let Some(msg) = &self.li_status_msg {
+                        let color = if msg.starts_with('❌') {
+                            egui::Color32::from_rgb(180, 60, 60)
+                        } else {
+                            egui::Color32::from_rgb(20, 90, 20)
+                        };
+                        ui.colored_label(color, RichText::new(msg).small().strong());
+                    }
+                    if self.li_posting {
+                        let p = self.li_progress.lock().map(|g| g.clone()).unwrap_or_default();
+                        ui.horizontal(|ui| {
+                            let cancelling = self.li_cancel.load(Ordering::SeqCst);
+                            let c = ui
+                                .add_enabled(
+                                    !cancelling,
+                                    egui::Button::new(if cancelling { "Cancelling…" } else { "✖" }),
+                                )
+                                .on_hover_text("Cancel the LinkedIn post");
+                            if c.clicked() {
+                                self.li_cancel.store(true, Ordering::SeqCst);
+                            }
+                            let bar = if p.fraction > 0.0 {
+                                egui::ProgressBar::new(p.fraction).show_percentage().animate(true)
+                            } else {
+                                egui::ProgressBar::new(0.0).animate(true)
+                            };
+                            let label = if p.phase.is_empty() {
+                                "Preparing video".to_string()
+                            } else {
+                                p.phase.clone()
+                            };
+                            ui.add(bar.text(label));
+                        });
+                        if !p.detail.is_empty() {
+                            ui.label(RichText::new(p.detail).weak().small());
+                        }
+                    }
+                }
 
                 if total == 0 {
                     ui.add_space(20.0);
@@ -4236,6 +4312,43 @@ impl App {
                             if ui.small_button("↩ Re-edit").on_hover_text(tip).clicked() {
                                 load_requested = Some(entry.clone());
                             }
+                            // Post any past short to LinkedIn — same shared
+                            // posting slot as the success banner, so only one
+                            // post can run at a time; the video is always
+                            // re-downloaded from YouTube here.
+                            let li_configured = !self.settings.linkedin_client_id.trim().is_empty()
+                                && !self.settings.linkedin_client_secret.trim().is_empty();
+                            let posting_this = self.li_posting
+                                && self.li_post_url.as_deref() == Some(entry.url.as_str());
+                            let posted_this = self.li_posted
+                                && self.li_post_url.as_deref() == Some(entry.url.as_str());
+                            let li_label = if posting_this {
+                                "Posting…"
+                            } else if posted_this {
+                                "✅ Posted to LinkedIn"
+                            } else {
+                                "Post to LinkedIn"
+                            };
+                            let li_tip = if !li_configured {
+                                "Set the LinkedIn Client ID + Secret in Settings first"
+                            } else if !self.li_signed_in {
+                                "Click 'Sign in to LinkedIn' in Settings first"
+                            } else {
+                                "Post this video to LinkedIn (downloads it from YouTube first)"
+                            };
+                            let li_btn = ui
+                                .add_enabled(
+                                    li_configured
+                                        && self.li_signed_in
+                                        && !self.li_posting
+                                        && !posted_this,
+                                    egui::Button::new(li_label).small(),
+                                )
+                                .on_hover_text(li_tip)
+                                .on_disabled_hover_text(li_tip);
+                            if li_btn.clicked() {
+                                li_post_requested = Some(entry.clone());
+                            }
                         });
                         ui.horizontal_wrapped(|ui| {
                             ui.add_space(120.0);
@@ -4256,6 +4369,16 @@ impl App {
         if let Some(entry) = load_requested {
             self.apply_history_entry(&entry);
             self.show_history = false;
+        }
+        if let Some(entry) = li_post_requested {
+            // Never a local file from here — history entries are re-downloaded
+            // from YouTube. The modal stays open so the progress above shows.
+            self.start_li_post_with(
+                entry.url.clone(),
+                entry.title.trim().to_string(),
+                entry.source.clone(),
+                None,
+            );
         }
     }
 
