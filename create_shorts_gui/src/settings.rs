@@ -50,6 +50,12 @@ pub struct Settings {
     /// most once per calendar day (see [`dep_update_ran_today`]).
     #[serde(default = "default_true")]
     pub auto_update_deps: bool,
+    /// UI zoom factor from the top-bar A+/A− font-size buttons (1.0 =
+    /// default). Scales the whole UI via egui's zoom factor. None = never
+    /// touched. Clamped to [0.6, 3.0] on restore so a hand-edited value
+    /// can't render the UI unusable.
+    #[serde(default)]
+    pub ui_zoom: Option<f32>,
 }
 
 fn default_privacy() -> String {
@@ -78,6 +84,7 @@ impl Default for Settings {
             linkedin_client_secret: String::new(),
             linkedin_visibility: default_linkedin_visibility(),
             auto_update_deps: true,
+            ui_zoom: None,
         }
     }
 }

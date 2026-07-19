@@ -416,6 +416,17 @@ struct FormState {
     // clip.
     #[serde(default)] cut_middle: bool,
     #[serde(default = "default_cuts")] cuts: Vec<CutRange>,
+    // Silence the sound: the whole clip when every from/till below is left
+    // empty, or just the filled-in sections (same absolute-timestamp style as
+    // the cut-outs; an empty from = clip start, an empty till = clip end).
+    #[serde(default)] mute: bool,
+    #[serde(default = "default_cuts")] mutes: Vec<CutRange>,
+    // Mix a background-music audio file (e.g. downloaded from
+    // pixabay.com/music) under the finished clip at this volume. Combined
+    // with a whole-clip Mute it replaces the original sound entirely.
+    #[serde(default)] bg_music: bool,
+    #[serde(default)] bg_music_path: String,
+    #[serde(default = "default_bg_music_volume")] bg_music_volume: u32,
     // Keep YouTube from stamping its own auto-generated subtitles on the
     // short. Defaults on — Jürg doesn't want them, and YouTube offers no
     // switch to turn ASR off (see `pipeline::block_auto_subtitles`).
@@ -469,6 +480,21 @@ fn timestamp_edit(ui: &mut egui::Ui, value: &mut String, width: f32) -> egui::Re
 fn video_file_dialog() -> rfd::FileDialog {
     let mut dlg = rfd::FileDialog::new()
         .add_filter("Video", &["mp4", "mov", "m4v", "mkv", "webm", "avi"])
+        .add_filter("Any file", &["*"]);
+    if let Some(dir) = dirs::download_dir().or_else(dirs::home_dir) {
+        dlg = dlg.set_directory(dir);
+    }
+    dlg
+}
+
+fn default_bg_music_volume() -> u32 { 100 }
+
+/// The system audio-file picker for background music, starting in the user's
+/// Downloads folder — that's where a track downloaded from pixabay.com/music
+/// lands.
+fn audio_file_dialog() -> rfd::FileDialog {
+    let mut dlg = rfd::FileDialog::new()
+        .add_filter("Audio", &["mp3", "m4a", "aac", "wav", "flac", "ogg", "opus"])
         .add_filter("Any file", &["*"]);
     if let Some(dir) = dirs::download_dir().or_else(dirs::home_dir) {
         dlg = dlg.set_directory(dir);
@@ -559,6 +585,11 @@ impl Default for FormState {
             fade_in_secs: default_fade_secs(),
             cut_middle: false,
             cuts: default_cuts(),
+            mute: false,
+            mutes: default_cuts(),
+            bg_music: false,
+            bg_music_path: String::new(),
+            bg_music_volume: default_bg_music_volume(),
             block_auto_subs: default_true(),
             subs_language: default_subs_language(),
         }
@@ -707,6 +738,10 @@ struct App {
     mpv_load_err: Option<String>,
     /// Active in-window preview (two mpv players), or `None` when idle.
     preview: Option<PreviewState>,
+    /// Audio-only mpv player for auditioning the selected background-music
+    /// file in-app (▶ Play / ⏹ Stop in the Music row). No video pane is
+    /// drawn — only the sound plays.
+    music_preview: Option<mpv::Player>,
     /// The "watch the original" viewer: an mpv player of the raw start–end
     /// segment, shown in a side panel so the user can scrub it and read cut
     /// timestamps while editing. `source_start_secs` makes the readout show
@@ -1272,6 +1307,11 @@ fn draw_source_pane(
 impl App {
     fn new(cc: &eframe::CreationContext<'_>) -> Self {
         let mut settings = Settings::load();
+        // Restore the persisted A+/A− font-size choice (the top-bar buttons
+        // save it on every click). Clamped the same way the buttons clamp.
+        if let Some(z) = settings.ui_zoom {
+            cc.egui_ctx.set_zoom_factor(z.clamp(0.6, 3.0));
+        }
         let detected_browsers = browsers::detected();
         // First-launch convenience: if the user hasn't picked a cookie
         // browser yet, default to the most likely installed one. Saved
@@ -1400,6 +1440,7 @@ impl App {
             mpv_lib,
             mpv_load_err,
             preview: None,
+            music_preview: None,
             source_player: None,
             source_tex: None,
             source_start_secs: 0.0,
@@ -2383,6 +2424,54 @@ impl App {
                 }
             }
         }
+        // Mute ranges: rows left fully empty are fine (they mean "the whole
+        // clip"), but any filled-in timestamp must parse, and a fully-filled
+        // pair must be ordered.
+        if self.form.mute && !source_only {
+            for (idx, m) in self.form.mutes.iter().enumerate() {
+                let (f, t) = (m.from.trim(), m.till.trim());
+                let fa = if f.is_empty() {
+                    None
+                } else {
+                    match pipeline::parse_timestamp(f) {
+                        Some(v) => Some(v),
+                        None => {
+                            self.last_error = Some(format!("Mute #{} from \"{}\" isn't valid — {}", idx + 1, f, TS_HINT));
+                            return;
+                        }
+                    }
+                };
+                let ta = if t.is_empty() {
+                    None
+                } else {
+                    match pipeline::parse_timestamp(t) {
+                        Some(v) => Some(v),
+                        None => {
+                            self.last_error = Some(format!("Mute #{} till \"{}\" isn't valid — {}", idx + 1, t, TS_HINT));
+                            return;
+                        }
+                    }
+                };
+                if let (Some(fa), Some(ta)) = (fa, ta) {
+                    if ta <= fa {
+                        self.last_error = Some(format!("Mute #{}: till ({}) must be after from ({})", idx + 1, t, f));
+                        return;
+                    }
+                }
+            }
+        }
+        // Background music needs an existing audio file.
+        if self.form.bg_music && !source_only {
+            let p = self.form.bg_music_path.trim();
+            if p.is_empty() {
+                self.last_error = Some("Choose a music file first (Music row → 📂 Select…)".into());
+                return;
+            }
+            if !std::path::Path::new(p).is_file() {
+                self.last_error = Some(format!("Music file not found: {}", p));
+                return;
+            }
+        }
         // Title is only required when actually uploading.
         if !preview_only && !source_only && self.form.title.trim().is_empty() {
             self.last_error = Some("Title is required".into());
@@ -2437,6 +2526,23 @@ impl App {
             } else {
                 Vec::new()
             },
+            mute: self.form.mute,
+            // Rows left fully empty are dropped: with none remaining the
+            // pipeline mutes the whole clip; a partially-filled row keeps its
+            // empty side as "clip start"/"clip end".
+            mutes: if self.form.mute {
+                self.form
+                    .mutes
+                    .iter()
+                    .filter(|m| !m.from.trim().is_empty() || !m.till.trim().is_empty())
+                    .map(|m| (m.from.trim().to_string(), m.till.trim().to_string()))
+                    .collect()
+            } else {
+                Vec::new()
+            },
+            bg_music: self.form.bg_music,
+            bg_music_path: self.form.bg_music_path.trim().to_string(),
+            bg_music_volume: self.form.bg_music_volume,
             block_auto_subs: self.form.block_auto_subs,
             audio_language: self.form.subs_language.clone(),
         };
@@ -3174,6 +3280,34 @@ impl eframe::App for App {
                             if resp.clicked() { self.show_settings = true; }
                             ui.add_space(8.0);
                         }
+                        // Font size A+/A− to the LEFT of the icon (in a
+                        // right-to-left layout, items added after the icon sit
+                        // to its left — same pattern as movementlogger).
+                        // Scales the WHOLE UI via egui's zoom factor — one
+                        // lever, every font and widget grows/shrinks together.
+                        // Clamped [0.6, 3.0]; persisted to settings.json.
+                        let zoom = ui.ctx().zoom_factor();
+                        let mut new_zoom = None;
+                        if ui
+                            .add_enabled(zoom < 3.0 - f32::EPSILON, egui::Button::new(RichText::new("A+").size(15.0)))
+                            .on_hover_text("Increase font size")
+                            .clicked()
+                        {
+                            new_zoom = Some((zoom + 0.1).min(3.0));
+                        }
+                        if ui
+                            .add_enabled(zoom > 0.6 + f32::EPSILON, egui::Button::new(RichText::new("A\u{2212}").size(12.0)))
+                            .on_hover_text("Decrease font size")
+                            .clicked()
+                        {
+                            new_zoom = Some((zoom - 0.1).max(0.6));
+                        }
+                        if let Some(z) = new_zoom {
+                            ui.ctx().set_zoom_factor(z);
+                            self.settings.ui_zoom = Some(z);
+                            let _ = self.settings.save();
+                        }
+                        ui.add_space(8.0);
                         let badge = if self.signed_in { "✅ signed in" } else { "⚠ not signed in" };
                         ui.label(badge);
                     });
@@ -3452,7 +3586,16 @@ impl eframe::App for App {
                     ui.end_row();
 
                     ui.label("End:");
-                    timestamp_edit(ui, &mut self.form.end, 160.0);
+                    ui.horizontal(|ui| {
+                        timestamp_edit(ui, &mut self.form.end, 160.0);
+                        // Same state as the Mute row below — the two checkboxes
+                        // mirror each other; this one is just within reach while
+                        // typing the clip times.
+                        ui.checkbox(&mut self.form.mute, "🔇 mute")
+                            .on_hover_text(
+                                "Remove the sound from the whole clip. The same switch as the Mute row below, which can also silence just sections (from/till).",
+                            );
+                    });
                     ui.end_row();
 
                     ui.label("Title:");
@@ -3577,6 +3720,154 @@ impl eframe::App for App {
                             {
                                 self.form.cuts.push(CutRange::default());
                             }
+                        });
+                    });
+                    ui.end_row();
+
+                    ui.label("Mute:");
+                    ui.vertical(|ui| {
+                        ui.checkbox(&mut self.form.mute, "Remove the sound")
+                            .on_hover_text(
+                                "Silences the audio. Leave the from/till fields empty to mute the whole clip, or fill them in (same style as start/end, absolute in the source) to mute just those sections. The picture is untouched. Applies to both Preview and Upload.",
+                            );
+                        ui.add_enabled_ui(self.form.mute, |ui| {
+                            let mut remove: Option<usize> = None;
+                            let count = self.form.mutes.len();
+                            for (i, m) in self.form.mutes.iter_mut().enumerate() {
+                                ui.horizontal(|ui| {
+                                    ui.label("from");
+                                    timestamp_edit(ui, &mut m.from, 70.0)
+                                        .on_hover_text("Start of a section to mute (absolute in the source, e.g. 13:27.6). Empty = the start of the clip.");
+                                    ui.label("till");
+                                    timestamp_edit(ui, &mut m.till, 70.0)
+                                        .on_hover_text("End of that section (absolute in the source, e.g. 13:50.6). Empty = the end of the clip.");
+                                    if count > 1
+                                        && ui.button("🗑").on_hover_text("Remove this mute range").clicked()
+                                    {
+                                        remove = Some(i);
+                                    }
+                                });
+                            }
+                            ui.label(
+                                RichText::new("Leave from/till empty to mute the whole clip.")
+                                    .small()
+                                    .weak(),
+                            );
+                            if let Some(i) = remove {
+                                self.form.mutes.remove(i);
+                            }
+                            if ui
+                                .button("➕ Add mute range")
+                                .on_hover_text("Add another section to mute")
+                                .clicked()
+                            {
+                                self.form.mutes.push(CutRange::default());
+                            }
+                        });
+                    });
+                    ui.end_row();
+
+                    ui.label("Music:");
+                    ui.vertical(|ui| {
+                        ui.horizontal(|ui| {
+                            ui.checkbox(&mut self.form.bg_music, "Add background music")
+                                .on_hover_text(
+                                    "Mixes an audio file under the whole clip — looped to the clip's length (freeze-frames included) and faded out at the end. Tick Mute above (with empty from/till) to replace the original sound entirely. Applies to both Preview and Upload.",
+                                );
+                            if ui
+                                .button("🎵 Browse Pixabay Music…")
+                                .on_hover_text(
+                                    "Opens pixabay.com/music in your browser — every track has a play button there. Free for commercial use, no attribution needed. Download a track, then pick the file with 📂 Select… (it lands in Downloads).",
+                                )
+                                .clicked()
+                            {
+                                let _ = open::that("https://pixabay.com/music/");
+                            }
+                        });
+                        // Unticking greys out the Stop button below, so it must
+                        // also stop any running audition.
+                        if !self.form.bg_music {
+                            self.music_preview = None;
+                        }
+                        ui.add_enabled_ui(self.form.bg_music, |ui| {
+                            ui.horizontal(|ui| {
+                                ui.add(
+                                    egui::TextEdit::singleline(&mut self.form.bg_music_path)
+                                        .desired_width(260.0)
+                                        .hint_text("path to an audio file (mp3, m4a, wav…)"),
+                                );
+                                if ui
+                                    .button("📂 Select…")
+                                    .on_hover_text("Pick an audio file — the picker starts in Downloads, where a pixabay.com/music download lands")
+                                    .clicked()
+                                {
+                                    if let Some(path) = audio_file_dialog().pick_file() {
+                                        self.form.bg_music_path = path.display().to_string();
+                                        // A new pick replaces whatever was auditioning.
+                                        self.music_preview = None;
+                                    }
+                                }
+                                ui.label("volume");
+                                ui.add(
+                                    egui::DragValue::new(&mut self.form.bg_music_volume)
+                                        .speed(1)
+                                        .range(1..=300)
+                                        .suffix(" %"),
+                                )
+                                .on_hover_text("Music loudness. 100% = as recorded; lower it to duck the music under speech.");
+                                // In-app audition of the picked file: plays the
+                                // audio through the embedded libmpv (no video
+                                // pane). Falls back to the system player when
+                                // libmpv isn't available.
+                                let previewing = self.music_preview.is_some();
+                                let has_file = !self.form.bg_music_path.trim().is_empty();
+                                let play_label = if previewing { "⏹ Stop" } else { "▶ Play" };
+                                if ui
+                                    .add_enabled(previewing || has_file, egui::Button::new(play_label))
+                                    .on_hover_text("Listen to the selected music file without leaving the app")
+                                    .on_disabled_hover_text("Pick a music file first")
+                                    .clicked()
+                                {
+                                    if previewing {
+                                        self.music_preview = None;
+                                    } else {
+                                        let p = self.form.bg_music_path.trim().to_string();
+                                        match self.mpv_lib.clone() {
+                                            Some(lib) => match mpv::Player::open(lib, ui.ctx(), &p) {
+                                                Ok(mut player) => {
+                                                    player.set_paused(false);
+                                                    self.music_preview = Some(player);
+                                                }
+                                                Err(e) => {
+                                                    self.append_log(format!(
+                                                        "Music preview via mpv failed ({}); opening in the system player instead.",
+                                                        e
+                                                    ));
+                                                    let _ = open::that(&p);
+                                                }
+                                            },
+                                            None => {
+                                                let _ = open::that(&p);
+                                            }
+                                        }
+                                    }
+                                }
+                                let times = self.music_preview.as_ref().map(|p| (p.time_pos(), p.duration()));
+                                if let Some((pos, dur)) = times {
+                                    ui.label(
+                                        RichText::new(format!("{} / {}", fmt_time(pos), fmt_time(dur)))
+                                            .small()
+                                            .weak(),
+                                    );
+                                    // Keep the readout ticking; drop the player
+                                    // when the track has played to its end.
+                                    if dur > 0.0 && pos >= dur - 0.2 {
+                                        self.music_preview = None;
+                                    } else {
+                                        ui.ctx().request_repaint_after(std::time::Duration::from_millis(250));
+                                    }
+                                }
+                            });
                         });
                     });
                     ui.end_row();

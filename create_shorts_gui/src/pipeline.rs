@@ -187,6 +187,20 @@ pub struct Job {
     /// remaining is concatenated into one clip.
     pub cut_middle: bool,
     pub cuts: Vec<(String, String)>,
+    /// Silence the sound. With an empty `mutes` list the whole clip is muted;
+    /// otherwise each `(from, till)` names a section to silence (absolute
+    /// timestamps like the cut-outs; an empty `from` means the clip start, an
+    /// empty `till` the clip end). The picture is untouched.
+    pub mute: bool,
+    pub mutes: Vec<(String, String)>,
+    /// Mix a background-music audio file (e.g. downloaded from Pixabay Music)
+    /// under the finished clip: looped/trimmed to the clip's full length
+    /// (freeze-frame fades included), faded out at the end, at
+    /// `bg_music_volume` percent. Combined with a whole-clip `mute` it
+    /// replaces the original sound entirely.
+    pub bg_music: bool,
+    pub bg_music_path: String,
+    pub bg_music_volume: u32,
     /// Stop YouTube from putting its own auto-generated subtitles on the
     /// upload, by declaring the audio language and publishing a blank caption
     /// track in it (see [`block_auto_subtitles`]).
@@ -614,6 +628,83 @@ pub fn run(mut job: Job, settings: Settings, tx: Sender<Event>, cancel: Arc<Atom
         }
     }
 
+    // Optional: silence the sound — the whole clip when no from/till ranges
+    // were given, otherwise just those sections (absolute timestamps like the
+    // cut-outs; an empty `from` means the clip start, an empty `till` the clip
+    // end). Applied *before* the cut-outs so the timestamps map straight onto
+    // the source timeline. The video stream is copied untouched (only the
+    // audio is filtered + re-encoded), so this stage is fast. Cached as
+    // `<video_id>_<stamp>_mute<tag>.mp4`.
+    let has_mute = job.mute;
+    let mut mute_covers_end = false;
+    let (seg, mute_tag) = if has_mute {
+        let start_secs = parse_timestamp(&job.start).unwrap_or(0.0);
+        let dur = probe_duration(&out).unwrap_or(segment_secs);
+        let mut ranges: Vec<(f64, f64)> = Vec::new();
+        if job.mutes.is_empty() {
+            ranges.push((0.0, dur));
+        } else {
+            for (from_s, till_s) in &job.mutes {
+                let rel_from = if from_s.is_empty() {
+                    0.0
+                } else {
+                    match parse_timestamp(from_s) {
+                        Some(v) => v - start_secs,
+                        None => {
+                            report_fail(&tx, &cancel, format!("mute: can't parse from-timestamp {:?}", from_s));
+                            return;
+                        }
+                    }
+                };
+                let rel_till = if till_s.is_empty() {
+                    dur
+                } else {
+                    match parse_timestamp(till_s) {
+                        Some(v) => v - start_secs,
+                        None => {
+                            report_fail(&tx, &cancel, format!("mute: can't parse till-timestamp {:?}", till_s));
+                            return;
+                        }
+                    }
+                };
+                let rf = rel_from.clamp(0.0, dur);
+                let rt = rel_till.clamp(0.0, dur);
+                if rt <= rf + 0.05 {
+                    report_fail(&tx, &cancel, format!(
+                        "mute range {}–{} must lie within the segment {}–{} (got offsets {:.1}s–{:.1}s within a {:.1}s clip)",
+                        if from_s.is_empty() { "start" } else { from_s },
+                        if till_s.is_empty() { "end" } else { till_s },
+                        job.start, job.end, rel_from, rel_till, dur
+                    ));
+                    return;
+                }
+                ranges.push((rf, rt));
+            }
+        }
+        // When the silence reaches the clip's end, the fade-out must not glue
+        // un-muted continuing source audio under the held last frame.
+        mute_covers_end = ranges.iter().any(|&(_, t)| t >= dur - 0.05);
+        let tag = mutes_tag(&job.mutes);
+        let mute_path = cache_dir.join(format!("{}_{}_mute{}.mp4", video_id, stamp, tag));
+        if mute_path.exists() {
+            let _ = tx.send(Event::Log(format!("Reusing cached muted segment {}", mute_path.display())));
+        } else {
+            let muted: f64 = ranges.iter().map(|(a, b)| b - a).sum();
+            let _ = tx.send(Event::Log(format!(
+                "Muting the sound of {} section{} ({:.1}s of {:.1}s silenced)…",
+                ranges.len(), if ranges.len() == 1 { "" } else { "s" }, muted, dur
+            )));
+            if let Err(e) = apply_mute(&out, &mute_path, &ranges, dur, &tx, &cancel) {
+                let _ = std::fs::remove_file(&mute_path);
+                report_fail(&tx, &cancel, format!("mute: {}", e));
+                return;
+            }
+        }
+        (mute_path, format!("_mute{}", tag))
+    } else {
+        (out.clone(), String::new())
+    };
+
     // Optional: remove one or more middle sections from the segment and
     // concatenate everything that remains into one clip. Each cut's timestamps
     // are absolute in the source (same style as start/end), so we convert them
@@ -623,7 +714,7 @@ pub fn run(mut job: Job, settings: Settings, tx: Sender<Event>, cancel: Arc<Atom
     let has_cuts = job.cut_middle && !job.cuts.is_empty();
     let (clip, segment_secs) = if has_cuts {
         let start_secs = parse_timestamp(&job.start).unwrap_or(0.0);
-        let dur = probe_duration(&out).unwrap_or(segment_secs);
+        let dur = probe_duration(&seg).unwrap_or(segment_secs);
         // Parse + convert every cut to an offset range within the segment.
         let mut ranges: Vec<(f64, f64)> = Vec::new();
         for (from_s, till_s) in &job.cuts {
@@ -673,7 +764,7 @@ pub fn run(mut job: Job, settings: Settings, tx: Sender<Event>, cancel: Arc<Atom
                 "cut-out would remove the entire clip — leave some section uncut".to_string());
             return;
         }
-        let cut_path = cache_dir.join(format!("{}_{}_cut{}.mp4", video_id, stamp, cuts_tag(&job.cuts)));
+        let cut_path = cache_dir.join(format!("{}_{}{}_cut{}.mp4", video_id, stamp, mute_tag, cuts_tag(&job.cuts)));
         if cut_path.exists() {
             let _ = tx.send(Event::Log(format!("Reusing cached cut segment {}", cut_path.display())));
         } else {
@@ -681,7 +772,7 @@ pub fn run(mut job: Job, settings: Settings, tx: Sender<Event>, cancel: Arc<Atom
                 "Cutting out {} section{} ({:.1}s removed) — joining the {:.1}s that remain…",
                 ranges.len(), if ranges.len() == 1 { "" } else { "s" }, removed, new_secs
             )));
-            if let Err(e) = apply_cut_middle(&out, &cut_path, &ranges, dur, &tx, new_secs, &cancel) {
+            if let Err(e) = apply_cut_middle(&seg, &cut_path, &ranges, dur, &tx, new_secs, &cancel) {
                 let _ = std::fs::remove_file(&cut_path);
                 report_fail(&tx, &cancel, format!("cut-out: {}", e));
                 return;
@@ -689,16 +780,16 @@ pub fn run(mut job: Job, settings: Settings, tx: Sender<Event>, cancel: Arc<Atom
         }
         (cut_path, new_secs)
     } else {
-        (out.clone(), segment_secs)
+        (seg.clone(), segment_secs)
     };
 
-    // Tag derived caches (stretch, titled) with the cut ranges so toggling the
-    // cut on/off — or changing its bounds — re-encodes instead of serving a
-    // stale clip built from the un-cut segment.
+    // Tag derived caches (stretch, titled) with the mute + cut ranges so
+    // toggling either on/off — or changing their bounds — re-encodes instead
+    // of serving a stale clip built from the unmuted/un-cut segment.
     let cut_tag = if has_cuts {
-        format!("_cut{}", cuts_tag(&job.cuts))
+        format!("{}_cut{}", mute_tag, cuts_tag(&job.cuts))
     } else {
-        String::new()
+        mute_tag.clone()
     };
 
     // Optional: time-stretch (slow down) the core clip so it lasts
@@ -835,7 +926,15 @@ pub fn run(mut job: Job, settings: Settings, tx: Sender<Event>, cancel: Arc<Atom
             // held last frame fades out over *real* continuing sound instead of
             // silence. Cached per (video_id, end, fade_secs); best-effort — if
             // there's no audio after the cut we fall back to a silent hold.
-            let tail_audio: Option<PathBuf> = if let Some(end_secs) = parse_timestamp(&job.end) {
+            // When the mute reaches the clip's end, continuing source audio
+            // would blast un-muted sound right after the silence — hold silent
+            // instead.
+            let tail_audio: Option<PathBuf> = if mute_covers_end {
+                let _ = tx.send(Event::Log(
+                    "Sound is muted through the end of the clip — the held frame stays silent.".into(),
+                ));
+                None
+            } else if let Some(end_secs) = parse_timestamp(&job.end) {
                 let tail_path = cache_dir.join(format!(
                     "{}_tail_{}_{}.m4a",
                     video_id,
@@ -907,6 +1006,47 @@ pub fn run(mut job: Job, settings: Settings, tx: Sender<Event>, cancel: Arc<Atom
         fade_path
     } else {
         after_fade_in.clone()
+    };
+
+    // Optional: mix the background-music file under the finished clip —
+    // applied last so the music spans everything including the freeze-frame
+    // fades, with its own fade-out over the final seconds. The video stream is
+    // copied untouched (remux speed). Cached as `<stem>_music<hash>_v<vol>.mp4`
+    // where the hash covers the music file's path/size/mtime, so picking a
+    // different file (or re-downloading it) re-mixes instead of serving a
+    // stale clip.
+    let pre_music = delivered.clone();
+    let delivered = if job.bg_music && !job.bg_music_path.trim().is_empty() {
+        let music = PathBuf::from(job.bg_music_path.trim());
+        let vol = job.bg_music_volume.clamp(1, 300);
+        let stem = pre_music
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("clip")
+            .to_string();
+        let music_path = pre_music.with_file_name(format!("{}_music{}_v{}.mp4", stem, music_file_tag(&music), vol));
+        if music_path.exists() {
+            let _ = tx.send(Event::Log(format!("Reusing cached music mix {}", music_path.display())));
+        } else {
+            let total = probe_duration(&pre_music).unwrap_or_else(|| {
+                core_secs
+                    + if job.fade_in { fade_in_secs as f64 } else { 0.0 }
+                    + if job.fade_out { fade_secs as f64 } else { 0.0 }
+            });
+            let _ = tx.send(Event::Log(format!(
+                "Mixing background music {} at {}%…",
+                music.file_name().and_then(|s| s.to_str()).unwrap_or("(file)"),
+                vol
+            )));
+            if let Err(e) = apply_bg_music(&pre_music, &music, &music_path, total, vol, &tx, &cancel) {
+                let _ = std::fs::remove_file(&music_path);
+                report_fail(&tx, &cancel, format!("background music: {}", e));
+                return;
+            }
+        }
+        music_path
+    } else {
+        delivered
     };
 
     if job.preview_only {
@@ -986,7 +1126,7 @@ pub fn run(mut job: Job, settings: Settings, tx: Sender<Event>, cancel: Arc<Atom
     // here has to be by *path*, because with no fade-out `delivered` IS
     // `after_fade_in` (and possibly `final_out`/`base` too) — deleting those
     // blind would delete the delivered file with them.
-    for f in [&after_fade_in, &final_out, &base, &clip, &out] {
+    for f in [&after_fade_in, &final_out, &base, &clip, &seg, &out, &pre_music] {
         if f != &delivered {
             let _ = std::fs::remove_file(f);
         }
@@ -1906,6 +2046,182 @@ fn cuts_tag(cuts: &[(String, String)]) -> String {
         .map(|(f, t)| format!("{}_{}", f.replace(':', "_"), t.replace(':', "_")))
         .collect::<Vec<_>>()
         .join("-")
+}
+
+/// Cache-filename tag for the mute ranges. An empty list (mute the whole
+/// clip) becomes `all`; inside a pair an empty `from`/`till` (= clip
+/// start/end) becomes `s`/`e` so the tag stays unambiguous.
+fn mutes_tag(mutes: &[(String, String)]) -> String {
+    if mutes.is_empty() {
+        return "all".into();
+    }
+    mutes
+        .iter()
+        .map(|(f, t)| {
+            format!(
+                "{}_{}",
+                if f.is_empty() { "s".to_string() } else { f.replace(':', "_") },
+                if t.is_empty() { "e".to_string() } else { t.replace(':', "_") },
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("-")
+}
+
+/// Short stable id for the chosen background-music file — path + size + mtime
+/// hashed, so the cached mix is reused for the same file but re-mixed when a
+/// different file is picked (or the same one re-downloaded/edited).
+fn music_file_tag(path: &std::path::Path) -> String {
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash, Hasher};
+    let mut h = DefaultHasher::new();
+    path.hash(&mut h);
+    if let Ok(m) = path.metadata() {
+        m.len().hash(&mut h);
+        if let Ok(t) = m.modified() {
+            t.hash(&mut h);
+        }
+    }
+    format!("{:08x}", h.finish() as u32)
+}
+
+/// Mix `music` under `input`'s existing sound at `volume_pct` percent. The
+/// music is looped when shorter than the clip (`-stream_loop -1`), trimmed to
+/// the clip's length, and faded out over its last ~3 seconds so it never ends
+/// mid-note. `amix normalize=0` keeps the original audio at its own level
+/// instead of halving both. The video stream is copied bit-for-bit, so this
+/// runs at remux speed regardless of resolution.
+fn apply_bg_music(
+    input: &std::path::Path,
+    music: &std::path::Path,
+    output: &std::path::Path,
+    dur: f64,
+    volume_pct: u32,
+    tx: &Sender<Event>,
+    cancel: &Arc<AtomicBool>,
+) -> Result<(), String> {
+    let _ = tx.send(Event::Progress {
+        phase: "Mixing music".into(),
+        fraction: 0.0,
+        detail: String::new(),
+    });
+    let vol = volume_pct as f64 / 100.0;
+    let fade_d = 3.0_f64.min(dur.max(0.1));
+    let fade_st = (dur - fade_d).max(0.0);
+    // atrim caps the endlessly-looped music at the clip length (and sends EOF,
+    // so amix duration=first terminates cleanly).
+    let filter = format!(
+        "[1:a]volume={vol:.3},atrim=0:{dur:.3},asetpts=PTS-STARTPTS,afade=t=out:st={fade_st:.3}:d={fade_d:.3}[m];[0:a][m]amix=inputs=2:duration=first:dropout_transition=0:normalize=0[a]"
+    );
+
+    let mut cmd = Command::new("ffmpeg");
+    cmd.args([
+        "-y",
+        "-i",
+        input.to_str().ok_or("non-utf8 input path")?,
+        "-stream_loop",
+        "-1",
+        "-i",
+        music.to_str().ok_or("non-utf8 music path")?,
+        "-filter_complex",
+        &filter,
+        "-map",
+        "0:v",
+        "-map",
+        "[a]",
+        "-c:v",
+        "copy",
+        "-c:a",
+        "aac",
+        "-movflags",
+        "+faststart",
+        output.to_str().ok_or("non-utf8 output path")?,
+    ]);
+    cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
+
+    detach_group(&mut cmd);
+    let mut child = cmd.spawn().map_err(|e| format!("ffmpeg spawn ({}): install ffmpeg", e))?;
+    let stdout = child.stdout.take();
+    let stderr = child.stderr.take();
+    let tx_o = tx.clone();
+    let tx_e = tx.clone();
+    let stderr_capture: LineBuf = Arc::new(Mutex::new(VecDeque::new()));
+    let cap_for_thread = stderr_capture.clone();
+    let h_o = stdout.map(|r| std::thread::spawn(move || stream_progress(r, tx_o, dur, None, "Mixing music".to_string())));
+    let h_e = stderr.map(|r| std::thread::spawn(move || stream_progress(r, tx_e, dur, Some(cap_for_thread), "Mixing music".to_string())));
+    let status = wait_or_cancel(&mut child, cancel)?;
+    if let Some(h) = h_o { let _ = h.join(); }
+    if let Some(h) = h_e { let _ = h.join(); }
+    if !status.success() {
+        let detail = summarize_yt_dlp_failure(&stderr_capture);
+        let suffix = if detail.is_empty() { String::new() } else { format!(" — {}", detail) };
+        return Err(format!("ffmpeg music mix exited with {:?}{}", status.code(), suffix));
+    }
+    Ok(())
+}
+
+/// Silence the given `(from, till)` ranges (seconds, relative to the start of
+/// `input`; may overlap). Only the audio is filtered (`volume=0` inside the
+/// ranges, timeline-enabled) and re-encoded — the video stream is copied
+/// bit-for-bit, so this runs at remux speed regardless of resolution.
+fn apply_mute(
+    input: &std::path::Path,
+    output: &std::path::Path,
+    ranges: &[(f64, f64)],
+    dur: f64,
+    tx: &Sender<Event>,
+    cancel: &Arc<AtomicBool>,
+) -> Result<(), String> {
+    let _ = tx.send(Event::Progress {
+        phase: "Muting sound".into(),
+        fraction: 0.0,
+        detail: String::new(),
+    });
+    // The single quotes are ffmpeg filter-parser quoting: they keep the commas
+    // inside between() from being read as filter-option separators.
+    let expr = ranges
+        .iter()
+        .map(|(a, b)| format!("between(t,{a},{b})"))
+        .collect::<Vec<_>>()
+        .join("+");
+    let filter = format!("volume=enable='{}':volume=0", expr);
+
+    let mut cmd = Command::new("ffmpeg");
+    cmd.args([
+        "-y",
+        "-i",
+        input.to_str().ok_or("non-utf8 input path")?,
+        "-c:v",
+        "copy",
+        "-af",
+        &filter,
+        "-c:a",
+        "aac",
+        "-movflags",
+        "+faststart",
+        output.to_str().ok_or("non-utf8 output path")?,
+    ]);
+    cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
+
+    detach_group(&mut cmd);
+    let mut child = cmd.spawn().map_err(|e| format!("ffmpeg spawn ({}): install ffmpeg", e))?;
+    let stdout = child.stdout.take();
+    let stderr = child.stderr.take();
+    let tx_o = tx.clone();
+    let tx_e = tx.clone();
+    let stderr_capture: LineBuf = Arc::new(Mutex::new(VecDeque::new()));
+    let cap_for_thread = stderr_capture.clone();
+    let h_o = stdout.map(|r| std::thread::spawn(move || stream_progress(r, tx_o, dur, None, "Muting sound".to_string())));
+    let h_e = stderr.map(|r| std::thread::spawn(move || stream_progress(r, tx_e, dur, Some(cap_for_thread), "Muting sound".to_string())));
+    let status = wait_or_cancel(&mut child, cancel)?;
+    if let Some(h) = h_o { let _ = h.join(); }
+    if let Some(h) = h_e { let _ = h.join(); }
+    if !status.success() {
+        let detail = summarize_yt_dlp_failure(&stderr_capture);
+        let suffix = if detail.is_empty() { String::new() } else { format!(" — {}", detail) };
+        return Err(format!("ffmpeg mute exited with {:?}{}", status.code(), suffix));
+    }
+    Ok(())
 }
 
 /// Remove one or more sections (each `(rel_from, rel_till)` in seconds,
