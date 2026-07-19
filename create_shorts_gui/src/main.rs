@@ -427,6 +427,8 @@ struct FormState {
     #[serde(default)] bg_music: bool,
     #[serde(default)] bg_music_path: String,
     #[serde(default = "default_bg_music_volume")] bg_music_volume: u32,
+    // Play the music back-to-front (audition and final mix alike).
+    #[serde(default)] bg_music_reverse: bool,
     // Keep YouTube from stamping its own auto-generated subtitles on the
     // short. Defaults on — Jürg doesn't want them, and YouTube offers no
     // switch to turn ASR off (see `pipeline::block_auto_subtitles`).
@@ -590,6 +592,7 @@ impl Default for FormState {
             bg_music: false,
             bg_music_path: String::new(),
             bg_music_volume: default_bg_music_volume(),
+            bg_music_reverse: false,
             block_auto_subs: default_true(),
             subs_language: default_subs_language(),
         }
@@ -742,6 +745,11 @@ struct App {
     /// file in-app (▶ Play / ⏹ Stop in the Music row). No video pane is
     /// drawn — only the sound plays.
     music_preview: Option<mpv::Player>,
+    /// Worker building the back-to-front copy of the music for a reversed
+    /// audition (`pipeline::build_reversed_music` on a thread — ~1–3 s for a
+    /// typical track, too long to block the UI). `Some` = build in flight;
+    /// the result starts the audition (or logs the error).
+    music_rev_rx: Option<Receiver<Result<std::path::PathBuf, String>>>,
     /// The "watch the original" viewer: an mpv player of the raw start–end
     /// segment, shown in a side panel so the user can scrub it and read cut
     /// timestamps while editing. `source_start_secs` makes the readout show
@@ -1441,6 +1449,7 @@ impl App {
             mpv_load_err,
             preview: None,
             music_preview: None,
+            music_rev_rx: None,
             source_player: None,
             source_tex: None,
             source_start_secs: 0.0,
@@ -2543,11 +2552,35 @@ impl App {
             bg_music: self.form.bg_music,
             bg_music_path: self.form.bg_music_path.trim().to_string(),
             bg_music_volume: self.form.bg_music_volume,
+            bg_music_reverse: self.form.bg_music_reverse,
             block_auto_subs: self.form.block_auto_subs,
             audio_language: self.form.subs_language.clone(),
         };
         let settings = self.settings.clone();
         std::thread::spawn(move || pipeline::run(job, settings, tx, cancel));
+    }
+
+    /// Start the in-app music audition on `path` (audio-only mpv player), or
+    /// hand the file to the system player when libmpv is missing/broken.
+    fn start_music_audition(&mut self, ctx: &egui::Context, path: &str) {
+        match self.mpv_lib.clone() {
+            Some(lib) => match mpv::Player::open(lib, ctx, path) {
+                Ok(mut player) => {
+                    player.set_paused(false);
+                    self.music_preview = Some(player);
+                }
+                Err(e) => {
+                    self.append_log(format!(
+                        "Music preview via mpv failed ({}); opening in the system player instead.",
+                        e
+                    ));
+                    let _ = open::that(path);
+                }
+            },
+            None => {
+                let _ = open::that(path);
+            }
+        }
     }
 
     fn drain_events(&mut self, ctx: &egui::Context) {
@@ -3785,9 +3818,32 @@ impl eframe::App for App {
                             }
                         });
                         // Unticking greys out the Stop button below, so it must
-                        // also stop any running audition.
+                        // also stop any running audition (and abandon a pending
+                        // reversed-copy build).
                         if !self.form.bg_music {
                             self.music_preview = None;
+                            self.music_rev_rx = None;
+                        }
+                        // A finished reversed-copy build starts the audition.
+                        if let Some(rx) = &self.music_rev_rx {
+                            match rx.try_recv() {
+                                Ok(Ok(path)) => {
+                                    self.music_rev_rx = None;
+                                    let p = path.display().to_string();
+                                    self.start_music_audition(ui.ctx(), &p);
+                                }
+                                Ok(Err(e)) => {
+                                    self.music_rev_rx = None;
+                                    self.append_log(format!("Could not reverse the music: {}", e));
+                                }
+                                Err(crossbeam_channel::TryRecvError::Empty) => {
+                                    ui.ctx().request_repaint_after(std::time::Duration::from_millis(150));
+                                }
+                                Err(crossbeam_channel::TryRecvError::Disconnected) => {
+                                    self.music_rev_rx = None;
+                                    self.append_log("Could not reverse the music: worker exited unexpectedly".to_string());
+                                }
+                            }
                         }
                         ui.add_enabled_ui(self.form.bg_music, |ui| {
                             ui.horizontal(|ui| {
@@ -3805,6 +3861,7 @@ impl eframe::App for App {
                                         self.form.bg_music_path = path.display().to_string();
                                         // A new pick replaces whatever was auditioning.
                                         self.music_preview = None;
+                                        self.music_rev_rx = None;
                                     }
                                 }
                                 ui.label("volume");
@@ -3815,59 +3872,99 @@ impl eframe::App for App {
                                         .suffix(" %"),
                                 )
                                 .on_hover_text("Music loudness. 100% = as recorded; lower it to duck the music under speech.");
+                                if ui
+                                    .checkbox(&mut self.form.bg_music_reverse, "⏪ backwards")
+                                    .on_hover_text("Play the music back-to-front — in the ▶ Play audition here AND mixed into the clip.")
+                                    .changed()
+                                {
+                                    // Direction changed: restart the audition on
+                                    // the right variant next Play.
+                                    self.music_preview = None;
+                                    self.music_rev_rx = None;
+                                }
                                 // In-app audition of the picked file: plays the
                                 // audio through the embedded libmpv (no video
                                 // pane). Falls back to the system player when
                                 // libmpv isn't available.
                                 let previewing = self.music_preview.is_some();
+                                let reversing = self.music_rev_rx.is_some();
                                 let has_file = !self.form.bg_music_path.trim().is_empty();
-                                let play_label = if previewing { "⏹ Stop" } else { "▶ Play" };
+                                let play_label = if reversing {
+                                    "⏳ Reversing…"
+                                } else if previewing {
+                                    "⏹ Stop"
+                                } else {
+                                    "▶ Play"
+                                };
                                 if ui
-                                    .add_enabled(previewing || has_file, egui::Button::new(play_label))
+                                    .add_enabled((previewing || has_file) && !reversing, egui::Button::new(play_label))
                                     .on_hover_text("Listen to the selected music file without leaving the app")
-                                    .on_disabled_hover_text("Pick a music file first")
+                                    .on_disabled_hover_text(if reversing {
+                                        "Building the back-to-front copy…"
+                                    } else {
+                                        "Pick a music file first"
+                                    })
                                     .clicked()
                                 {
                                     if previewing {
                                         self.music_preview = None;
+                                    } else if self.form.bg_music_reverse {
+                                        // The reversed copy is built by ffmpeg on
+                                        // a worker thread (~1–3 s for a typical
+                                        // track — blocking the UI would beachball).
+                                        // Cached by file identity, so the second
+                                        // Play is instant and the pipeline reuses
+                                        // the exact same file.
+                                        let (tx, rx) = unbounded();
+                                        self.music_rev_rx = Some(rx);
+                                        let src = std::path::PathBuf::from(self.form.bg_music_path.trim());
+                                        std::thread::spawn(move || {
+                                            let cancel = Arc::new(AtomicBool::new(false));
+                                            let _ = tx.send(pipeline::build_reversed_music(&src, &cancel));
+                                        });
                                     } else {
                                         let p = self.form.bg_music_path.trim().to_string();
-                                        match self.mpv_lib.clone() {
-                                            Some(lib) => match mpv::Player::open(lib, ui.ctx(), &p) {
-                                                Ok(mut player) => {
-                                                    player.set_paused(false);
-                                                    self.music_preview = Some(player);
-                                                }
-                                                Err(e) => {
-                                                    self.append_log(format!(
-                                                        "Music preview via mpv failed ({}); opening in the system player instead.",
-                                                        e
-                                                    ));
-                                                    let _ = open::that(&p);
-                                                }
-                                            },
-                                            None => {
-                                                let _ = open::that(&p);
-                                            }
-                                        }
+                                        self.start_music_audition(ui.ctx(), &p);
                                     }
                                 }
-                                let times = self.music_preview.as_ref().map(|p| (p.time_pos(), p.duration()));
-                                if let Some((pos, dur)) = times {
+                            });
+                            // Seek bar for the running audition: click or drag
+                            // anywhere on it to jump forward/backwards (the sound
+                            // follows live while dragging).
+                            let mut done = false;
+                            if let Some(player) = self.music_preview.as_mut() {
+                                let dur = player.duration();
+                                let mut pos = player.time_pos();
+                                ui.horizontal(|ui| {
+                                    ui.spacing_mut().slider_width = 260.0;
+                                    let resp = ui.add_enabled(
+                                        dur > 0.0,
+                                        egui::Slider::new(&mut pos, 0.0..=dur.max(0.001))
+                                            .show_value(false)
+                                            .trailing_fill(true),
+                                    );
+                                    if resp.changed() {
+                                        player.seek_absolute(pos);
+                                    }
                                     ui.label(
                                         RichText::new(format!("{} / {}", fmt_time(pos), fmt_time(dur)))
                                             .small()
                                             .weak(),
                                     );
-                                    // Keep the readout ticking; drop the player
-                                    // when the track has played to its end.
-                                    if dur > 0.0 && pos >= dur - 0.2 {
-                                        self.music_preview = None;
+                                    // Keep the bar ticking; drop the player when
+                                    // the track has played to its end — but never
+                                    // mid-drag, or releasing at the far right
+                                    // would kill the player under the pointer.
+                                    if dur > 0.0 && pos >= dur - 0.2 && !resp.dragged() {
+                                        done = true;
                                     } else {
-                                        ui.ctx().request_repaint_after(std::time::Duration::from_millis(250));
+                                        ui.ctx().request_repaint_after(std::time::Duration::from_millis(100));
                                     }
-                                }
-                            });
+                                });
+                            }
+                            if done {
+                                self.music_preview = None;
+                            }
                         });
                     });
                     ui.end_row();

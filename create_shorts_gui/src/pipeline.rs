@@ -201,6 +201,10 @@ pub struct Job {
     pub bg_music: bool,
     pub bg_music_path: String,
     pub bg_music_volume: u32,
+    /// Mix the music in back-to-front (the track plays from its end to its
+    /// start). The GUI audition plays the same reversed copy, so what you
+    /// hear on ▶ Play is what lands in the clip.
+    pub bg_music_reverse: bool,
     /// Stop YouTube from putting its own auto-generated subtitles on the
     /// upload, by declaring the audio language and publishing a blank caption
     /// track in it (see [`block_auto_subtitles`]).
@@ -1024,10 +1028,25 @@ pub fn run(mut job: Job, settings: Settings, tx: Sender<Event>, cancel: Arc<Atom
             .and_then(|s| s.to_str())
             .unwrap_or("clip")
             .to_string();
-        let music_path = pre_music.with_file_name(format!("{}_music{}_v{}.mp4", stem, music_file_tag(&music), vol));
+        // The tag hashes the ORIGINAL file (stable identity); reversed mixes
+        // get an `r` marker so toggling the direction re-mixes.
+        let rev_tag = if job.bg_music_reverse { "r" } else { "" };
+        let music_path = pre_music.with_file_name(format!("{}_music{}{}_v{}.mp4", stem, music_file_tag(&music), rev_tag, vol));
         if music_path.exists() {
             let _ = tx.send(Event::Log(format!("Reusing cached music mix {}", music_path.display())));
         } else {
+            let music = if job.bg_music_reverse {
+                let _ = tx.send(Event::Log("Reversing the music (back-to-front)…".to_string()));
+                match build_reversed_music(&music, &cancel) {
+                    Ok(p) => p,
+                    Err(e) => {
+                        report_fail(&tx, &cancel, format!("background music: {}", e));
+                        return;
+                    }
+                }
+            } else {
+                music
+            };
             let total = probe_duration(&pre_music).unwrap_or_else(|| {
                 core_secs
                     + if job.fade_in { fade_in_secs as f64 } else { 0.0 }
@@ -2083,6 +2102,48 @@ fn music_file_tag(path: &std::path::Path) -> String {
         }
     }
     format!("{:08x}", h.finish() as u32)
+}
+
+/// Back-to-front copy of a music file, for the "backwards" option. `areverse`
+/// needs the whole track before it emits a sample, so it can't sit inside the
+/// looped [`apply_bg_music`] graph (`-stream_loop -1` never EOFs — the filter
+/// would buffer forever); the track is reversed into its own cached file
+/// first. Keyed by the source's path/size/mtime (same [`music_file_tag`] as
+/// the mix cache) in the segments dir; the GUI audition builds/reuses the
+/// exact same file. `-vn` drops the cover-art stream mp3s often carry.
+pub(crate) fn build_reversed_music(src: &std::path::Path, cancel: &Arc<AtomicBool>) -> Result<PathBuf, String> {
+    let dir = segment_cache_dir();
+    std::fs::create_dir_all(&dir).map_err(|e| format!("create cache dir: {}", e))?;
+    let tag = music_file_tag(src);
+    let out = dir.join(format!("music_rev_{}.m4a", tag));
+    if out.is_file() {
+        return Ok(out);
+    }
+    let partial = dir.join(format!("music_rev_{}.partial.m4a", tag));
+    let mut cmd = Command::new("ffmpeg");
+    cmd.args([
+        "-y",
+        "-i",
+        src.to_str().ok_or("non-utf8 music path")?,
+        "-vn",
+        "-af",
+        "areverse",
+        "-c:a",
+        "aac",
+        "-b:a",
+        "192k",
+        partial.to_str().ok_or("non-utf8 cache path")?,
+    ]);
+    cmd.stdout(Stdio::null()).stderr(Stdio::null());
+    detach_group(&mut cmd);
+    let mut child = cmd.spawn().map_err(|e| format!("ffmpeg spawn ({}): install ffmpeg", e))?;
+    let status = wait_or_cancel(&mut child, cancel)?;
+    if !status.success() {
+        let _ = std::fs::remove_file(&partial);
+        return Err(format!("ffmpeg areverse exited with {:?}", status.code()));
+    }
+    std::fs::rename(&partial, &out).map_err(|e| format!("finalize reversed music: {}", e))?;
+    Ok(out)
 }
 
 /// Mix `music` under `input`'s existing sound at `volume_pct` percent. The
