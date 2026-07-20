@@ -81,6 +81,52 @@ pub fn is_signed_in() -> bool {
     matches!(load_token(), Some(t) if !t.access_token.is_empty() && !t.person_id.is_empty())
 }
 
+/// One successful LinkedIn post, keyed by the short's YouTube URL. Stored
+/// append-only, one JSON object per line, in `linkedin_posts.jsonl` (same
+/// pattern as `uploads.jsonl`) — this is what makes the "✅ Posted to
+/// LinkedIn" state survive an app restart, the GUI's counterpart to the
+/// CLI's `~/li_push_log.jsonl` dedup log.
+#[derive(Clone, Serialize, Deserialize)]
+pub struct PostRecord {
+    pub timestamp: String,
+    pub youtube_url: String,
+    #[serde(default)]
+    pub title: String,
+    #[serde(default)]
+    pub post_url: String,
+}
+
+pub fn posts_log_path() -> PathBuf {
+    settings::config_dir().join("linkedin_posts.jsonl")
+}
+
+pub fn record_posted(rec: &PostRecord) -> std::io::Result<()> {
+    let path = posts_log_path();
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).ok();
+    }
+    let line = serde_json::to_string(rec).unwrap_or_default();
+    let mut f = std::fs::OpenOptions::new().create(true).append(true).open(&path)?;
+    writeln!(f, "{}", line)
+}
+
+/// YouTube URL → LinkedIn post URL for every recorded post. Unparseable
+/// lines are skipped (append-only file, a torn tail line must not take the
+/// rest with it); a URL posted twice keeps the newest post URL.
+pub fn load_posted() -> std::collections::HashMap<String, String> {
+    use std::io::BufRead;
+    let Ok(file) = std::fs::File::open(posts_log_path()) else {
+        return Default::default();
+    };
+    std::io::BufReader::new(file)
+        .lines()
+        .map_while(Result::ok)
+        .filter(|l| !l.trim().is_empty())
+        .filter_map(|l| serde_json::from_str::<PostRecord>(&l).ok())
+        .map(|r| (r.youtube_url, r.post_url))
+        .collect()
+}
+
 pub fn redirect_uri() -> String {
     format!("http://localhost:{}/callback", REDIRECT_PORT)
 }
@@ -735,6 +781,26 @@ mod tests {
 
     fn req(target: &str) -> String {
         format!("GET {} HTTP/1.1\r\nHost: localhost:8092\r\n\r\n", target)
+    }
+
+    #[test]
+    fn post_record_round_trips_and_tolerates_sparse_lines() {
+        // A minimal line (only the required fields) must keep parsing —
+        // the log is append-only and read back on every startup.
+        let sparse = r#"{"timestamp":"t","youtube_url":"https://youtu.be/x"}"#;
+        let r: PostRecord = serde_json::from_str(sparse).expect("sparse line parses");
+        assert!(r.title.is_empty() && r.post_url.is_empty());
+
+        let rec = PostRecord {
+            timestamp: "2026-07-20 10:00:00".into(),
+            youtube_url: "https://www.youtube.com/watch?v=abc".into(),
+            title: "Titel".into(),
+            post_url: "https://www.linkedin.com/feed/update/urn:li:share:1".into(),
+        };
+        let line = serde_json::to_string(&rec).unwrap();
+        let back: PostRecord = serde_json::from_str(&line).unwrap();
+        assert_eq!(back.youtube_url, rec.youtube_url);
+        assert_eq!(back.post_url, rec.post_url);
     }
 
     #[test]

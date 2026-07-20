@@ -692,14 +692,17 @@ struct App {
     /// has something to say before the upload starts).
     li_log_rx: Option<Receiver<String>>,
     li_status_msg: Option<String>,
-    /// Set once `li_post_url` has been posted, so its button turns into a
-    /// confirmation instead of allowing an accidental duplicate post.
-    li_posted: bool,
-    /// The YouTube URL of the in-flight (or last successful) LinkedIn post.
-    /// Both the success banner and every History row share the one posting
-    /// slot, so each button needs this to know whether "Posting…"/"Posted"
-    /// is about *its* video.
+    /// YouTube URL → LinkedIn post URL for every short ever posted, loaded
+    /// from `linkedin_posts.jsonl` at startup and appended to on success —
+    /// so "✅ Posted to LinkedIn" survives an app restart and an accidental
+    /// duplicate post stays blocked across sessions.
+    li_posted_map: std::collections::HashMap<String, String>,
+    /// The YouTube URL of the in-flight LinkedIn post. Both the success
+    /// banner and every History row share the one posting slot, so each
+    /// button needs this to know whether "Posting…" is about *its* video.
     li_post_url: Option<String>,
+    /// Title of the in-flight post — recorded into the posts log on success.
+    li_post_title: Option<String>,
     /// Cancel flag for the in-flight LinkedIn post (a fresh one per post, so
     /// an earlier Cancel can't abort the next).
     li_cancel: Arc<AtomicBool>,
@@ -1419,8 +1422,9 @@ impl App {
             li_rx: None,
             li_log_rx: None,
             li_status_msg: None,
-            li_posted: false,
+            li_posted_map: linkedin::load_posted(),
             li_post_url: None,
+            li_post_title: None,
             li_cancel: Arc::new(AtomicBool::new(false)),
             li_progress: Arc::new(Mutex::new(ProgressInfo::default())),
             li_signed_in: linkedin::is_signed_in(),
@@ -1716,6 +1720,12 @@ impl App {
         local: Option<std::path::PathBuf>,
     ) {
         if self.li_posting { return; }
+        // Belt-and-suspenders: the buttons already disable for posted URLs,
+        // but the persisted log is the authority on "already on LinkedIn".
+        if let Some(purl) = self.li_posted_map.get(&url) {
+            self.li_status_msg = Some(format!("Already on LinkedIn: {}", purl));
+            return;
+        }
         if self.settings.linkedin_client_id.trim().is_empty()
             || self.settings.linkedin_client_secret.trim().is_empty()
         {
@@ -1739,8 +1749,8 @@ impl App {
             }
             c
         };
-        self.li_posted = false;
         self.li_post_url = Some(url.clone());
+        self.li_post_title = Some(title.clone());
         let settings = self.settings.clone();
         let cancel = Arc::new(AtomicBool::new(false));
         self.li_cancel = cancel.clone();
@@ -1817,6 +1827,9 @@ impl App {
             return;
         }
         self.last_error = None;
+        // Persist the freshly typed credentials before the browser flow —
+        // they must survive a restart even if Save is never clicked.
+        let _ = self.settings.save();
         let (tx, rx) = unbounded::<SignInEvent>();
         self.li_signin_rx = Some(rx);
         self.li_signing_in = true;
@@ -2619,7 +2632,6 @@ impl App {
                         self.last_done_file_temp = temp;
                         self.davaz_posted = false;
                         self.davaz_status_msg = None;
-                        self.li_posted = false;
                         self.li_status_msg = None;
                         let entry = history::UploadEntry {
                             timestamp: chrono_like_now(),
@@ -3010,7 +3022,23 @@ impl App {
                 }
                 match result {
                     Ok(post_url) => {
-                        self.li_posted = true;
+                        // Persist before updating the UI state — the ✅ must
+                        // survive a restart, not just this session.
+                        if let Some(yt_url) = self.li_post_url.clone() {
+                            let rec = linkedin::PostRecord {
+                                timestamp: chrono_like_now(),
+                                youtube_url: yt_url.clone(),
+                                title: self.li_post_title.clone().unwrap_or_default(),
+                                post_url: post_url.clone(),
+                            };
+                            if let Err(e) = linkedin::record_posted(&rec) {
+                                self.append_log(format!(
+                                    "⚠ Could not save the LinkedIn post log: {}",
+                                    e
+                                ));
+                            }
+                            self.li_posted_map.insert(yt_url, post_url.clone());
+                        }
                         self.li_status_msg = Some(format!("✅ Posted to LinkedIn — {}", post_url));
                         self.append_log(format!("LinkedIn post: {}", post_url));
                     }
@@ -3237,6 +3265,8 @@ impl App {
             return;
         }
         self.last_error = None;
+        // Same restart-safety as the LinkedIn sign-in: persist before the flow.
+        let _ = self.settings.save();
         let (tx, rx) = unbounded::<SignInEvent>();
         self.signin_rx = Some(rx);
         self.signing_in = true;
@@ -3256,6 +3286,9 @@ impl App {
 impl eframe::App for App {
     fn save(&mut self, storage: &mut dyn eframe::Storage) {
         eframe::set_value(storage, "form_state", &self.form);
+        // Settings edits happen live in the dialog; persist them here too so
+        // quitting with the dialog still open can't lose them.
+        let _ = self.settings.save();
     }
 
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
@@ -4199,8 +4232,8 @@ impl eframe::App for App {
                                     self.davaz_status_msg = None;
                                     self.davaz_posted = false;
                                     self.li_status_msg = None;
-                                    self.li_posted = false;
                                     self.li_post_url = None;
+                                    self.li_post_title = None;
                                     self.drop_done_file();
                                 }
                                 if ui.button("Copy URL").clicked() {
@@ -4238,8 +4271,8 @@ impl eframe::App for App {
                                 // in-flight post is about *this* banner's video.
                                 let li_posting_this = self.li_posting
                                     && self.li_post_url.as_deref() == Some(url.as_str());
-                                let li_posted_this = self.li_posted
-                                    && self.li_post_url.as_deref() == Some(url.as_str());
+                                // Persisted across restarts via linkedin_posts.jsonl.
+                                let li_posted_this = self.li_posted_map.contains_key(url.as_str());
                                 let li_label = if li_posting_this {
                                     "Posting…"
                                 } else if li_posted_this {
@@ -4247,7 +4280,9 @@ impl eframe::App for App {
                                 } else {
                                     "Post to LinkedIn"
                                 };
-                                let li_tooltip = if !li_configured {
+                                let li_tooltip = if let Some(purl) = self.li_posted_map.get(url.as_str()) {
+                                    format!("Already on LinkedIn: {}", purl)
+                                } else if !li_configured {
                                     "Set the LinkedIn Client ID + Secret in Settings first".to_string()
                                 } else if !self.li_signed_in {
                                     "Click 'Sign in to LinkedIn' in Settings first".to_string()
@@ -4259,7 +4294,8 @@ impl eframe::App for App {
                                 let li_btn = ui.add_enabled(
                                     li_configured && self.li_signed_in && !self.li_posting && !li_posted_this,
                                     egui::Button::new(li_label),
-                                ).on_hover_text(li_tooltip);
+                                ).on_hover_text(li_tooltip.clone())
+                                .on_disabled_hover_text(li_tooltip);
                                 if li_btn.clicked() { self.start_li_post(url.clone()); }
                                 if self.li_posting {
                                     let cancelling = self.li_cancel.load(Ordering::SeqCst);
@@ -4708,8 +4744,8 @@ impl App {
                                 && !self.settings.linkedin_client_secret.trim().is_empty();
                             let posting_this = self.li_posting
                                 && self.li_post_url.as_deref() == Some(entry.url.as_str());
-                            let posted_this = self.li_posted
-                                && self.li_post_url.as_deref() == Some(entry.url.as_str());
+                            // Persisted across restarts via linkedin_posts.jsonl.
+                            let posted_this = self.li_posted_map.contains_key(entry.url.as_str());
                             let li_label = if posting_this {
                                 "Posting…"
                             } else if posted_this {
@@ -4717,12 +4753,14 @@ impl App {
                             } else {
                                 "Post to LinkedIn"
                             };
-                            let li_tip = if !li_configured {
-                                "Set the LinkedIn Client ID + Secret in Settings first"
+                            let li_tip = if let Some(purl) = self.li_posted_map.get(entry.url.as_str()) {
+                                format!("Already on LinkedIn: {}", purl)
+                            } else if !li_configured {
+                                "Set the LinkedIn Client ID + Secret in Settings first".to_string()
                             } else if !self.li_signed_in {
-                                "Click 'Sign in to LinkedIn' in Settings first"
+                                "Click 'Sign in to LinkedIn' in Settings first".to_string()
                             } else {
-                                "Post this video to LinkedIn (downloads it from YouTube first)"
+                                "Post this video to LinkedIn (downloads it from YouTube first)".to_string()
                             };
                             let li_btn = ui
                                 .add_enabled(
@@ -4732,7 +4770,7 @@ impl App {
                                         && !posted_this,
                                     egui::Button::new(li_label).small(),
                                 )
-                                .on_hover_text(li_tip)
+                                .on_hover_text(li_tip.clone())
                                 .on_disabled_hover_text(li_tip);
                             if li_btn.clicked() {
                                 li_post_requested = Some(entry.clone());
@@ -5366,6 +5404,14 @@ impl App {
                 ui.add_space(4.0);
                 ui.label(RichText::new(format!("Token cached at: {}", token_path().display())).weak());
             });
+        // Persist on close (✖): the fields edit self.settings live, and
+        // relying on the Save button alone meant credentials entered right
+        // before "Sign in to LinkedIn" were gone after an app restart.
+        if self.show_settings && !open {
+            if let Err(e) = self.settings.save() {
+                self.last_error = Some(format!("save settings: {}", e));
+            }
+        }
         self.show_settings = open;
     }
 }
