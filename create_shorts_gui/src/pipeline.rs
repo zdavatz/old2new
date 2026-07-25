@@ -133,6 +133,57 @@ fn cleanup_partial_download(cached: &std::path::Path) {
     }
 }
 
+/// Gate for reusing a cached stage output: it must still *read* as media —
+/// a probeable duration and (for video caches) a decodable video stream. A
+/// half-written file left behind by an interrupted run (app force-quit,
+/// crash, power loss mid-encode) can open with zero streams, and blindly
+/// reusing it wedged every later attempt with a cryptic ffmpeg failure
+/// ("Stream specifier ':v' … matches no streams", exit 234) — the SELF
+/// CONTROL incident. A broken file is deleted here so the stage rebuilds it.
+/// Logs the "Reusing cached …" line itself so call sites stay one-liners.
+fn reuse_cached(path: &std::path::Path, what: &str, want_video: bool, tx: &Sender<Event>) -> bool {
+    if !path.exists() {
+        return false;
+    }
+    let ok = probe_duration(path).is_some() && (!want_video || probe_video_size(path).is_ok());
+    if ok {
+        let _ = tx.send(Event::Log(format!("Reusing cached {} {}", what, path.display())));
+        return true;
+    }
+    let _ = tx.send(Event::Log(format!(
+        "Cached {} {} is broken (leftover of an interrupted run?) — deleting and rebuilding…",
+        what,
+        path.display()
+    )));
+    let _ = std::fs::remove_file(path);
+    false
+}
+
+/// Build a derived cache file crash-safely: the encoder writes to a
+/// `.partial.<ext>` sibling and the final name appears only via an atomic
+/// same-dir rename on success. Keeps `exists()` on a cache name meaning
+/// "fully built" — an interruption mid-encode leaves only the partial
+/// (swept before the next build), never a truncated file under the reusable
+/// name. Same contract the raw segment download has had since 1.0.39.
+fn build_atomic(
+    path: &std::path::Path,
+    build: impl FnOnce(&std::path::Path) -> Result<(), String>,
+) -> Result<(), String> {
+    let partial = partial_sibling(path);
+    let _ = std::fs::remove_file(&partial);
+    if let Err(e) = build(&partial) {
+        let _ = std::fs::remove_file(&partial);
+        return Err(e);
+    }
+    std::fs::rename(&partial, path).map_err(|e| format!("finalize {}: {}", path.display(), e))
+}
+
+/// `…/clip_cut0_10.mp4` → `…/clip_cut0_10.partial.mp4`.
+fn partial_sibling(path: &std::path::Path) -> PathBuf {
+    let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("mp4");
+    path.with_extension(format!("partial.{}", ext))
+}
+
 /// Emit a terminal failure to the UI: a clean `Cancelled` event when the user
 /// asked to stop, otherwise the real error. Keying on the flag (not the error
 /// text) means every pipeline stage reports cancellation uniformly even though
@@ -520,12 +571,7 @@ pub fn run(mut job: Job, settings: Settings, tx: Sender<Event>, cancel: Arc<Atom
     }
     let cached = cache_dir.join(format!("{}_{}.mp4", video_id, stamp));
 
-    let out = if cached.exists() {
-        let _ = tx.send(Event::Log(format!(
-            "Reusing cached segment {} ({:.1} MB)",
-            cached.display(),
-            cached.metadata().map(|m| m.len()).unwrap_or(0) as f64 / 1_048_576.0,
-        )));
+    let out = if reuse_cached(&cached, "segment", true, &tx) {
         cached.clone()
     } else if is_local {
         let _ = tx.send(Event::Log(format!(
@@ -690,16 +736,13 @@ pub fn run(mut job: Job, settings: Settings, tx: Sender<Event>, cancel: Arc<Atom
         mute_covers_end = ranges.iter().any(|&(_, t)| t >= dur - 0.05);
         let tag = mutes_tag(&job.mutes);
         let mute_path = cache_dir.join(format!("{}_{}_mute{}.mp4", video_id, stamp, tag));
-        if mute_path.exists() {
-            let _ = tx.send(Event::Log(format!("Reusing cached muted segment {}", mute_path.display())));
-        } else {
+        if !reuse_cached(&mute_path, "muted segment", true, &tx) {
             let muted: f64 = ranges.iter().map(|(a, b)| b - a).sum();
             let _ = tx.send(Event::Log(format!(
                 "Muting the sound of {} section{} ({:.1}s of {:.1}s silenced)…",
                 ranges.len(), if ranges.len() == 1 { "" } else { "s" }, muted, dur
             )));
-            if let Err(e) = apply_mute(&out, &mute_path, &ranges, dur, &tx, &cancel) {
-                let _ = std::fs::remove_file(&mute_path);
+            if let Err(e) = build_atomic(&mute_path, |tmp| apply_mute(&out, tmp, &ranges, dur, &tx, &cancel)) {
                 report_fail(&tx, &cancel, format!("mute: {}", e));
                 return;
             }
@@ -769,15 +812,12 @@ pub fn run(mut job: Job, settings: Settings, tx: Sender<Event>, cancel: Arc<Atom
             return;
         }
         let cut_path = cache_dir.join(format!("{}_{}{}_cut{}.mp4", video_id, stamp, mute_tag, cuts_tag(&job.cuts)));
-        if cut_path.exists() {
-            let _ = tx.send(Event::Log(format!("Reusing cached cut segment {}", cut_path.display())));
-        } else {
+        if !reuse_cached(&cut_path, "cut segment", true, &tx) {
             let _ = tx.send(Event::Log(format!(
                 "Cutting out {} section{} ({:.1}s removed) — joining the {:.1}s that remain…",
                 ranges.len(), if ranges.len() == 1 { "" } else { "s" }, removed, new_secs
             )));
-            if let Err(e) = apply_cut_middle(&seg, &cut_path, &ranges, dur, &tx, new_secs, &cancel) {
-                let _ = std::fs::remove_file(&cut_path);
+            if let Err(e) = build_atomic(&cut_path, |tmp| apply_cut_middle(&seg, tmp, &ranges, dur, &tx, new_secs, &cancel)) {
                 report_fail(&tx, &cancel, format!("cut-out: {}", e));
                 return;
             }
@@ -804,15 +844,9 @@ pub fn run(mut job: Job, settings: Settings, tx: Sender<Event>, cancel: Arc<Atom
     let stretch_secs = job.stretch_secs.max(1);
     let base = if job.stretch {
         let stretch_path = cache_dir.join(format!("{}_{}{}_stretch{}.mp4", video_id, stamp, cut_tag, stretch_secs));
-        if stretch_path.exists() {
-            let _ = tx.send(Event::Log(format!(
-                "Reusing cached stretched segment {}",
-                stretch_path.display()
-            )));
-        } else {
+        if !reuse_cached(&stretch_path, "stretched segment", true, &tx) {
             let _ = tx.send(Event::Log(format!("Stretching clip by {}s…", stretch_secs)));
-            if let Err(e) = apply_stretch(&clip, &stretch_path, &tx, segment_secs, stretch_secs, &cancel) {
-                let _ = std::fs::remove_file(&stretch_path);
+            if let Err(e) = build_atomic(&stretch_path, |tmp| apply_stretch(&clip, tmp, &tx, segment_secs, stretch_secs, &cancel)) {
                 report_fail(&tx, &cancel, format!("stretch: {}", e));
                 return;
             }
@@ -851,15 +885,11 @@ pub fn run(mut job: Job, settings: Settings, tx: Sender<Event>, cancel: Arc<Atom
             (job.overlay_pos[0].clamp(0.0, 1.0) * 99.0).round() as u32,
             (job.overlay_pos[1].clamp(0.0, 1.0) * 99.0).round() as u32,
         ));
-        if overlay_path.exists() {
-            let _ = tx.send(Event::Log(format!(
-                "Reusing cached titled segment {}",
-                overlay_path.display()
-            )));
-        } else {
+        if !reuse_cached(&overlay_path, "titled segment", true, &tx) {
             let _ = tx.send(Event::Log("Burning title overlay…".into()));
-            if let Err(e) = apply_title_overlay(&base, &job.title, job.overlay_color, job.overlay_pos, &overlay_path, &tx, core_secs, &cancel) {
-                let _ = std::fs::remove_file(&overlay_path);
+            if let Err(e) = build_atomic(&overlay_path, |tmp| {
+                apply_title_overlay(&base, &job.title, job.overlay_color, job.overlay_pos, tmp, &tx, core_secs, &cancel)
+            }) {
                 report_fail(&tx, &cancel, format!("title overlay: {}", e));
                 return;
             }
@@ -877,18 +907,12 @@ pub fn run(mut job: Job, settings: Settings, tx: Sender<Event>, cancel: Arc<Atom
     let fade_in_secs = job.fade_in_secs.max(1);
     let after_fade_in = if job.fade_in {
         let fin_path = fade_in_output_path(&final_out, fade_in_secs);
-        if fin_path.exists() {
-            let _ = tx.send(Event::Log(format!(
-                "Reusing cached fade-in segment {}",
-                fin_path.display()
-            )));
-        } else {
+        if !reuse_cached(&fin_path, "fade-in segment", true, &tx) {
             let _ = tx.send(Event::Log(format!(
                 "Adding {}s freeze-frame fade-in…",
                 fade_in_secs
             )));
-            if let Err(e) = apply_fade_in(&final_out, &fin_path, &tx, core_secs, fade_in_secs, &cancel) {
-                let _ = std::fs::remove_file(&fin_path);
+            if let Err(e) = build_atomic(&fin_path, |tmp| apply_fade_in(&final_out, tmp, &tx, core_secs, fade_in_secs, &cancel)) {
                 report_fail(&tx, &cancel, format!("fade-in: {}", e));
                 return;
             }
@@ -920,12 +944,7 @@ pub fn run(mut job: Job, settings: Settings, tx: Sender<Event>, cancel: Arc<Atom
         // is empty and the filename is unchanged, so old caches still match.
         let variant = fade_variant_tag(job.fade_out_hold_bright, &job.end_text, job.end_text_color, job.end_text_pos);
         let fade_path = fade_output_path(&after_fade_in, fade_secs, &variant);
-        if fade_path.exists() {
-            let _ = tx.send(Event::Log(format!(
-                "Reusing cached fade-out segment {}",
-                fade_path.display()
-            )));
-        } else {
+        if !reuse_cached(&fade_path, "fade-out segment", true, &tx) {
             // Fetch the few seconds of source audio that follow the cut so the
             // held last frame fades out over *real* continuing sound instead of
             // silence. Cached per (video_id, end, fade_secs); best-effort — if
@@ -945,11 +964,7 @@ pub fn run(mut job: Job, settings: Settings, tx: Sender<Event>, cancel: Arc<Atom
                     job.end.replace(':', "_"),
                     fade_secs
                 ));
-                if tail_path.exists() {
-                    let _ = tx.send(Event::Log(format!(
-                        "Reusing cached fade-out audio tail {}",
-                        tail_path.display()
-                    )));
+                if reuse_cached(&tail_path, "fade-out audio tail", false, &tx) {
                     Some(tail_path)
                 } else {
                     let _ = tx.send(Event::Log(format!(
@@ -991,18 +1006,19 @@ pub fn run(mut job: Job, settings: Settings, tx: Sender<Event>, cancel: Arc<Atom
                 "Adding {}s freeze-frame fade-out…",
                 fade_secs
             )));
-            if let Err(e) = apply_fade_out(
-                &after_fade_in,
-                &fade_path,
-                &tx,
-                core_secs,
-                fade_secs,
-                tail_audio.as_deref(),
-                &cancel,
-                job.fade_out_hold_bright,
-                end_card,
-            ) {
-                let _ = std::fs::remove_file(&fade_path);
+            if let Err(e) = build_atomic(&fade_path, |tmp| {
+                apply_fade_out(
+                    &after_fade_in,
+                    tmp,
+                    &tx,
+                    core_secs,
+                    fade_secs,
+                    tail_audio.as_deref(),
+                    &cancel,
+                    job.fade_out_hold_bright,
+                    end_card,
+                )
+            }) {
                 report_fail(&tx, &cancel, format!("fade-out: {}", e));
                 return;
             }
@@ -1032,9 +1048,7 @@ pub fn run(mut job: Job, settings: Settings, tx: Sender<Event>, cancel: Arc<Atom
         // get an `r` marker so toggling the direction re-mixes.
         let rev_tag = if job.bg_music_reverse { "r" } else { "" };
         let music_path = pre_music.with_file_name(format!("{}_music{}{}_v{}.mp4", stem, music_file_tag(&music), rev_tag, vol));
-        if music_path.exists() {
-            let _ = tx.send(Event::Log(format!("Reusing cached music mix {}", music_path.display())));
-        } else {
+        if !reuse_cached(&music_path, "music mix", true, &tx) {
             let music = if job.bg_music_reverse {
                 let _ = tx.send(Event::Log("Reversing the music (back-to-front)…".to_string()));
                 match build_reversed_music(&music, &cancel) {
@@ -1057,8 +1071,7 @@ pub fn run(mut job: Job, settings: Settings, tx: Sender<Event>, cancel: Arc<Atom
                 music.file_name().and_then(|s| s.to_str()).unwrap_or("(file)"),
                 vol
             )));
-            if let Err(e) = apply_bg_music(&pre_music, &music, &music_path, total, vol, &tx, &cancel) {
-                let _ = std::fs::remove_file(&music_path);
+            if let Err(e) = build_atomic(&music_path, |tmp| apply_bg_music(&pre_music, &music, tmp, total, vol, &tx, &cancel)) {
                 report_fail(&tx, &cancel, format!("background music: {}", e));
                 return;
             }
@@ -1650,10 +1663,15 @@ fn repair_segment_audio(
     match status {
         Ok(s) if s.success() && fixed.exists() => {
             if std::fs::rename(&fixed, segment).is_err() {
-                // Cross-device or other rename failure — copy then drop temp.
-                if std::fs::copy(&fixed, segment).is_ok() {
+                // Cross-device or other rename failure — copy to a partial
+                // sibling first, then rename into place, so a kill mid-copy
+                // can't leave a truncated file under the canonical cache name.
+                let staging = partial_sibling(segment);
+                let _ = std::fs::remove_file(&staging);
+                if std::fs::copy(&fixed, &staging).is_ok() && std::fs::rename(&staging, segment).is_ok() {
                     let _ = std::fs::remove_file(&fixed);
                 } else {
+                    let _ = std::fs::remove_file(&staging);
                     let _ = std::fs::remove_file(&fixed);
                     let _ = tx.send(Event::Log("Audio remux produced a file but could not replace the segment; keeping original.".into()));
                     return;
@@ -3033,6 +3051,76 @@ mod tests {
         assert_eq!(parse_timestamp("abc"), None);
         assert_eq!(parse_timestamp("13:xx"), None);
         assert_eq!(parse_timestamp("1:2:3:4"), None);
+    }
+
+    #[test]
+    fn partial_sibling_keeps_extension() {
+        assert_eq!(
+            partial_sibling(std::path::Path::new("/x/id_0_14_10_16_cut0_23-0_57.mp4")),
+            PathBuf::from("/x/id_0_14_10_16_cut0_23-0_57.partial.mp4")
+        );
+        assert_eq!(
+            partial_sibling(std::path::Path::new("/x/id_tail_10_16_2.m4a")),
+            PathBuf::from("/x/id_tail_10_16_2.partial.m4a")
+        );
+    }
+
+    /// The SELF CONTROL incident: an interrupted run left an mp4 whose moov
+    /// has no tracks at a cache name; ffmpeg opens it with zero streams
+    /// ("Duration: N/A") and every retry died in the cut stage with
+    /// "Stream specifier ':v' … matches no streams" (exit 234) because the
+    /// poisoned file was reused forever. `reuse_cached` must reject and
+    /// delete it, and must accept a healthy clip (and an audio-only file
+    /// when no video is required).
+    #[test]
+    #[ignore] // shells out to ffprobe/ffmpeg — run with `cargo test -- --ignored`
+    fn broken_cache_is_rejected_and_deleted_healthy_cache_reused() {
+        let dir = std::env::temp_dir().join("create_shorts_broken_cache_test");
+        std::fs::create_dir_all(&dir).unwrap();
+        let (tx, _rx) = crossbeam_channel::unbounded();
+
+        // ftyp + moov{mvhd only, zero trak boxes} — a header shell.
+        let broken = dir.join("broken.mp4");
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(&24u32.to_be_bytes());
+        bytes.extend_from_slice(b"ftypisom");
+        bytes.extend_from_slice(&512u32.to_be_bytes());
+        bytes.extend_from_slice(b"isomiso2");
+        bytes.extend_from_slice(&116u32.to_be_bytes());
+        bytes.extend_from_slice(b"moov");
+        bytes.extend_from_slice(&108u32.to_be_bytes());
+        bytes.extend_from_slice(b"mvhd");
+        bytes.extend_from_slice(&[0u8; 100]);
+        std::fs::write(&broken, &bytes).unwrap();
+        assert!(!reuse_cached(&broken, "segment", true, &tx), "zero-track mp4 must not be reused");
+        assert!(!broken.exists(), "broken cache file must be deleted");
+
+        // A real clip passes with and without the video requirement…
+        let good = dir.join("good.mp4");
+        let st = Command::new("ffmpeg")
+            .args([
+                "-y", "-f", "lavfi", "-i", "testsrc=duration=1:size=64x64:rate=10",
+                "-f", "lavfi", "-i", "sine=frequency=440:duration=1",
+                "-c:v", "libx264", "-c:a", "aac",
+            ])
+            .arg(&good)
+            .output()
+            .expect("ffmpeg runs");
+        assert!(st.status.success());
+        assert!(reuse_cached(&good, "segment", true, &tx));
+
+        // …an audio-only file only when the caller doesn't need video.
+        let audio = dir.join("tail.m4a");
+        let st = Command::new("ffmpeg")
+            .args(["-y", "-f", "lavfi", "-i", "sine=frequency=440:duration=1", "-c:a", "aac"])
+            .arg(&audio)
+            .output()
+            .expect("ffmpeg runs");
+        assert!(st.status.success());
+        assert!(reuse_cached(&audio, "fade-out audio tail", false, &tx));
+        assert!(!reuse_cached(&audio, "segment", true, &tx), "audio-only must not pass as a video cache");
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// End-to-end check of the local-file source path: generates a 10 s test
