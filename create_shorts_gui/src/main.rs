@@ -410,6 +410,10 @@ struct FormState {
     #[serde(default = "default_end_text_pos")] end_text_pos: [f32; 2],
     #[serde(default)] fade_in: bool,
     #[serde(default = "default_fade_secs")] fade_in_secs: u32,
+    // When holding the first frame, keep it bright instead of fading in from
+    // black — Jürg's "make the very first image stand a few seconds longer".
+    // Defaults off so existing saved forms keep the fade-from-black behaviour.
+    #[serde(default)] fade_in_hold_bright: bool,
     // Remove one or more middle sections from the extracted segment: each
     // `CutRange` (from/till, same timestamp style as start/end, absolute in
     // the source video) is deleted and the remaining parts joined into one
@@ -585,6 +589,7 @@ impl Default for FormState {
             end_text_pos: default_end_text_pos(),
             fade_in: false,
             fade_in_secs: default_fade_secs(),
+            fade_in_hold_bright: false,
             cut_middle: false,
             cuts: default_cuts(),
             mute: false,
@@ -2537,6 +2542,7 @@ impl App {
             end_text_pos: self.form.end_text_pos,
             fade_in: self.form.fade_in,
             fade_in_secs: self.form.fade_in_secs,
+            fade_in_hold_bright: self.form.fade_in_hold_bright,
             cut_middle: self.form.cut_middle,
             cuts: if self.form.cut_middle {
                 self.form
@@ -4025,9 +4031,9 @@ impl eframe::App for App {
                     ui.horizontal(|ui| {
                         ui.checkbox(
                             &mut self.form.fade_in,
-                            "Freeze first frame and fade in from black at the start",
+                            "Freeze first frame at the start",
                         ).on_hover_text(
-                            "Holds the first frame and fades it — picture and sound — in from black/silence, then the movie starts from that frame. The short ends up that many seconds longer. Applies to both Preview and Upload.",
+                            "Holds the first frame for the chosen number of seconds before the movie starts, so the short ends up that many seconds longer. Pick whether the held frame fades in from black or stays bright the whole time. The sound is silent under the held frame and starts with the movie. Applies to both Preview and Upload.",
                         );
                         ui.add_enabled_ui(self.form.fade_in, |ui| {
                             ui.add(
@@ -4035,7 +4041,12 @@ impl eframe::App for App {
                                     .speed(1.0)
                                     .range(1..=60)
                                     .suffix(" s"),
-                            ).on_hover_text("Fade-in duration in seconds (1–60).");
+                            ).on_hover_text("How long to hold the first frame, in seconds (1–60).");
+                            ui.add_space(10.0);
+                            ui.radio_value(&mut self.form.fade_in_hold_bright, false, "from black →")
+                                .on_hover_text("Fade the held first frame in from black — picture and sound ramp up.");
+                            ui.radio_value(&mut self.form.fade_in_hold_bright, true, "hold bright →")
+                                .on_hover_text("Show the held first frame at full brightness from the very start — the first image simply stands for the chosen seconds, then the movie begins.");
                         });
                     });
                     ui.end_row();

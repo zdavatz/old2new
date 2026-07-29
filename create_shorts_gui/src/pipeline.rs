@@ -232,6 +232,10 @@ pub struct Job {
     pub end_text_pos: [f32; 2],
     pub fade_in: bool,
     pub fade_in_secs: u32,
+    /// When holding the first frame, keep it at full brightness instead of
+    /// fading it in from black — the very first image simply stands for
+    /// `fade_in_secs` seconds before the movie starts.
+    pub fade_in_hold_bright: bool,
     /// Remove one or more middle sections from the extracted segment. Each
     /// `(from, till)` is a timestamp pair in the same style as `start`/`end`
     /// (absolute in the source video); those parts are deleted and everything
@@ -900,19 +904,21 @@ pub fn run(mut job: Job, settings: Settings, tx: Sender<Event>, cancel: Arc<Atom
     };
 
     // Optional (when enabled): freeze the FIRST frame for `fade_in_secs`
-    // seconds and fade it — picture and sound — in from black/silence, so the
-    // short opens on a held first frame that fades up and then starts playing.
-    // Applied before the fade-out so the two wrap the movie symmetrically.
-    // Cached next to its input as `<stem>_fadein<secs>.mp4`.
+    // seconds — either fading it in from black (picture and sound), or held at
+    // full brightness so the very first image simply stands longer before the
+    // movie starts. Applied before the fade-out so the two wrap the movie
+    // symmetrically. Cached next to its input as `<stem>_fadein<secs>.mp4`
+    // (`…<secs>b.mp4` for the bright hold, so switching variants re-encodes).
     let fade_in_secs = job.fade_in_secs.max(1);
     let after_fade_in = if job.fade_in {
-        let fin_path = fade_in_output_path(&final_out, fade_in_secs);
+        let fin_path = fade_in_output_path(&final_out, fade_in_secs, job.fade_in_hold_bright);
         if !reuse_cached(&fin_path, "fade-in segment", true, &tx) {
             let _ = tx.send(Event::Log(format!(
-                "Adding {}s freeze-frame fade-in…",
-                fade_in_secs
+                "Adding {}s freeze-frame {}…",
+                fade_in_secs,
+                if job.fade_in_hold_bright { "opening hold (bright)" } else { "fade-in" },
             )));
-            if let Err(e) = build_atomic(&fin_path, |tmp| apply_fade_in(&final_out, tmp, &tx, core_secs, fade_in_secs, &cancel)) {
+            if let Err(e) = build_atomic(&fin_path, |tmp| apply_fade_in(&final_out, tmp, &tx, core_secs, fade_in_secs, job.fade_in_hold_bright, &cancel)) {
                 report_fail(&tx, &cancel, format!("fade-in: {}", e));
                 return;
             }
@@ -2514,14 +2520,16 @@ fn fade_variant_tag(hold_bright: bool, end_text: &str, color: [u8; 3], pos: [f32
 /// Cache path for the faded-in variant of a segment: same directory and
 /// stem as the input, with a `_fadein<secs>` suffix. Distinct from the
 /// fade-out suffix so a clip can be faded in, faded out, or both and each
-/// stage gets its own cache.
-fn fade_in_output_path(input: &std::path::Path, fade_secs: u32) -> PathBuf {
+/// stage gets its own cache. The bright hold appends `b` (like the fade-out
+/// variant tag) so the from-black filenames stay valid for old caches.
+fn fade_in_output_path(input: &std::path::Path, fade_secs: u32, hold_bright: bool) -> PathBuf {
     let parent = input.parent().unwrap_or_else(|| std::path::Path::new("."));
     let stem = input
         .file_stem()
         .and_then(|s| s.to_str())
         .unwrap_or("segment");
-    parent.join(format!("{}_fadein{}.mp4", stem, fade_secs))
+    let tag = if hold_bright { "b" } else { "" };
+    parent.join(format!("{}_fadein{}{}.mp4", stem, fade_secs, tag))
 }
 
 /// Probe the container duration in seconds.
@@ -2802,40 +2810,51 @@ fn apply_fade_out(
     Ok(())
 }
 
-/// Prepend a `fade_secs`-second freeze-frame fade-in to the start of `input`:
+/// Prepend a `fade_secs`-second freeze-frame opening to the start of `input`:
 /// `tpad=start_mode=clone:start_duration=N` clones the first frame for N
-/// seconds, then `fade=t=in:st=0:d=N` ramps that opening from black up to the
-/// picture, after which the movie plays from that same first frame. Audio
-/// (when present) is delayed by N s of silence and faded in over the movie's
-/// first N seconds. The result is N seconds longer than the input.
+/// seconds. With `hold_bright == false` (the original behaviour)
+/// `fade=t=in:st=0:d=N` ramps that opening from black up to the picture, and
+/// the audio — delayed by N s of silence — fades in over the movie's first
+/// N seconds. With `hold_bright == true` the held frame stays at full
+/// brightness (the very first image simply stands longer) and the audio, after
+/// the same N s of silence, starts with the movie over a short half-second
+/// ramp so it doesn't pop in. The result is N seconds longer than the input.
 fn apply_fade_in(
     input: &std::path::Path,
     output: &std::path::Path,
     tx: &Sender<Event>,
     segment_secs: f64,
     fade_secs: u32,
+    hold_bright: bool,
     cancel: &Arc<AtomicBool>,
 ) -> Result<(), String> {
     let fade: f64 = fade_secs.max(1) as f64;
     let dur = probe_duration(input).unwrap_or(segment_secs);
     let has_audio = probe_has_audio(input);
     let _ = tx.send(Event::Log(format!(
-        "Freeze-frame fade-in: holding first frame 0.0s–{:.1}s (audio: {})",
+        "Freeze-frame {}: holding first frame 0.0s–{:.1}s (audio: {})",
+        if hold_bright { "opening hold (bright)" } else { "fade-in" },
         fade,
         if has_audio { "yes" } else { "none" },
     )));
 
-    let vf = format!(
-        "tpad=start_mode=clone:start_duration={fade},fade=t=in:st=0:d={fade}",
+    let mut vf = format!(
+        "tpad=start_mode=clone:start_duration={fade}",
         fade = fade,
     );
+    if !hold_bright {
+        vf.push_str(&format!(",fade=t=in:st=0:d={fade}", fade = fade));
+    }
     // Delay the movie's audio by `fade` s (silence under the held first frame),
-    // then fade it in over the first `fade` s once playback starts.
+    // then fade it in once playback starts — over the full `fade` s for the
+    // from-black variant, or a quick 0.5 s anti-pop ramp for the bright hold.
     let delay_ms = (fade * 1000.0).round() as u64;
+    let afade_dur = if hold_bright { 0.5 } else { fade };
     let af = format!(
-        "adelay={ms}:all=1,afade=t=in:st={fade:.3}:d={fade}",
+        "adelay={ms}:all=1,afade=t=in:st={fade:.3}:d={dur:.3}",
         ms = delay_ms,
         fade = fade,
+        dur = afade_dur,
     );
 
     let _ = tx.send(Event::Progress {
