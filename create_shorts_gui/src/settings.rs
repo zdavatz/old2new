@@ -141,6 +141,42 @@ pub fn mark_dep_update_ran() {
     let _ = fs::write(dep_update_stamp_path(), today);
 }
 
+/// Stamp recording that an update attempt on the given calendar day
+/// confirmed the installed yt-dlp is the newest release available even
+/// though its date-version makes it look stale — yt-dlp simply hasn't
+/// shipped in over [`crate::deps::YT_DLP_STALE_DAYS`] days. Lets the
+/// staleness banner distinguish "old because upstream is quiet" from
+/// "old because the user never updated". Format: `YYYY-MM-DD <version>`.
+pub fn ytdlp_uptodate_stamp_path() -> PathBuf {
+    config_dir().join("ytdlp_uptodate_check")
+}
+
+/// True if an update run today (same local calendar day) already confirmed
+/// `version` is the newest yt-dlp available. Missing/other-day/other-version
+/// stamp ⇒ false (the staleness banner shows). Deliberately expires daily:
+/// once upstream releases again, the next update run replaces the version
+/// and the stamp stops matching anyway.
+pub fn ytdlp_confirmed_latest_today(version: &str) -> bool {
+    let today = chrono::Local::now().date_naive().to_string();
+    fs::read_to_string(ytdlp_uptodate_stamp_path())
+        .map(|s| {
+            let mut it = s.split_whitespace();
+            it.next() == Some(today.as_str()) && it.next() == Some(version)
+        })
+        .unwrap_or(false)
+}
+
+/// Record that an update attempt today confirmed `version` is the newest
+/// yt-dlp available.
+pub fn mark_ytdlp_confirmed_latest(version: &str) {
+    let today = chrono::Local::now().date_naive().to_string();
+    let _ = fs::create_dir_all(config_dir());
+    let _ = fs::write(
+        ytdlp_uptodate_stamp_path(),
+        format!("{} {}", today, version),
+    );
+}
+
 impl Settings {
     pub fn load() -> Self {
         let path = settings_path();

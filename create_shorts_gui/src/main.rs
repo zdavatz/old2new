@@ -637,6 +637,13 @@ struct App {
     brew_rx: Option<Receiver<BrewEvent>>,
     ytdlp_updating: bool,
     ytdlp_update_rx: Option<Receiver<BrewEvent>>,
+    /// Cached [`settings::ytdlp_confirmed_latest_today`] for the installed
+    /// yt-dlp — true when an update run today confirmed the stale-looking
+    /// version IS the newest release (yt-dlp versions are dates, so a quiet
+    /// upstream month trips the age check even when fully up to date). The
+    /// staleness banner reads this every frame, so it must not hit the
+    /// filesystem there; refreshed wherever `deps` is re-probed.
+    ytdlp_latest_confirmed: bool,
     /// Background "keep dependencies current" run (brew update + upgrade of
     /// yt-dlp/ffmpeg/mpv). Throttled to once/day at launch; also triggerable
     /// manually from Settings.
@@ -1380,6 +1387,7 @@ impl App {
             brew_rx: None,
             ytdlp_updating: false,
             ytdlp_update_rx: None,
+            ytdlp_latest_confirmed: false,
             dep_update_running: false,
             dep_update_rx: None,
             pdf_exporting: false,
@@ -1481,10 +1489,11 @@ impl App {
         // re-trigger the heavy `brew update` (load spikes into the hundreds),
         // and skipped entirely if the toggle is off — in which case we still
         // just *log* yt-dlp staleness and leave the one-click banner to nag.
+        s.refresh_ytdlp_confirmed();
         if s.settings.auto_update_deps {
             s.start_dep_update(false);
         } else if let Some(age) = s.deps.yt_dlp_age_days() {
-            if s.deps.yt_dlp_is_stale() {
+            if s.deps.yt_dlp_is_stale() && !s.ytdlp_latest_confirmed {
                 s.append_log(format!(
                     "yt-dlp is {} days old (> {} days) — update recommended (see banner)",
                     age, deps::YT_DLP_STALE_DAYS
@@ -1492,6 +1501,18 @@ impl App {
             }
         }
         s
+    }
+
+    /// Refresh the cached "installed yt-dlp was confirmed newest-available
+    /// today" flag from the stamp file. Call wherever `self.deps` is
+    /// re-probed — the staleness banner reads the cache every frame.
+    fn refresh_ytdlp_confirmed(&mut self) {
+        self.ytdlp_latest_confirmed = self
+            .deps
+            .yt_dlp
+            .as_deref()
+            .map(settings::ytdlp_confirmed_latest_today)
+            .unwrap_or(false);
     }
 
     /// Keep the external CLIs the pipeline shells out to (yt-dlp, ffmpeg,
@@ -3202,7 +3223,8 @@ impl App {
             }
         }
 
-        if let Some(rx) = &self.ytdlp_update_rx {
+        // Cloned so `refresh_ytdlp_confirmed` (&mut self) can run in the drain.
+        if let Some(rx) = self.ytdlp_update_rx.clone() {
             let mut done = false;
             while let Ok(ev) = rx.try_recv() {
                 match ev {
@@ -3211,6 +3233,19 @@ impl App {
                         self.deps = deps::DepStatus::check();
                         let ver = self.deps.yt_dlp.clone().unwrap_or_default();
                         self.append_log(format!("yt-dlp update finished — now {}", ver));
+                        // The update succeeded but the version still trips the
+                        // age check: this stale-looking build IS the newest
+                        // release (yt-dlp versions are dates — a quiet upstream
+                        // month makes even the latest look old). Stamp it so
+                        // the banner stays down for today.
+                        if !ver.is_empty() && self.deps.yt_dlp_is_stale() {
+                            settings::mark_ytdlp_confirmed_latest(&ver);
+                            self.append_log(format!(
+                                "yt-dlp {} is the newest available release — no newer version exists yet.",
+                                ver
+                            ));
+                        }
+                        self.refresh_ytdlp_confirmed();
                         done = true;
                     }
                     BrewEvent::Error(e) => {
@@ -3246,6 +3281,27 @@ impl App {
                                 .map(|v| format!("ffmpeg {}", v))
                                 .unwrap_or_else(|| "ffmpeg missing".into()),
                         ));
+                        // If yt-dlp is still date-stale after a genuine upgrade
+                        // attempt, upstream simply hasn't released — stamp it
+                        // confirmed-latest so the staleness banner stays down.
+                        // Guard: the worker also sends Done from its "no brew"/
+                        // "nothing brew-managed" early-outs where yt-dlp wasn't
+                        // actually touched; only stamp when the update command
+                        // resolves to a real attempt (`brew upgrade yt-dlp`, or
+                        // `yt-dlp -U` off macOS where the worker always runs it).
+                        if let Some(ver) = self.deps.yt_dlp.clone() {
+                            let attempted = !cfg!(target_os = "macos")
+                                || deps::yt_dlp_update_command().1.first().map(String::as_str)
+                                    == Some("upgrade");
+                            if attempted && self.deps.yt_dlp_is_stale() {
+                                settings::mark_ytdlp_confirmed_latest(&ver);
+                                self.append_log(format!(
+                                    "yt-dlp {} is the newest available release — no newer version exists yet.",
+                                    ver
+                                ));
+                            }
+                        }
+                        self.refresh_ytdlp_confirmed();
                         done = true;
                     }
                     // Best-effort background task: log the failure, don't
@@ -3514,6 +3570,7 @@ impl eframe::App for App {
                                 if ui.button("Re-check").clicked() {
                                     self.deps = deps::DepStatus::check();
                                     self.brew = deps::brew_path();
+                                    self.refresh_ytdlp_confirmed();
                                 }
                                 if cfg!(target_os = "macos") {
                                     if brew.is_some() {
@@ -3589,10 +3646,21 @@ impl eframe::App for App {
                 ui.add_space(6.0);
             }
 
-            // yt-dlp staleness banner: shown when yt-dlp is present but
-            // older than the threshold. One-click update; we never auto-run
-            // it (a brew upgrade pegs the machine — see start_ytdlp_update).
-            if self.deps.yt_dlp.is_some() && self.deps.yt_dlp_is_stale() {
+            // yt-dlp staleness banner: shown when yt-dlp is present, older
+            // than the threshold, AND we don't already know it's the newest
+            // release — yt-dlp versions are dates, so a quiet upstream month
+            // makes even the latest build look "stale" (the 2026.07.04 false
+            // alarm). An update run that leaves it stale stamps it
+            // confirmed-latest for today (mark_ytdlp_confirmed_latest).
+            // Also hidden while the launch auto-update is still running, so
+            // it can't flash and then vanish. One-click update; we never
+            // auto-run it (a brew upgrade pegs the machine — see
+            // start_ytdlp_update).
+            if self.deps.yt_dlp.is_some()
+                && self.deps.yt_dlp_is_stale()
+                && !self.ytdlp_latest_confirmed
+                && !self.dep_update_running
+            {
                 let age = self.deps.yt_dlp_age_days().unwrap_or(0);
                 let is_brew = deps::yt_dlp_update_command().1 == vec!["upgrade".to_string(), "yt-dlp".to_string()];
                 egui::Frame::none()
