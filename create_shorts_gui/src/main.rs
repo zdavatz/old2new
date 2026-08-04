@@ -1057,6 +1057,28 @@ fn fmt_time_tenths(t: f64) -> String {
 /// mm:ss readout, and a seek timeline. `overlay` (original pane only) shades
 /// the hand-entered cut ranges red and flashes a "✂ cut out" banner over the
 /// picture whenever the playhead is inside a removed range.
+/// Physical pixel size for the mpv software render of a `w`×`h`-point pane.
+/// While PLAYING we render at logical (1×) resolution: the per-frame 4K →
+/// Retina-pane software downscale is the dominant cost of the sw render path
+/// and makes playback stutter on slower Macs, while the LINEAR-filtered 2×
+/// upscale is invisible in motion. A PAUSED pane renders at full native
+/// resolution again (`poll_frame` re-renders on the size change), so
+/// frame-stepping stays pixel-crisp where it matters.
+fn pane_render_size(ui: &egui::Ui, player: &mpv::Player, w: f32, h: f32) -> (i32, i32) {
+    let ppp = ui.ctx().pixels_per_point();
+    let scale = if player.is_paused() { ppp } else { ppp.min(1.0) };
+    ((w * scale).round() as i32, (h * scale).round() as i32)
+}
+
+/// While a pane is playing, keep repaints coming at a steady ~30 Hz floor so
+/// the playhead/readout move smoothly even if mpv's per-frame wakeups get
+/// coalesced under UI load. Paused panes repaint on demand only.
+fn pace_playback(ui: &egui::Ui, player: &mpv::Player) {
+    if !player.is_paused() {
+        ui.ctx().request_repaint_after(std::time::Duration::from_millis(33));
+    }
+}
+
 fn draw_video_pane(
     ui: &mut egui::Ui,
     player: &mut mpv::Player,
@@ -1080,9 +1102,8 @@ fn draw_video_pane(
         h = max_h;
         w = max_h * aspect;
     }
-    let ppp = ui.ctx().pixels_per_point();
-    let pw = (w * ppp).round() as i32;
-    let ph = (h * ppp).round() as i32;
+    let (pw, ph) = pane_render_size(ui, player, w, h);
+    pace_playback(ui, player);
 
     // Pull a fresh frame (if any) into the texture.
     if let Some((fw, fh, rgba)) = player.poll_frame(pw, ph) {
@@ -1247,9 +1268,8 @@ fn draw_source_pane(
     let w = ui.available_width().max(160.0);
     // Leave room below the frame for the readout + controls + timeline.
     let h = (w / aspect).min((ui.available_height() - 96.0).max(120.0));
-    let ppp = ui.ctx().pixels_per_point();
-    let pw = (w * ppp).round() as i32;
-    let ph = (h * ppp).round() as i32;
+    let (pw, ph) = pane_render_size(ui, player, w, h);
+    pace_playback(ui, player);
 
     if let Some((fw, fh, rgba)) = player.poll_frame(pw, ph) {
         let img = egui::ColorImage::from_rgba_unmultiplied([fw as usize, fh as usize], rgba);

@@ -27,6 +27,7 @@ const MPV_FORMAT_DOUBLE: c_int = 5;
 // --- mpv_render_param_type (values verified against mpv/render.h) --------
 const MPV_RENDER_PARAM_INVALID: c_int = 0;
 const MPV_RENDER_PARAM_API_TYPE: c_int = 1;
+const MPV_RENDER_PARAM_BLOCK_FOR_TARGET_TIME: c_int = 12;
 const MPV_RENDER_PARAM_SW_SIZE: c_int = 17;
 const MPV_RENDER_PARAM_SW_FORMAT: c_int = 18;
 const MPV_RENDER_PARAM_SW_STRIDE: c_int = 19;
@@ -276,6 +277,15 @@ impl Player {
             // fast yet still land in system memory for software rendering;
             // mpv falls back to pure software decode if unavailable.
             set_opt("hwdec", "auto-copy");
+            // The sw render path scales every 4K frame down to the pane on
+            // the CPU; the default lanczos kernel is built for quality, not
+            // a per-frame live preview, and stutters slower Macs. Bilinear
+            // is visually fine at preview sizes and several times cheaper.
+            // zimg is the scaler actually used (sws-allow-zimg defaults to
+            // yes); the sws-* pair covers the swscale fallback.
+            set_opt("zimg-scaler", "bilinear");
+            set_opt("sws-scaler", "bilinear");
+            set_opt("sws-fast", "yes");
             // Exact seeks so scrubbing lands on the requested frame.
             set_opt("hr-seek", "yes");
             // Hold the last frame at EOF instead of unloading (preview should
@@ -481,7 +491,18 @@ impl Player {
         let size: [c_int; 2] = [self.w, self.h];
         let fmt = CString::new("rgb0").unwrap();
         let stride: usize = (self.w * 4) as usize;
+        // CRITICAL: without this, mpv_render_context_render BLOCKS until the
+        // frame's target display time — measured ~37 ms per frame on a 25 fps
+        // clip, i.e. the UI thread spends >90% of playback frozen inside this
+        // call, which is exactly the "preview stutters" complaint. We render
+        // immediately instead; presenting a frame up to one frame-time early
+        // is imperceptible in a preview pane, a blocked UI thread is not.
+        let no_block: c_int = 0;
         let params = [
+            MpvRenderParam {
+                type_: MPV_RENDER_PARAM_BLOCK_FOR_TARGET_TIME,
+                data: &no_block as *const c_int as *mut c_void,
+            },
             MpvRenderParam { type_: MPV_RENDER_PARAM_SW_SIZE, data: size.as_ptr() as *mut c_void },
             MpvRenderParam { type_: MPV_RENDER_PARAM_SW_FORMAT, data: fmt.as_ptr() as *mut c_void },
             MpvRenderParam {
