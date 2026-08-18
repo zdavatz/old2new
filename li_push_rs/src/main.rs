@@ -36,6 +36,12 @@ struct Cli {
     #[arg(long)]
     low_quality: bool,
 
+    /// Pass YouTube cookies from this browser to yt-dlp (e.g. chrome, brave,
+    /// safari, firefox, edge) — needed when YouTube returns HTTP 403 on
+    /// unauthenticated downloads (bot detection).
+    #[arg(long)]
+    cookies_from_browser: Option<String>,
+
     /// Visibility: PUBLIC or CONNECTIONS
     #[arg(long, default_value = "PUBLIC")]
     visibility: String,
@@ -539,9 +545,18 @@ async fn main() {
     let video_path = if is_youtube {
         eprintln!("Downloading from YouTube: {}", video_input);
 
+        if let Some(browser) = &cli.cookies_from_browser {
+            eprintln!("Using {} cookies for yt-dlp", browser);
+        }
+
         // Fetch metadata first (title, description)
-        let meta_output = std::process::Command::new("yt-dlp")
-            .args(["--dump-json", "--no-download", &video_input])
+        let mut meta_cmd = std::process::Command::new("yt-dlp");
+        meta_cmd.args(["--dump-json", "--no-download"]);
+        if let Some(browser) = &cli.cookies_from_browser {
+            meta_cmd.args(["--cookies-from-browser", browser]);
+        }
+        meta_cmd.arg(&video_input);
+        let meta_output = meta_cmd
             .output()
             .expect("yt-dlp not found. Install with: brew install yt-dlp");
 
@@ -588,17 +603,19 @@ async fn main() {
         } else {
             "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best"
         };
-        let dl_status = std::process::Command::new("yt-dlp")
-            .args([
-                "-f", format_arg,
-                "--merge-output-format", "mp4",
-                "-o", tmp_path.to_str().unwrap(),
-                "--force-overwrites",
-                "--no-playlist",
-                &video_input,
-            ])
-            .status()
-            .expect("yt-dlp failed");
+        let mut dl_cmd = std::process::Command::new("yt-dlp");
+        dl_cmd.args([
+            "-f", format_arg,
+            "--merge-output-format", "mp4",
+            "-o", tmp_path.to_str().unwrap(),
+            "--force-overwrites",
+            "--no-playlist",
+        ]);
+        if let Some(browser) = &cli.cookies_from_browser {
+            dl_cmd.args(["--cookies-from-browser", browser]);
+        }
+        dl_cmd.arg(&video_input);
+        let dl_status = dl_cmd.status().expect("yt-dlp failed");
 
         if !dl_status.success() {
             eprintln!("ERROR: yt-dlp download failed");
