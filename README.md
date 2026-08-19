@@ -484,6 +484,30 @@ Rust binary (`tk_push`) using TikTok Content Posting API. OAuth2 PKCE auth (S256
 
 Rust binary (`li_push`) using LinkedIn Videos API + Posts API. OAuth2 auth with OpenID Connect (person ID from JWT id_token). Local callback on port 8092. 4-step upload: initialize → chunked upload (4MB parts with ETags) → finalize → create post. Supports YouTube URL/ID as input — auto-downloads via yt-dlp with title/description. Pre-checks duration (max 30 min) and filesize (max 500MB). `--low-quality` for 1080p fallback. Shows post URL after publish. Upload log in `~/li_push_log.jsonl` prevents duplicate uploads. `--random-short` picks a random unuploaded short from `csv/davaz_enhanced_list.csv` (54 shorts). `--list` shows all previous uploads. Credentials in `linkedin_credentials.json`, token in `linkedin_token.json`. Writes PID to `~/li_push.pid`. Every post also links the **original** (pre-enhancement) video — sourced from the CSV `Original` column for `--random-short`, or parsed from the short's YouTube description (`Original: <url>`) for direct-URL inputs — appended to the LinkedIn commentary.
 
+### YouTube 403 bot-detection & the PO-token provider
+
+YouTube increasingly blocks unauthenticated / automated downloads. Two distinct defenses hit `li_push`, each with its own fix:
+
+1. **Webpage/metadata 403 ("This video is not available")** — pass browser cookies so yt-dlp looks logged-in:
+   ```bash
+   ./li_push_rs/target/release/li_push VIDEO_ID --cookies-from-browser chrome --twitter
+   ```
+   `--cookies-from-browser` accepts `chrome`, `brave`, `safari`, `firefox`, `edge`, … It's threaded into both the `--dump-json` metadata call and the download.
+
+2. **HD stream 403 mid-download** — yt-dlp's default player client (`android_vr`) gets its HD googlevideo URLs rate-limited: the download climbs to ~20 MB then dies with `HTTP Error 403: Forbidden`, and no client/token/chunk trick beats it once the IP is "hot". The other free clients (`web`/`tv`/`ios`) now require a **GVS PO token** (YouTube's SABR experiment) and otherwise serve only 360p. The fix is the [bgutil PO-token provider](https://github.com/Brainicism/bgutil-ytdlp-pot-provider), which lets the **`mweb`** client present a PO token and stream un-throttled HD. `li_push` auto-detects the provider (at its default path) and, when present, adds `--extractor-args "youtube:player_client=mweb"` to the download — so it "just works" where the provider is installed and falls back to yt-dlp defaults where it isn't (cloud instances, etc.).
+
+   **One-time provider setup** (macOS, needs Node.js + deno, both already used elsewhere here):
+   ```bash
+   # 1. yt-dlp plugin (into yt-dlp's plugin dir, survives brew upgrades)
+   pip3 install -U --target ~/.config/yt-dlp/plugins/bgutil-pot bgutil-ytdlp-pot-provider
+
+   # 2. provider backend at the plugin's DEFAULT server_home (no extractor-arg needed)
+   git clone --single-branch --branch 1.3.1 \
+     https://github.com/Brainicism/bgutil-ytdlp-pot-provider.git ~/bgutil-ytdlp-pot-provider
+   cd ~/bgutil-ytdlp-pot-provider/server && npm ci && npx tsc
+   ```
+   Verify with `yt-dlp -v <url> 2>&1 | grep pot` — you want `script-node` / `script-deno` listed as `(external)` (not `unavailable`). Plugin and server versions must match (both `1.3.1` here). No long-running daemon: the plugin invokes the built `generate_once.js` per download (script mode).
+
 ### X / Twitter Upload
 
 The same binary also posts to X / Twitter (native video, with a frame-image + link fallback). Register an app at https://developer.x.com as a **Web App (confidential client)** with **app permissions = Read and write** and redirect URI `http://localhost:8092/callback`. Put the OAuth 2.0 Client ID + Secret in `twitter_credentials.json` (gitignored): `{"client_id": "...", "client_secret": "..."}`.

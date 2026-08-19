@@ -611,6 +611,19 @@ async fn main() {
             "--force-overwrites",
             "--no-playlist",
         ]);
+        // yt-dlp's default player client (android_vr) is aggressively rate-limited
+        // by YouTube — HD streams 403 mid-download once the IP gets "hot". The mweb
+        // client serves un-throttled HD, but only if it can present a GVS PO token,
+        // which requires the bgutil PO-token provider. When that provider is built
+        // at its default path, prefer mweb; otherwise leave yt-dlp's defaults alone
+        // so li_push keeps working on machines without the provider (cloud, Jürg's).
+        let pot_ready = env::var("HOME").ok().map(|h| {
+            PathBuf::from(h).join("bgutil-ytdlp-pot-provider/server/build/generate_once.js").exists()
+        }).unwrap_or(false);
+        if pot_ready {
+            eprintln!("PO-token provider found — using mweb client for un-throttled HD");
+            dl_cmd.args(["--extractor-args", "youtube:player_client=mweb"]);
+        }
         if let Some(browser) = &cli.cookies_from_browser {
             dl_cmd.args(["--cookies-from-browser", browser]);
         }
