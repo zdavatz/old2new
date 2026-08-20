@@ -44,3 +44,8 @@ auth/
 
 # Python bytecode
 __pycache__/
+
+# LinkedIn analytics exports and the joined output (personal performance data,
+# regenerated on demand by li_stats.py — not source)
+AggregateAnalytics_*.xlsx
+linkedin_video_stats.csv
