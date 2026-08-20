@@ -488,7 +488,7 @@ Rust binary (`li_push`) using LinkedIn Videos API + Posts API. OAuth2 auth with 
 
 YouTube increasingly blocks unauthenticated / automated downloads. Three distinct defenses hit `li_push`, each with its own fix:
 
-1. **Webpage/metadata 403 ("This video is not available" / "Sign in to confirm you're not a bot")** — yt-dlp needs to look logged-in, so cookies are required for essentially every download. `li_push` therefore passes them **automatically**: absent `--cookies-from-browser` it detects a Chrome profile (`~/Library/Application Support/Google/Chrome` on macOS, `~/.config/google-chrome` on Linux) and uses `chrome`. Machines with no browser profile — cloud instances — silently run without cookies instead of erroring. Override to use a different browser:
+1. **Don't send cookies** — this is counter-intuitive, so it's first. Signing in makes things *worse*, on two independent counts: YouTube meters the HD byte allowance against the session (so the download 403s partway through), and yt-dlp ≥ 2026.08.19 skips the player clients that still serve HD when cookies are present (leaving only storyboards). Measured 2026-08-20 on the same video: signed-in stalled at ~9.6 MB on every one of a dozen attempts; signed-out pulled the full 13.98 MB VP9 stream first try. `li_push` therefore downloads signed-out by default. The flag is still there for videos that genuinely need auth (private / age-gated), accepting the cap as the price:
    ```bash
    ./li_push_rs/target/release/li_push VIDEO_ID --cookies-from-browser brave --twitter
    ```

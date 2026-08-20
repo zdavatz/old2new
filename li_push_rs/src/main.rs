@@ -359,29 +359,6 @@ fn build_tweet_caption(title: &str, link: Option<&str>) -> String {
     }
 }
 
-/// Which browser to take YouTube cookies from, honouring `--cookies-from-browser`
-/// and otherwise falling back to Chrome when this machine actually has a profile.
-///
-/// YouTube answers unauthenticated requests with "Sign in to confirm you're not a
-/// bot", so cookies are needed for essentially every download and having to pass
-/// the flag by hand only invites forgetting it. Detecting the profile first keeps
-/// that convenience from breaking the headless boxes (cloud instances) where no
-/// browser is installed and `--cookies-from-browser chrome` would be a hard error.
-fn resolve_cookie_browser(explicit: &Option<String>) -> Option<String> {
-    if let Some(browser) = explicit {
-        return Some(browser.clone());
-    }
-    let home = PathBuf::from(env::var("HOME").ok()?);
-    let chrome_profiles = [
-        "Library/Application Support/Google/Chrome", // macOS
-        ".config/google-chrome",                     // Linux
-    ];
-    chrome_profiles
-        .iter()
-        .any(|p| home.join(p).exists())
-        .then(|| "chrome".to_string())
-}
-
 /// Re-encode `path` to H.264 in place when it holds some other codec.
 ///
 /// The download prefers VP9 because it fits far more resolution into the byte
@@ -621,11 +598,19 @@ async fn main() {
     let video_path = if is_youtube {
         eprintln!("Downloading from YouTube: {}", video_input);
 
-        let cookie_browser = resolve_cookie_browser(&cli.cookies_from_browser);
-        match (&cookie_browser, &cli.cookies_from_browser) {
-            (Some(browser), Some(_)) => eprintln!("Using {} cookies for yt-dlp", browser),
-            (Some(browser), None) => eprintln!("Using {} cookies for yt-dlp (auto-detected)", browser),
-            (None, _) => eprintln!("No browser profile found — downloading without cookies"),
+        // Downloading signed-out is deliberate. YouTube meters the HD byte allowance
+        // per *session*, so a logged-in download dies with a 403 partway through
+        // (measured 2026-08-20: it stalled at ~9.6 MB), while the same video signed
+        // out completes. Cookies also make yt-dlp >= 2026.08.19 skip the player
+        // clients that still serve HD, leaving only storyboards. So only send them
+        // when explicitly asked for.
+        let cookie_browser = cli.cookies_from_browser.clone();
+        match &cookie_browser {
+            Some(browser) => eprintln!(
+                "Using {} cookies for yt-dlp (NB: signed-in downloads are byte-capped)",
+                browser
+            ),
+            None => eprintln!("Downloading signed-out (avoids YouTube's per-session byte cap)"),
         }
 
         // Fetch metadata first (title, description)
@@ -699,19 +684,11 @@ async fn main() {
             "--force-overwrites",
             "--no-playlist",
         ]);
-        // yt-dlp's default player client (android_vr) is aggressively rate-limited
-        // by YouTube — HD streams 403 mid-download once the IP gets "hot". The mweb
-        // client serves un-throttled HD, but only if it can present a GVS PO token,
-        // which requires the bgutil PO-token provider. When that provider is built
-        // at its default path, prefer mweb; otherwise leave yt-dlp's defaults alone
-        // so li_push keeps working on machines without the provider (cloud, Jürg's).
-        let pot_ready = env::var("HOME").ok().map(|h| {
-            PathBuf::from(h).join("bgutil-ytdlp-pot-provider/server/build/generate_once.js").exists()
-        }).unwrap_or(false);
-        if pot_ready {
-            eprintln!("PO-token provider found — using mweb client for un-throttled HD");
-            dl_cmd.args(["--extractor-args", "youtube:player_client=mweb"]);
-        }
+        // No player_client override: yt-dlp's defaults are the working path again as
+        // of 2026.08.19, which dropped the rate-limited android_vr client. Forcing
+        // mweb (the workaround for older yt-dlp) now yields storyboards only. The
+        // bgutil PO-token provider is still worth having installed — the default
+        // clients pick it up on their own to unlock the HD formats.
         if let Some(browser) = &cookie_browser {
             dl_cmd.args(["--cookies-from-browser", browser]);
         }
