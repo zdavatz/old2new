@@ -1356,13 +1356,27 @@ impl App {
             cc.egui_ctx.set_zoom_factor(z.clamp(0.6, 3.0));
         }
         let detected_browsers = browsers::detected();
-        // First-launch convenience: if the user hasn't picked a cookie
-        // browser yet, default to the most likely installed one. Saved
-        // to disk only when the user clicks Save in Settings.
-        if settings.cookies_browser.is_empty() {
-            if let Some(first) = detected_browsers.first() {
-                settings.cookies_browser = (*first).to_string();
-            }
+        // No cookie browser is picked for the user any more. Sending cookies
+        // used to be the way past "Sign in to confirm you're not a bot", but it
+        // now costs more than it buys: YouTube meters the HD byte allowance per
+        // *session*, so a signed-in download 403s partway through, and yt-dlp
+        // >= 2026.08.19 skips the player clients that still serve HD when
+        // cookies are present — leaving only storyboards ("Only images are
+        // available"). Signed-out downloads have neither problem. The setting
+        // stays in Settings for videos that genuinely need auth (private,
+        // age-gated), where the cap is the price of access.
+        //
+        // Clearing the flag above only helps fresh installs: anyone who ran an
+        // earlier build and pressed Save in Settings has the auto-filled browser
+        // persisted, so their downloads would keep failing. Clear that inherited
+        // value once — it was never a deliberate choice — and remember having
+        // done so, so a user who really does re-pick a browser keeps it.
+        let mut migrated_cookies = false;
+        if !settings.cookies_auto_default_cleared {
+            migrated_cookies = !settings.cookies_browser.is_empty();
+            settings.cookies_browser.clear();
+            settings.cookies_auto_default_cleared = true;
+            let _ = settings.save();
         }
         let signed_in = oauth::load_token().map(|t| !t.refresh_token.is_empty()).unwrap_or(false);
         let show_settings = settings.client_id.is_empty() || settings.client_secret.is_empty();
@@ -1371,6 +1385,15 @@ impl App {
         let marker = format!("─── session started {} ───", stamp);
         let _ = append_to_log_file(&marker);
         initial_log.push(marker);
+        if migrated_cookies {
+            // Say it out loud rather than silently changing a setting the user
+            // can see in the UI.
+            let note = "Cookies-from-browser has been switched off: signed-in downloads are \
+                        byte-capped by YouTube and hide the HD formats. Pick a browser again \
+                        in Settings only for private or age-gated videos.";
+            let _ = append_to_log_file(note);
+            initial_log.push(note.to_string());
+        }
 
         let saved_form: FormState = cc
             .storage
@@ -5275,6 +5298,17 @@ impl App {
                                 self.start_cookies_test();
                             }
                         });
+                        ui.end_row();
+                        ui.label("");
+                        ui.label(
+                            RichText::new(
+                                "Leave at (none). Signing in makes YouTube cap the download \
+                                 and hides the HD formats — pick a browser only for private \
+                                 or age-gated videos.",
+                            )
+                            .weak()
+                            .small(),
+                        );
                         ui.end_row();
                         if !self.detected_browsers.is_empty() {
                             ui.label("");

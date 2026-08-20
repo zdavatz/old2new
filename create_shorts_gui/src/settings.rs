@@ -14,10 +14,20 @@ pub struct Settings {
     pub client_secret: String,
     #[serde(default = "default_privacy")]
     pub default_privacy: String,
-    /// Empty = don't pass `--cookies-from-browser` to yt-dlp.
+    /// Empty = don't pass `--cookies-from-browser` to yt-dlp, which is what you
+    /// normally want: signing in makes YouTube meter the HD byte allowance per
+    /// session (downloads 403 partway through) and makes yt-dlp >= 2026.08.19
+    /// skip the clients that still serve HD. Set it only for videos that need
+    /// auth (private, age-gated).
     /// Otherwise one of: chrome, brave, chromium, edge, firefox, opera, safari, vivaldi.
     #[serde(default)]
     pub cookies_browser: String,
+    /// One-time migration marker for 1.0.74. Up to 1.0.73 the app auto-filled
+    /// `cookies_browser` with the first detected browser on launch, so users
+    /// carry a value they never deliberately chose — and which now breaks
+    /// downloads. False means that inherited default has not been cleared yet.
+    #[serde(default)]
+    pub cookies_auto_default_cleared: bool,
     /// Path to the pegelstand `whatsapp/` directory (provides auth/ + node_modules/).
     /// Empty = WhatsApp send disabled.
     #[serde(default)]
@@ -77,6 +87,8 @@ impl Default for Settings {
             client_secret: String::new(),
             default_privacy: default_privacy(),
             cookies_browser: String::new(),
+            // A fresh config has no inherited auto-default to clear.
+            cookies_auto_default_cleared: true,
             whatsapp_dir: default_whatsapp_dir(),
             whatsapp_recipient: String::new(),
             davaz_token: String::new(),
