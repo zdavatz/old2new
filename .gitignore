@@ -49,3 +49,7 @@ __pycache__/
 # regenerated on demand by li_stats.py — not source)
 AggregateAnalytics_*.xlsx
 linkedin_video_stats.csv
+
+# Gmail API OAuth credentials (sensitive)
+client_secret_gmail.json
+gmail_token.json
