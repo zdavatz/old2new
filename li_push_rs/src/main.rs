@@ -37,9 +37,9 @@ struct Cli {
     low_quality: bool,
 
     /// Pass YouTube cookies from this browser to yt-dlp (e.g. chrome, brave,
-    /// safari, firefox, edge) — needed because YouTube returns HTTP 403 on
-    /// unauthenticated downloads (bot detection). Defaults to chrome when a
-    /// Chrome profile exists; omitted entirely on machines without one.
+    /// safari, firefox, edge). Off by default and best left off: signing in
+    /// makes YouTube byte-cap the download and hides the HD formats. Use it
+    /// only for videos that need auth (private, age-gated).
     #[arg(long)]
     cookies_from_browser: Option<String>,
 
@@ -79,6 +79,14 @@ struct Cli {
     #[arg(long)]
     list: bool,
 
+    /// Show LinkedIn view/engagement stats for previously posted videos
+    #[arg(long)]
+    stats: bool,
+
+    /// How many of the most recent posts --stats reports on (0 = all)
+    #[arg(long, default_value = "10")]
+    stats_limit: usize,
+
     /// Credentials file
     #[arg(long, default_value = "linkedin_credentials.json")]
     credentials: String,
@@ -107,6 +115,12 @@ struct Token {
 
 const REDIRECT_URI: &str = "http://localhost:8092/callback";
 const LINKEDIN_VERSION: &str = "202603";
+/// The analytics endpoint is versioned separately from the upload calls above.
+/// 202604 and later return `metricType` as a plain string and add the save /
+/// click / follower metrics, so ask for a recent version here rather than
+/// disturbing the version the working upload path is pinned to.
+const LINKEDIN_ANALYTICS_VERSION: &str = "202608";
+
 fn find_file(name: &str) -> String {
     if Path::new(name).exists() {
         return name.to_string();
@@ -411,6 +425,130 @@ fn ensure_h264(path: &Path) {
     }
 }
 
+/// Metrics fetched per post. IMPRESSION is what the UI calls views;
+/// MEMBERS_REACHED is the unique-viewer count behind it.
+const STAT_METRICS: &[&str] = &["IMPRESSION", "MEMBERS_REACHED", "REACTION", "COMMENT"];
+
+/// One lifetime metric total for a post, or for the member across all posts.
+///
+/// The API answers one metric per request, so a row is assembled from several
+/// calls. A metric that errors comes back `None` and prints as "-" rather than
+/// zero — "we could not read this" and "nobody did this" are different facts.
+async fn fetch_metric(
+    client: &reqwest::Client,
+    access_token: &str,
+    entity: Option<&str>,
+    metric: &str,
+) -> Option<i64> {
+    // `q=entity` scopes to one post, `q=me` aggregates over the member's posts.
+    // ugcPost URNs go in as `(ugc:<encoded urn>)`; the parens stay literal.
+    let query = match entity {
+        Some(urn) => format!(
+            "q=entity&entity=(ugc:{})&queryType={}&aggregation=TOTAL",
+            urlencoding::encode(urn),
+            metric
+        ),
+        None => format!("q=me&queryType={}&aggregation=TOTAL", metric),
+    };
+    let resp = client
+        .get(format!(
+            "https://api.linkedin.com/rest/memberCreatorPostAnalytics?{}",
+            query
+        ))
+        .header("Authorization", format!("Bearer {}", access_token))
+        .header("LinkedIn-Version", LINKEDIN_ANALYTICS_VERSION)
+        .header("X-Restli-Protocol-Version", "2.0.0")
+        .send()
+        .await
+        .ok()?;
+    if !resp.status().is_success() {
+        return None;
+    }
+    let body: serde_json::Value = resp.json().await.ok()?;
+    // A TOTAL query yields a single element; sum defensively in case it doesn't.
+    let elements = body["elements"].as_array()?;
+    Some(elements.iter().filter_map(|e| e["count"].as_i64()).sum())
+}
+
+/// Print view/engagement counts for posts recorded in the upload log.
+async fn show_post_stats(access_token: &str, limit: usize) {
+    let data = match fs::read_to_string(upload_log_path()) {
+        Ok(d) => d,
+        Err(e) => {
+            eprintln!("Cannot read the upload log: {}", e);
+            return;
+        }
+    };
+    // Newest last in the log, so take from the end and flip back.
+    let mut posts: Vec<(String, String)> = data
+        .lines()
+        .filter_map(|l| serde_json::from_str::<serde_json::Value>(l).ok())
+        .filter_map(|e| {
+            let id = e["post_id"].as_str()?.to_string();
+            if !id.starts_with("urn:li:") {
+                return None;
+            }
+            Some((id, e["title"].as_str().unwrap_or("").to_string()))
+        })
+        .collect();
+    let total_posts = posts.len();
+    if limit > 0 && posts.len() > limit {
+        posts = posts.split_off(total_posts - limit);
+    }
+    posts.reverse();
+
+    let client = reqwest::Client::new();
+
+    // One cheap call first: it doubles as a permission probe, so a missing
+    // scope is reported once as such instead of as 40 unexplained dashes.
+    match fetch_metric(&client, access_token, None, "IMPRESSION").await {
+        Some(total) => println!("Lifetime impressions across all posts: {}\n", total),
+        None => {
+            eprintln!("Could not read analytics from LinkedIn.");
+            eprintln!(
+                "This needs the r_member_postAnalytics scope, which LinkedIn grants \
+                 only to approved applications — it cannot be enabled from the app's \
+                 Products tab. Apply via the Member Post Analytics form at \
+                 developer.linkedin.com; once approved, add the scope back to the \
+                 auth URL in auth_flow() and re-run `li_push --auth`."
+            );
+            eprintln!("Until then, per-post numbers are only in LinkedIn's own UI.");
+            return;
+        }
+    }
+
+    println!(
+        "{:<44} {:>9} {:>9} {:>7} {:>8}",
+        "POST", "VIEWS", "REACHED", "LIKES", "COMMENTS"
+    );
+    for (urn, title) in &posts {
+        let mut counts = Vec::new();
+        for metric in STAT_METRICS {
+            counts.push(fetch_metric(&client, access_token, Some(urn), metric).await);
+        }
+        let cell = |v: &Option<i64>| match v {
+            Some(n) => n.to_string(),
+            None => "-".to_string(),
+        };
+        let short: String = title.chars().take(43).collect();
+        println!(
+            "{:<44} {:>9} {:>9} {:>7} {:>8}",
+            short,
+            cell(&counts[0]),
+            cell(&counts[1]),
+            cell(&counts[2]),
+            cell(&counts[3])
+        );
+    }
+    if limit > 0 && total_posts > limit {
+        println!(
+            "\n({} of {} posts — use --stats-limit 0 for all)",
+            posts.len(),
+            total_posts
+        );
+    }
+}
+
 #[tokio::main]
 async fn main() {
     // Write PID file
@@ -444,6 +582,24 @@ async fn main() {
 
     if cli.list {
         list_uploads();
+        return;
+    }
+
+    if cli.stats {
+        let token = match load_token(&cli.token) {
+            Ok(t) => t,
+            Err(e) => {
+                eprintln!("ERROR: {}", e);
+                eprintln!("Run `li_push --auth` first.");
+                std::process::exit(1);
+            }
+        };
+        let creds = load_credentials(&cli.credentials).unwrap_or_else(|e| {
+            eprintln!("ERROR: {}", e);
+            std::process::exit(1);
+        });
+        let token = refresh_token(&creds, &token, &cli.token).await;
+        show_post_stats(&token.access_token, cli.stats_limit).await;
         return;
     }
 
@@ -1195,6 +1351,11 @@ async fn auth_flow(cli: &Cli) {
 
     // Step 1: Open browser for authorization
     let auth_url = format!(
+        // r_member_postAnalytics (needed by --stats) is deliberately NOT requested
+        // here: LinkedIn only grants it to approved applications, and asking for
+        // an unauthorized scope makes the whole flow fail with
+        // "unauthorized_scope_error" — which would break --auth for everyone.
+        // Add it back once the app is approved for the analytics product.
         "https://www.linkedin.com/oauth/v2/authorization?response_type=code&client_id={}&redirect_uri={}&scope=openid%20profile%20w_member_social",
         creds.client_id,
         urlencoding::encode(REDIRECT_URI)
