@@ -55,7 +55,10 @@ TOKEN_URI = "https://oauth2.googleapis.com/token"
 
 # 8091 and 8092 are taken by tk_push and li_push respectively.
 CALLBACK_PORT = 8093
-REDIRECT_URI = f"http://localhost:{CALLBACK_PORT}/"
+# Desktop clients register a bare "http://localhost" and Google accepts loopback on
+# any port; keep the canonical no-trailing-slash form since the token exchange has
+# to echo this string back byte-for-byte.
+REDIRECT_URI = f"http://localhost:{CALLBACK_PORT}"
 
 # Resource groups holding uploaded video media. Public is the useful one for us —
 # the Enhanced 4K shorts are public — but unlisted/private are available too.
@@ -234,9 +237,20 @@ def load_state():
     return read_json(STATE_FILE) if os.path.exists(STATE_FILE) else {}
 
 
-def initiate(resources):
+def initiate(resources, start_time=None, end_time=None):
+    """Start an archive job, optionally narrowed to a time window.
+
+    The window is the only way to ask for less than everything: an archive covers
+    the account's uploads as a whole, so a date range is what keeps a backfill from
+    dragging down years of video when only recent uploads are wanted.
+    """
     token = access_token()
-    resp = api_call("portabilityArchive:initiate", token, {"resources": resources})
+    payload = {"resources": resources}
+    if start_time:
+        payload["startTime"] = start_time
+    if end_time:
+        payload["endTime"] = end_time
+    resp = api_call("portabilityArchive:initiate", token, payload)
     job_id = resp.get("archiveJobId")
     if not job_id:
         sys.exit(f"ERROR: no archiveJobId in response: {resp}")
@@ -246,6 +260,8 @@ def initiate(resources):
             "archive_job_id": job_id,
             "access_type": resp.get("accessType", ""),
             "resources": resources,
+            "start_time": start_time or "",
+            "end_time": end_time or "",
             "initiated_at": int(time.time()),
         }
     )
@@ -289,6 +305,27 @@ def poll(job_id, interval, max_wait):
             return resp
         time.sleep(wait)
         wait = min(interval, wait * 2)  # ease off toward the requested interval
+
+
+def archive_sizes(urls):
+    """Report each archive's size without fetching it.
+
+    An export is bulk by nature, so knowing the weight up front is what makes it a
+    decision rather than a surprise — especially on a laptop.
+    """
+    total = 0
+    for idx, url in enumerate(urls, 1):
+        name = os.path.basename(urllib.parse.urlparse(url).path) or f"archive_{idx}"
+        try:
+            with urllib.request.urlopen(urllib.request.Request(url, method="HEAD")) as resp:
+                size = int(resp.headers.get("Content-Length", 0))
+        except urllib.error.HTTPError as err:
+            print(f"  {name}: HEAD failed ({err.code}) — URL may have expired")
+            continue
+        total += size
+        print(f"  {name}: {size / 1e9:.2f} GB")
+    print(f"Total: {total / 1e9:.2f} GB across {len(urls)} file(s)")
+    return total
 
 
 def download(urls, outdir):
@@ -345,6 +382,8 @@ def main():
     ap.add_argument("--poll", action="store_true", help="poll a job until it completes")
     ap.add_argument("--download", action="store_true", help="download a completed job")
     ap.add_argument("--reset", action="store_true", help="release one-time access")
+    ap.add_argument("--sizes", action="store_true",
+                    help="report archive sizes without downloading")
     ap.add_argument("--job-id", help="job id (defaults to the saved one)")
     ap.add_argument("--resources", nargs="+", default=DEFAULT_RESOURCES,
                     help=f"resource groups to export (default: {' '.join(DEFAULT_RESOURCES)})")
@@ -353,7 +392,14 @@ def main():
                     help="seconds between state checks once backed off (default 300)")
     ap.add_argument("--max-wait", type=int, default=0,
                     help="stop polling after N seconds (0 = wait indefinitely)")
+    ap.add_argument("--start-time", help="only export uploads at/after this RFC 3339 "
+                                         "timestamp, e.g. 2026-01-01T00:00:00Z")
+    ap.add_argument("--end-time", help="only export uploads before this RFC 3339 timestamp")
     args = ap.parse_args()
+
+    # Progress has to be visible when stdout is a pipe (background runs, tee), and
+    # Python block-buffers in that case.
+    sys.stdout.reconfigure(line_buffering=True)
 
     if args.auth:
         auth_flow(args.resources)
@@ -366,11 +412,18 @@ def main():
     saved = load_state()
     job_id = args.job_id or saved.get("archive_job_id")
 
+    if args.sizes:
+        urls = saved.get("urls", [])
+        if not urls:
+            sys.exit("ERROR: no URLs stored — run --poll until COMPLETE first.")
+        archive_sizes(urls)
+        return
+
     # No explicit step selected: run the whole pipeline.
     full_run = not (args.initiate or args.poll or args.download)
 
     if args.initiate or full_run:
-        job_id = initiate(args.resources)
+        job_id = initiate(args.resources, args.start_time, args.end_time)
 
     if args.poll or full_run:
         if not job_id:
