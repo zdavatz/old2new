@@ -500,7 +500,38 @@ YouTube increasingly blocks unauthenticated / automated downloads. Three distinc
 
    The practical mitigation is to **ask for fewer bytes**, so `li_push` prefers the **VP9 (webm)** rendition over AVC: VP9 carries the same 1080p in roughly half the size (e.g. 18.5 MB vs 36.2 MB), which is often the difference between fitting under the allowance and not. Resolution is capped at 1080p because both platforms discard anything above it anyway (LinkedIn tops out there; X is downscaled to ≤1280 by `post_to_twitter`). Since LinkedIn expects H.264, a VP9 download is re-encoded locally (`ensure_h264`, CRF 18 — a codec swap, not a quality reduction).
 
-   If a download still 403s, the only remedy is to **stop and let the IP idle for a few hours** — retrying immediately shrinks the allowance further.
+   If a download still 403s, the only remedy is to **stop and let the IP idle for a few hours** — retrying immediately shrinks the allowance further. To sidestep this class of failure entirely, export the masters once with `yt_export.py` (below) and post from local files.
+
+### Exporting our own videos (`yt_export.py`)
+
+Downloading our own uploads back out of YouTube via yt-dlp is a fight we don't need to have — the [Data Portability API](https://developers.google.com/data-portability) is the supported way for an account to export its own data. It has no bot detection, no PO-token requirement and no byte allowance, and it hands back the **original uploaded file** rather than a transcode. Note the YouTube *Data* API v3 cannot do this: it has no download endpoint, by design, even for videos you own.
+
+```bash
+./yt_export.py --auth        # one-time consent (sign in as the channel owner)
+./yt_export.py               # initiate + poll + download into exports/
+./yt_export.py --poll        # resume polling a job started earlier
+./yt_export.py --reset       # release one-time access before the next export
+```
+
+Then post straight from disk, with no YouTube round-trip at all:
+
+```bash
+./li_push_rs/target/release/li_push exports/<video>.mp4 --title "…" --twitter
+```
+
+**One-time Cloud console setup:**
+1. Enable the **Data Portability API** in the project.
+2. Create an OAuth client of type **Desktop app**; save the JSON as `client_secret_dataportability.json` (gitignored).
+3. On the consent screen, add the channel-owner account as a **test user** — the `dataportability.*` scopes are sensitive, so an unverified app only works for test users.
+
+**Things worth knowing:**
+- Availability is limited to ~30 countries (EEA, UK, **Switzerland**) — we're covered.
+- The export is scoped to whichever account you sign in as, so use the one owning the channel (@gozipa for the Enhanced 4K shorts, @jdavatz for the originals).
+- Archive jobs take *"several minutes, several hours, or even several days"* (max 7). The script polls and is resumable — Ctrl-C is safe, the job id is saved.
+- The job must be initiated **within 24h** of authorization.
+- Signed download URLs expire after **6 hours** (data stays available 14 days). If a download is refused, `--poll` again to mint fresh URLs.
+- Default access is one-time: the granted scopes stay exhausted until `--reset` (Google resets automatically 14 days after the first initiate).
+- It's bulk, not per-video — you get the account's uploads, not a single chosen id.
 
    **One-time provider setup** (macOS, needs Node.js + deno, both already used elsewhere here):
    ```bash

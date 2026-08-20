@@ -24,6 +24,15 @@ linkedin_token.json
 twitter_credentials.json
 twitter_token.json
 
+# Data Portability OAuth credentials (sensitive). yt_export_state.json holds the
+# signed Cloud Storage URLs, which grant access to the archive on their own.
+client_secret_dataportability.json
+dataportability_token.json
+yt_export_state.json
+
+# Exported video masters (large)
+exports/
+
 # Temp/test files
 *.zip
 status_server_rs/target/
@@ -32,3 +41,6 @@ tk_push_rs/target/
 li_push_rs/target/
 create_short_rs/target/
 auth/
+
+# Python bytecode
+__pycache__/
