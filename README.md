@@ -486,15 +486,21 @@ Rust binary (`li_push`) using LinkedIn Videos API + Posts API. OAuth2 auth with 
 
 ### YouTube 403 bot-detection & the PO-token provider
 
-YouTube increasingly blocks unauthenticated / automated downloads. Two distinct defenses hit `li_push`, each with its own fix:
+YouTube increasingly blocks unauthenticated / automated downloads. Three distinct defenses hit `li_push`, each with its own fix:
 
-1. **Webpage/metadata 403 ("This video is not available")** — pass browser cookies so yt-dlp looks logged-in:
+1. **Webpage/metadata 403 ("This video is not available" / "Sign in to confirm you're not a bot")** — yt-dlp needs to look logged-in, so cookies are required for essentially every download. `li_push` therefore passes them **automatically**: absent `--cookies-from-browser` it detects a Chrome profile (`~/Library/Application Support/Google/Chrome` on macOS, `~/.config/google-chrome` on Linux) and uses `chrome`. Machines with no browser profile — cloud instances — silently run without cookies instead of erroring. Override to use a different browser:
    ```bash
-   ./li_push_rs/target/release/li_push VIDEO_ID --cookies-from-browser chrome --twitter
+   ./li_push_rs/target/release/li_push VIDEO_ID --cookies-from-browser brave --twitter
    ```
    `--cookies-from-browser` accepts `chrome`, `brave`, `safari`, `firefox`, `edge`, … It's threaded into both the `--dump-json` metadata call and the download.
 
-2. **HD stream 403 mid-download** — yt-dlp's default player client (`android_vr`) gets its HD googlevideo URLs rate-limited: the download climbs to ~20 MB then dies with `HTTP Error 403: Forbidden`, and no client/token/chunk trick beats it once the IP is "hot". The other free clients (`web`/`tv`/`ios`) now require a **GVS PO token** (YouTube's SABR experiment) and otherwise serve only 360p. The fix is the [bgutil PO-token provider](https://github.com/Brainicism/bgutil-ytdlp-pot-provider), which lets the **`mweb`** client present a PO token and stream un-throttled HD. `li_push` auto-detects the provider (at its default path) and, when present, adds `--extractor-args "youtube:player_client=mweb"` to the download — so it "just works" where the provider is installed and falls back to yt-dlp defaults where it isn't (cloud instances, etc.).
+2. **Only 360p (or "images only") on offer** — the free clients (`web`/`tv`/`ios`) now require a **GVS PO token** (YouTube's SABR experiment) and otherwise serve nothing usable: `web` returns images-only, `tv` is SABR-only. The fix is the [bgutil PO-token provider](https://github.com/Brainicism/bgutil-ytdlp-pot-provider), which lets the **`mweb`** client present a PO token and be offered real HD. `li_push` auto-detects the provider (at its default path) and, when present, adds `--extractor-args "youtube:player_client=mweb"` to the download — so it "just works" where the provider is installed and falls back to yt-dlp defaults where it isn't (cloud instances, etc.).
+
+3. **403 partway through the download** — since ~August 2026 YouTube enforces a **per-IP byte allowance per download** and 403s the instant it is exceeded. Measured on 2026-08-20: a fresh IP got ~19.5 MB per stream, which dropped to ~9.6 MB after a burst of rapid retries and recovers only with idle time. It is a hard wall, not a throttle — `--http-chunk-size`, `--limit-rate`, `--retries` and resuming all fail at the identical byte offset, and a Range request past the allowance is refused outright. yt-dlp upstream treats this as [an external issue](https://github.com/yt-dlp/yt-dlp/issues/17368), closed "not planned".
+
+   The practical mitigation is to **ask for fewer bytes**, so `li_push` prefers the **VP9 (webm)** rendition over AVC: VP9 carries the same 1080p in roughly half the size (e.g. 18.5 MB vs 36.2 MB), which is often the difference between fitting under the allowance and not. Resolution is capped at 1080p because both platforms discard anything above it anyway (LinkedIn tops out there; X is downscaled to ≤1280 by `post_to_twitter`). Since LinkedIn expects H.264, a VP9 download is re-encoded locally (`ensure_h264`, CRF 18 — a codec swap, not a quality reduction).
+
+   If a download still 403s, the only remedy is to **stop and let the IP idle for a few hours** — retrying immediately shrinks the allowance further.
 
    **One-time provider setup** (macOS, needs Node.js + deno, both already used elsewhere here):
    ```bash

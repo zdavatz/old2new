@@ -37,8 +37,9 @@ struct Cli {
     low_quality: bool,
 
     /// Pass YouTube cookies from this browser to yt-dlp (e.g. chrome, brave,
-    /// safari, firefox, edge) — needed when YouTube returns HTTP 403 on
-    /// unauthenticated downloads (bot detection).
+    /// safari, firefox, edge) — needed because YouTube returns HTTP 403 on
+    /// unauthenticated downloads (bot detection). Defaults to chrome when a
+    /// Chrome profile exists; omitted entirely on machines without one.
     #[arg(long)]
     cookies_from_browser: Option<String>,
 
@@ -358,6 +359,81 @@ fn build_tweet_caption(title: &str, link: Option<&str>) -> String {
     }
 }
 
+/// Which browser to take YouTube cookies from, honouring `--cookies-from-browser`
+/// and otherwise falling back to Chrome when this machine actually has a profile.
+///
+/// YouTube answers unauthenticated requests with "Sign in to confirm you're not a
+/// bot", so cookies are needed for essentially every download and having to pass
+/// the flag by hand only invites forgetting it. Detecting the profile first keeps
+/// that convenience from breaking the headless boxes (cloud instances) where no
+/// browser is installed and `--cookies-from-browser chrome` would be a hard error.
+fn resolve_cookie_browser(explicit: &Option<String>) -> Option<String> {
+    if let Some(browser) = explicit {
+        return Some(browser.clone());
+    }
+    let home = PathBuf::from(env::var("HOME").ok()?);
+    let chrome_profiles = [
+        "Library/Application Support/Google/Chrome", // macOS
+        ".config/google-chrome",                     // Linux
+    ];
+    chrome_profiles
+        .iter()
+        .any(|p| home.join(p).exists())
+        .then(|| "chrome".to_string())
+}
+
+/// Re-encode `path` to H.264 in place when it holds some other codec.
+///
+/// The download prefers VP9 because it fits far more resolution into the byte
+/// allowance YouTube now enforces, but LinkedIn's transcoder expects H.264.
+/// Resolution and frame rate are left untouched — this swaps the codec, it does
+/// not reduce quality. X needs no help here: post_to_twitter transcodes its own
+/// copy regardless of what it is handed.
+fn ensure_h264(path: &Path) {
+    let probe = std::process::Command::new("ffprobe")
+        .args([
+            "-v", "error",
+            "-select_streams", "v:0",
+            "-show_entries", "stream=codec_name",
+            "-of", "default=nw=1:nk=1",
+            path.to_str().unwrap_or_default(),
+        ])
+        .output();
+    let codec = match &probe {
+        Ok(o) if o.status.success() => String::from_utf8_lossy(&o.stdout).trim().to_string(),
+        // Without ffprobe we cannot tell what we have; uploading the file as-is is
+        // safer than re-encoding something that may already be H.264.
+        _ => return,
+    };
+    if codec == "h264" {
+        return;
+    }
+
+    eprintln!("Converting {} video to H.264 for LinkedIn...", codec);
+    let converted = path.with_extension("h264.mp4");
+    let status = std::process::Command::new("ffmpeg")
+        .args([
+            "-y",
+            "-i", path.to_str().unwrap_or_default(),
+            "-c:v", "libx264",
+            "-profile:v", "high",
+            "-pix_fmt", "yuv420p",
+            "-preset", "veryfast",
+            "-crf", "18",
+            "-c:a", "aac",
+            "-b:a", "128k",
+            "-movflags", "+faststart",
+            converted.to_str().unwrap_or_default(),
+        ])
+        .output();
+    if matches!(&status, Ok(o) if o.status.success()) && converted.exists() {
+        let _ = fs::rename(&converted, path);
+    } else {
+        eprintln!("WARNING: H.264 conversion failed; uploading the downloaded file as-is.");
+        let _ = fs::remove_file(&converted);
+    }
+}
+
 #[tokio::main]
 async fn main() {
     // Write PID file
@@ -545,14 +621,17 @@ async fn main() {
     let video_path = if is_youtube {
         eprintln!("Downloading from YouTube: {}", video_input);
 
-        if let Some(browser) = &cli.cookies_from_browser {
-            eprintln!("Using {} cookies for yt-dlp", browser);
+        let cookie_browser = resolve_cookie_browser(&cli.cookies_from_browser);
+        match (&cookie_browser, &cli.cookies_from_browser) {
+            (Some(browser), Some(_)) => eprintln!("Using {} cookies for yt-dlp", browser),
+            (Some(browser), None) => eprintln!("Using {} cookies for yt-dlp (auto-detected)", browser),
+            (None, _) => eprintln!("No browser profile found — downloading without cookies"),
         }
 
         // Fetch metadata first (title, description)
         let mut meta_cmd = std::process::Command::new("yt-dlp");
         meta_cmd.args(["--dump-json", "--no-download"]);
-        if let Some(browser) = &cli.cookies_from_browser {
+        if let Some(browser) = &cookie_browser {
             meta_cmd.args(["--cookies-from-browser", browser]);
         }
         meta_cmd.arg(&video_input);
@@ -598,10 +677,19 @@ async fn main() {
         let tmp_dir = env::temp_dir();
         let tmp_path = tmp_dir.join("li_push_yt_download.mp4");
         eprintln!("Downloading best quality...");
+        // YouTube now enforces a per-IP byte allowance per download and 403s the
+        // moment it is exceeded — chunking, rate limiting and resuming all fail
+        // identically once the stream is bigger than the allowance. So the smallest
+        // stream that still carries the target resolution is the one most likely to
+        // finish. VP9 (webm) holds the same 1080p in roughly half the bytes of AVC
+        // (e.g. 18.5 MB vs 36.2 MB), so prefer it, with mp4 kept as the fallback.
+        // Capping at 1080p costs nothing here: LinkedIn tops out around 1080p and
+        // post_to_twitter downscales to <=1280 anyway, so a 4K rendition would only
+        // spend bytes that both platforms immediately throw away.
         let format_arg = if cli.low_quality {
-            "bestvideo[height<=1080][ext=mp4]+bestaudio[ext=m4a]/best[height<=1080]"
+            "bestvideo[vcodec^=vp9][height<=720]+bestaudio[ext=m4a]/bestvideo[height<=720][ext=mp4]+bestaudio[ext=m4a]/best[height<=720]"
         } else {
-            "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best"
+            "bestvideo[vcodec^=vp9][height<=1080]+bestaudio[ext=m4a]/bestvideo[height<=1080][ext=mp4]+bestaudio[ext=m4a]/best[height<=1080]/best"
         };
         let mut dl_cmd = std::process::Command::new("yt-dlp");
         dl_cmd.args([
@@ -624,7 +712,7 @@ async fn main() {
             eprintln!("PO-token provider found — using mweb client for un-throttled HD");
             dl_cmd.args(["--extractor-args", "youtube:player_client=mweb"]);
         }
-        if let Some(browser) = &cli.cookies_from_browser {
+        if let Some(browser) = &cookie_browser {
             dl_cmd.args(["--cookies-from-browser", browser]);
         }
         dl_cmd.arg(&video_input);
@@ -634,6 +722,10 @@ async fn main() {
             eprintln!("ERROR: yt-dlp download failed");
             std::process::exit(1);
         }
+
+        // The VP9 stream preferred above downloads in half the bytes but LinkedIn
+        // expects H.264, so convert when that is what we actually got.
+        ensure_h264(&tmp_path);
 
         // Verify file size after download
         if let Ok(fmeta) = fs::metadata(&tmp_path) {
