@@ -482,7 +482,7 @@ Rust binary (`tk_push`) using TikTok Content Posting API. OAuth2 PKCE auth (S256
 ./li_push_rs/target/release/li_push video.mp4 --title "My Video" --visibility CONNECTIONS
 ```
 
-Rust binary (`li_push`) using LinkedIn Videos API + Posts API. OAuth2 auth with OpenID Connect (person ID from JWT id_token). Local callback on port 8092. 4-step upload: initialize → chunked upload (4MB parts with ETags) → finalize → create post. Supports YouTube URL/ID as input — auto-downloads via yt-dlp with title/description. Pre-checks duration (max 30 min) and filesize (max 500MB). `--low-quality` for 1080p fallback. Shows post URL after publish. Upload log in `~/li_push_log.jsonl` prevents duplicate uploads. `--random-short` picks a random unuploaded short from `csv/davaz_enhanced_list.csv` (54 shorts). `--list` shows all previous uploads. Credentials in `linkedin_credentials.json`, token in `linkedin_token.json`. Writes PID to `~/li_push.pid`. Every post also links the **original** (pre-enhancement) video — sourced from the CSV `Original` column for `--random-short`, or parsed from the short's YouTube description (`Original: <url>`) for direct-URL inputs — appended to the LinkedIn commentary.
+Rust binary (`li_push`) using LinkedIn Videos API + Posts API. OAuth2 auth with OpenID Connect (person ID from JWT id_token). Local callback on port 8092. 4-step upload: initialize → chunked upload (4MB parts with ETags) → finalize → create post. Supports YouTube URL/ID as input — auto-downloads via yt-dlp with title/description. Pre-checks duration (max 30 min) and filesize (max 500MB) — the size check passes the download format string to `--dump-json`, because without `-f` yt-dlp reports `filesize_approx` for its *own* default pick (`bestvideo+bestaudio` = the 2160p rendition on these Enhanced 4K uploads) rather than the ≤1080p VP9 one actually fetched, which made the gate reject videos that download fine (measured on `0m3zbyA2mvA`: 578.6 MB reported vs 90.0 MB real). `--low-quality` for 1080p fallback. Shows post URL after publish. Upload log in `~/li_push_log.jsonl` prevents duplicate uploads. `--random-short` picks a random unuploaded short from `csv/davaz_enhanced_list.csv` (54 shorts). `--list` shows all previous uploads. Credentials in `linkedin_credentials.json`, token in `linkedin_token.json`. Writes PID to `~/li_push.pid`. Every post also links the **original** (pre-enhancement) video — sourced from the CSV `Original` column for `--random-short`, or parsed from the short's YouTube description (`Original: <url>`) for direct-URL inputs — appended to the LinkedIn commentary.
 
 ### YouTube 403 bot-detection & the PO-token provider
 
@@ -564,6 +564,28 @@ The same binary also posts to X / Twitter (native video, with a frame-image + li
 ```
 
 OAuth 2.0 Authorization-Code-with-PKCE flow (`--auth-twitter`), token in `twitter_token.json`, scopes `tweet.read tweet.write users.read media.write offline.access`. Posts **native video** via X's v2 chunked media upload (`/2/media/upload/initialize` → `/{id}/append` → `/{id}/finalize` → poll `STATUS`). Because X rejects video above **1920×1200** (the Da Vaz sources are Enhanced 4K), it first ffmpeg-transcodes to an X-friendly spec (H.264 High / yuv420p, longest edge ≤1280, 30 fps, AAC); if native upload still fails it falls back to a representative JPEG frame + the video link. The tweet caption is `title` + the original-video link (capped to 280 chars). Separate dedup log at `~/li_push_twitter_log.jsonl` so `--random-short --twitter-only` tracks X posts independently of LinkedIn.
+
+**X's 2-minute video cap (and the trim that works around it).** Non-premium X accounts cannot post video longer than 2 minutes, and X does not say so until the very last step: the chunked upload completes, processing reports `succeeded`, and then `POST /2/tweets` returns
+
+```
+403 {"detail":"This user is not allowed to post a video longer than 2 minutes."}
+```
+
+This is an *account-tier* limit, not an encoding problem — no transcode setting lifts it, and only X Premium removes it. It is the reason the Enhanced 4K **shorts** post as native video while every **full-length** video used to degrade to a single still frame plus a link.
+
+`post_to_twitter` therefore probes the duration (`probe_duration_secs`, ffprobe) and, above 120s, adds `-t 118` to the transcode it already has to run for X's resolution and codec limits — so the trim costs nothing extra. X gets the first two minutes as real video instead of a still. The cut is 118s rather than 120s because the limit is "*longer* than 2 minutes" and ffmpeg cuts on frame boundaries; a file landing a few milliseconds over is refused only at tweet creation, after the entire upload has been spent.
+
+A trimmed post's caption reads:
+
+```
+<title>
+
+First 2 minutes — full video: <link>
+```
+
+where that link is the **Enhanced 4K upload, not the pre-enhancement original**. Everywhere else the convention is to always credit the original, but a trimmed post promises the full version of the excerpt the viewer just watched — pointing "full video" at a different, lower-quality edit would be misleading. Untrimmed posts keep the original-link convention, and the LinkedIn commentary carries the `Original:` link either way. If the transcode itself fails on an over-length video, the native attempt is skipped rather than uploading a file X is certain to reject.
+
+Verified 2026-08-21: `TzMvazqITUk` (286s) published natively after trimming, where the untrimmed 5:23 and 4:17 videos had both 403'd at tweet creation.
 
 The batch-of-N anti-pattern (`wait` for all 4 GPUs, then start next 4) wastes GPU time — fast-finishing GPUs sit idle waiting for the slowest one. On a 4x RTX 5090 instance at $1.35/hr, this caused 3 GPUs to idle for 2+ hours (~$2.70 wasted). The flock-based queue keeps all GPUs busy continuously.
 
