@@ -769,9 +769,23 @@ async fn main() {
             None => eprintln!("Downloading signed-out (avoids YouTube's per-session byte cap)"),
         }
 
-        // Fetch metadata first (title, description)
+        // The format string is needed twice: once so the size pre-check below
+        // measures the rendition we will actually fetch, and again for the
+        // download itself. Rationale for the string is at the download call.
+        let format_arg = if cli.low_quality {
+            "bestvideo[vcodec^=vp9][height<=720]+bestaudio[ext=m4a]/bestvideo[height<=720][ext=mp4]+bestaudio[ext=m4a]/best[height<=720]"
+        } else {
+            "bestvideo[vcodec^=vp9][height<=1080]+bestaudio[ext=m4a]/bestvideo[height<=1080][ext=mp4]+bestaudio[ext=m4a]/best[height<=1080]/best"
+        };
+
+        // Fetch metadata first (title, description). Pass the download format
+        // string: without it yt-dlp reports filesize_approx for its OWN default
+        // pick (bestvideo+bestaudio = the 4K rendition on these Enhanced 4K
+        // uploads), so the 500 MB gate below rejected videos that download
+        // fine. Measured on 0m3zbyA2mvA: 578.6 MB reported by the default pick
+        // vs 90.0 MB for formats 248+140, which is what actually gets fetched.
         let mut meta_cmd = std::process::Command::new("yt-dlp");
-        meta_cmd.args(["--dump-json", "--no-download"]);
+        meta_cmd.args(["--dump-json", "--no-download", "-f", format_arg]);
         if let Some(browser) = &cookie_browser {
             meta_cmd.args(["--cookies-from-browser", browser]);
         }
@@ -827,11 +841,6 @@ async fn main() {
         // Capping at 1080p costs nothing here: LinkedIn tops out around 1080p and
         // post_to_twitter downscales to <=1280 anyway, so a 4K rendition would only
         // spend bytes that both platforms immediately throw away.
-        let format_arg = if cli.low_quality {
-            "bestvideo[vcodec^=vp9][height<=720]+bestaudio[ext=m4a]/bestvideo[height<=720][ext=mp4]+bestaudio[ext=m4a]/best[height<=720]"
-        } else {
-            "bestvideo[vcodec^=vp9][height<=1080]+bestaudio[ext=m4a]/bestvideo[height<=1080][ext=mp4]+bestaudio[ext=m4a]/best[height<=1080]/best"
-        };
         let mut dl_cmd = std::process::Command::new("yt-dlp");
         dl_cmd.args([
             "-f", format_arg,
