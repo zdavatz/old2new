@@ -373,6 +373,25 @@ fn build_tweet_caption(title: &str, link: Option<&str>) -> String {
     }
 }
 
+/// Duration of `path` in seconds via ffprobe, or None if ffprobe is missing or
+/// the container carries no duration. Callers must treat None as "unknown", not
+/// "short" — the X trim below only kicks in on a confirmed over-length video.
+fn probe_duration_secs(path: &Path) -> Option<f64> {
+    let out = std::process::Command::new("ffprobe")
+        .args([
+            "-v", "error",
+            "-show_entries", "format=duration",
+            "-of", "default=noprint_wrappers=1:nokey=1",
+        ])
+        .arg(path)
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    String::from_utf8_lossy(&out.stdout).trim().parse::<f64>().ok()
+}
+
 /// Re-encode `path` to H.264 in place when it holds some other codec.
 ///
 /// The download prefers VP9 because it fits far more resolution into the byte
@@ -1248,43 +1267,92 @@ async fn post_to_twitter(
     } else {
         video_input.to_string()
     };
-    // Prefer linking the original video; fall back to the short itself.
-    let post_link: &str = original_link.unwrap_or(enhanced_link.as_str());
+    // X refuses native video longer than 2 minutes for non-premium accounts:
+    // the chunked upload and processing both succeed, then POST /2/tweets 403s
+    // with "This user is not allowed to post a video longer than 2 minutes".
+    // So anything longer goes up as its first two minutes, with the caption
+    // pointing at the full video. 118s rather than 120s because the limit is
+    // "longer than 2 minutes" and ffmpeg cuts on frame boundaries — a file that
+    // lands a few ms over would be rejected after the whole upload.
+    let full_secs = probe_duration_secs(video_path);
+    let trim_secs: Option<u32> = match full_secs {
+        Some(d) if d > 120.0 => Some(118),
+        _ => None,
+    };
+    if let (Some(d), Some(_)) = (full_secs, trim_secs) {
+        eprintln!(
+            "Video is {:.0}s — over X's 2-minute cap; posting the first 118s and linking the full video.",
+            d
+        );
+    }
 
-    // First try a native video tweet — caption is title + original link.
-    let video_caption = build_tweet_caption(title, Some(post_link));
+    // Which link the caption carries depends on whether we trimmed. Normally it
+    // is the pre-enhancement original (the house convention, so every post
+    // credits the source footage). But a trimmed post promises "full video", and
+    // the full version of the excerpt people just watched is the Enhanced 4K
+    // upload it was cut from — linking the pre-enhancement original there would
+    // send them to a different, lower-quality edit than the one advertised.
+    let post_link: &str = if trim_secs.is_some() {
+        enhanced_link.as_str()
+    } else {
+        original_link.unwrap_or(enhanced_link.as_str())
+    };
+
+    // Caption: title + link. When trimmed, say so, so the excerpt is not
+    // mistaken for the whole piece and the link reads as the way to finish it.
+    let video_caption = if trim_secs.is_some() {
+        build_tweet_caption(&format!("{}\n\nFirst 2 minutes — full video:", title), Some(post_link))
+    } else {
+        build_tweet_caption(title, Some(post_link))
+    };
 
     // X rejects video above 1920x1200 (these are Enhanced 4K sources), and is
     // picky about codecs, so transcode to an X-friendly spec first: H.264 High /
     // yuv420p, longest edge <= 1280, even dimensions, 30 fps, AAC audio.
     let x_video_path = env::temp_dir().join(format!("li_push_x_video_{}.mp4", std::process::id()));
     eprintln!("Transcoding to an X-compatible video...");
-    let tr = std::process::Command::new("ffmpeg")
-        .args([
-            "-y",
-            "-i", video_path.to_str().unwrap_or_default(),
-            "-vf", "scale='min(1280,iw)':'min(1280,ih)':force_original_aspect_ratio=decrease,scale=trunc(iw/2)*2:trunc(ih/2)*2",
-            "-c:v", "libx264",
-            "-profile:v", "high",
-            "-pix_fmt", "yuv420p",
-            "-r", "30",
-            "-preset", "veryfast",
-            "-crf", "23",
-            "-c:a", "aac",
-            "-b:a", "128k",
-            "-movflags", "+faststart",
-            x_video_path.to_str().unwrap_or_default(),
-        ])
-        .output();
-    let upload_path: PathBuf = if matches!(&tr, Ok(o) if o.status.success()) && x_video_path.exists() {
-        x_video_path.clone()
+    let mut tr_cmd = std::process::Command::new("ffmpeg");
+    tr_cmd.args([
+        "-y",
+        "-i", video_path.to_str().unwrap_or_default(),
+        "-vf", "scale='min(1280,iw)':'min(1280,ih)':force_original_aspect_ratio=decrease,scale=trunc(iw/2)*2:trunc(ih/2)*2",
+        "-c:v", "libx264",
+        "-profile:v", "high",
+        "-pix_fmt", "yuv420p",
+        "-r", "30",
+        "-preset", "veryfast",
+        "-crf", "23",
+        "-c:a", "aac",
+        "-b:a", "128k",
+        "-movflags", "+faststart",
+    ]);
+    // Re-encoding anyway, so a plain output-side -t is exact and costs nothing.
+    if let Some(t) = trim_secs {
+        tr_cmd.args(["-t", &t.to_string()]);
+    }
+    tr_cmd.arg(x_video_path.to_str().unwrap_or_default());
+    let tr = tr_cmd.output();
+    let transcode_ok = matches!(&tr, Ok(o) if o.status.success()) && x_video_path.exists();
+    // Without the transcode a long video is still long, and X only rejects it
+    // at tweet creation — after the entire file has been uploaded. Skip the
+    // native attempt in that case rather than spend the upload to be refused.
+    let upload_path: Option<PathBuf> = if transcode_ok {
+        Some(x_video_path.clone())
+    } else if trim_secs.is_some() {
+        eprintln!("WARNING: transcode failed and the video is over X's 2-minute cap — skipping the native attempt.");
+        None
     } else {
         eprintln!("WARNING: transcode failed; uploading the original file.");
-        video_path.to_path_buf()
+        Some(video_path.to_path_buf())
     };
 
-    eprintln!("Posting to X / Twitter (native video)...");
-    let video_result = twitter::publish_video(&token.access_token, &upload_path, &video_caption).await;
+    let video_result = match upload_path {
+        Some(p) => {
+            eprintln!("Posting to X / Twitter (native video)...");
+            twitter::publish_video(&token.access_token, &p, &video_caption).await
+        }
+        None => Err("transcode failed for a video over the 2-minute cap".into()),
+    };
     let _ = fs::remove_file(&x_video_path);
     match video_result {
         Ok(url) => {
