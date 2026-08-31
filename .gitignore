@@ -53,3 +53,5 @@ linkedin_video_stats.csv
 # Gmail API OAuth credentials (sensitive)
 client_secret_gmail.json
 gmail_token.json
+twitter_bearer.txt
+*.bak-*
