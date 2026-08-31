@@ -121,6 +121,10 @@ const LINKEDIN_VERSION: &str = "202603";
 /// disturbing the version the working upload path is pinned to.
 const LINKEDIN_ANALYTICS_VERSION: &str = "202608";
 
+/// LinkedIn refuses an upload above this. Also the budget `ensure_h264` encodes
+/// against, so the H.264 re-encode cannot overshoot what the upload accepts.
+const LINKEDIN_MAX_BYTES: u64 = 500 * 1024 * 1024;
+
 fn find_file(name: &str) -> String {
     if Path::new(name).exists() {
         return name.to_string();
@@ -421,21 +425,48 @@ fn ensure_h264(path: &Path) {
 
     eprintln!("Converting {} video to H.264 for LinkedIn...", codec);
     let converted = path.with_extension("h264.mp4");
-    let status = std::process::Command::new("ffmpeg")
-        .args([
-            "-y",
-            "-i", path.to_str().unwrap_or_default(),
-            "-c:v", "libx264",
-            "-profile:v", "high",
-            "-pix_fmt", "yuv420p",
-            "-preset", "veryfast",
-            "-crf", "18",
-            "-c:a", "aac",
-            "-b:a", "128k",
-            "-movflags", "+faststart",
-            converted.to_str().unwrap_or_default(),
-        ])
-        .output();
+
+    // CRF 18 alone can *inflate* the file well past what we downloaded: the VP9
+    // source is already lossy (~3 Mbps on a 1080p60 rendition), and libx264
+    // chasing near-transparency spends far more than that. Measured on
+    // uoIxmJeb6Kg (8:12, 1080p60): 188.7 MiB in, 606 MB out — rejected by the
+    // 500 MB gate that the *download* had comfortably passed. So cap the rate
+    // at what LinkedIn will still accept. This is a bitrate ceiling at
+    // unchanged resolution, not a --low-quality downgrade, and it only binds
+    // when CRF 18 would have overshot the limit anyway.
+    let cap_args: Vec<String> = match probe_duration_secs(path) {
+        // 20 MB of the budget is left to the audio track and container overhead.
+        Some(d) if d > 1.0 => {
+            let budget_bits = (LINKEDIN_MAX_BYTES.saturating_sub(20 * 1024 * 1024)) * 8;
+            let maxrate = (budget_bits as f64 / d) as u64;
+            vec![
+                "-maxrate".into(), format!("{}", maxrate),
+                "-bufsize".into(), format!("{}", maxrate * 2),
+            ]
+        }
+        // Unknown duration: no budget can be computed, so leave CRF unconstrained
+        // and let the size gate downstream catch an overshoot.
+        _ => Vec::new(),
+    };
+
+    let mut cmd = std::process::Command::new("ffmpeg");
+    cmd.args([
+        "-y",
+        "-i", path.to_str().unwrap_or_default(),
+        "-c:v", "libx264",
+        "-profile:v", "high",
+        "-pix_fmt", "yuv420p",
+        "-preset", "veryfast",
+        "-crf", "18",
+    ]);
+    cmd.args(&cap_args);
+    cmd.args([
+        "-c:a", "aac",
+        "-b:a", "128k",
+        "-movflags", "+faststart",
+        converted.to_str().unwrap_or_default(),
+    ]);
+    let status = cmd.output();
     if matches!(&status, Ok(o) if o.status.success()) && converted.exists() {
         let _ = fs::rename(&converted, path);
     } else {
@@ -891,7 +922,7 @@ async fn main() {
         // Verify file size after download
         if let Ok(fmeta) = fs::metadata(&tmp_path) {
             let size_mb = fmeta.len() as f64 / (1024.0 * 1024.0);
-            if fmeta.len() > 500 * 1024 * 1024 {
+            if fmeta.len() > LINKEDIN_MAX_BYTES {
                 eprintln!("ERROR: Downloaded file is {:.0} MB — LinkedIn max is 500 MB", size_mb);
                 eprintln!("Use --low-quality to download a smaller format");
                 let _ = fs::remove_file(&tmp_path);
