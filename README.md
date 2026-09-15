@@ -484,6 +484,21 @@ Rust binary (`tk_push`) using TikTok Content Posting API. OAuth2 PKCE auth (S256
 
 Rust binary (`li_push`) using LinkedIn Videos API + Posts API. OAuth2 auth with OpenID Connect (person ID from JWT id_token). Local callback on port 8092. 4-step upload: initialize → chunked upload (4MB parts with ETags) → finalize → create post. Supports YouTube URL/ID as input — auto-downloads via yt-dlp with title/description. Pre-checks duration (max 30 min) and filesize (max 500MB) — the size check passes the download format string to `--dump-json`, because without `-f` yt-dlp reports `filesize_approx` for its *own* default pick (`bestvideo+bestaudio` = the 2160p rendition on these Enhanced 4K uploads) rather than the ≤1080p VP9 one actually fetched, which made the gate reject videos that download fine (measured on `0m3zbyA2mvA`: 578.6 MB reported vs 90.0 MB real). `--low-quality` for 1080p fallback. Shows post URL after publish. Upload log in `~/li_push_log.jsonl` prevents duplicate uploads. `--random-short` picks a random unuploaded short from `csv/davaz_enhanced_list.csv` (54 shorts). `--list` shows all previous uploads. Credentials in `linkedin_credentials.json`, token in `linkedin_token.json`. Writes PID to `~/li_push.pid`. Every post also links the **original** (pre-enhancement) video — sourced from the CSV `Original` column for `--random-short`, or parsed from the short's YouTube description (`Original: <url>`) for direct-URL inputs — appended to the LinkedIn commentary.
 
+### LinkedIn's commentary field is not plain text
+
+The Posts API `commentary` field uses LinkedIn's "Little Text" format, which reserves
+`\ | { } @ [ ] ( ) < > # * _ ~` as markup. An unescaped one of these does not error —
+the API answers 201 (or 204 on a partial update) and the feed then renders only the text
+*before* it. Nothing in the response reveals the loss.
+
+Found 2026-09-15 on a document post whose 2997-character body showed up in the feed as the
+two words ahead of its first `(`. The same bug had been silently truncating **every** video
+post: the titles all carry `(Enhanced 4K)`, so the feed showed the title up to the
+parenthesis and dropped the appended `Original:` link entirely.
+
+`escape_commentary()` backslash-escapes the reserved set and is applied to the finished
+commentary, link included. Anything else that POSTs to `/rest/posts` needs to do the same.
+
 ### YouTube 403 bot-detection & the PO-token provider
 
 YouTube increasingly blocks unauthenticated / automated downloads. Three distinct defenses hit `li_push`, each with its own fix:

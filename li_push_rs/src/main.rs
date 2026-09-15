@@ -196,6 +196,30 @@ fn parse_csv_line(line: &str) -> Vec<String> {
     fields
 }
 
+/// Escape a post body for LinkedIn's "Little Text" commentary format.
+///
+/// The `commentary` field is not plain text: LinkedIn reserves
+/// `\\ | { } @ [ ] ( ) < > # * _ ~` as markup and, when one appears
+/// unescaped, silently renders only the text *before* it. The API still
+/// answers 201/204, so nothing in the response reveals the loss. Observed
+/// 2026-09-15 on the Thomas Davatz document post: a 2997-character body
+/// displayed as the two words ahead of the first `(`. Every video post ever
+/// made hit this too — the titles carry `(Enhanced 4K)`, so the feed showed
+/// the title up to the parenthesis and dropped the `Original:` link entirely.
+fn escape_commentary(text: &str) -> String {
+    const RESERVED: &[char] = &[
+        '\\', '|', '{', '}', '@', '[', ']', '(', ')', '<', '>', '#', '*', '_', '~',
+    ];
+    let mut out = String::with_capacity(text.len() + 16);
+    for c in text.chars() {
+        if RESERVED.contains(&c) {
+            out.push('\\');
+        }
+        out.push(c);
+    }
+    out
+}
+
 fn load_uploaded_ids() -> std::collections::HashSet<String> {
     let path = upload_log_path();
     let mut ids = std::collections::HashSet::new();
@@ -1200,12 +1224,12 @@ async fn upload_to_linkedin(
     // Step 4: Create Post
     eprintln!("Creating LinkedIn post...");
     // Surface the original-video link in the post text.
-    let commentary = match original_link {
+    let commentary = escape_commentary(&match original_link {
         Some(link) if !link.is_empty() && !description.contains(link) => {
             format!("{}\n\nOriginal: {}", description, link)
         }
         _ => description.to_string(),
-    };
+    });
     let post_body = serde_json::json!({
         "author": owner,
         "commentary": commentary,
