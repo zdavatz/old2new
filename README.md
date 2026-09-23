@@ -482,7 +482,43 @@ Rust binary (`tk_push`) using TikTok Content Posting API. OAuth2 PKCE auth (S256
 ./li_push_rs/target/release/li_push video.mp4 --title "My Video" --visibility CONNECTIONS
 ```
 
-Rust binary (`li_push`) using LinkedIn Videos API + Posts API. OAuth2 auth with OpenID Connect (person ID from JWT id_token). Local callback on port 8092. 4-step upload: initialize → chunked upload (4MB parts with ETags) → finalize → create post. Supports YouTube URL/ID as input — auto-downloads via yt-dlp with title/description. Pre-checks duration (max 30 min) and filesize (max 500MB) — the size check passes the download format string to `--dump-json`, because without `-f` yt-dlp reports `filesize_approx` for its *own* default pick (`bestvideo+bestaudio` = the 2160p rendition on these Enhanced 4K uploads) rather than the ≤1080p VP9 one actually fetched, which made the gate reject videos that download fine (measured on `0m3zbyA2mvA`: 578.6 MB reported vs 90.0 MB real). `--low-quality` for 1080p fallback. Shows post URL after publish. Upload log in `~/li_push_log.jsonl` prevents duplicate uploads. `--random-short` picks a random unuploaded short from `csv/davaz_enhanced_list.csv` (54 shorts). `--list` shows all previous uploads. Credentials in `linkedin_credentials.json`, token in `linkedin_token.json`. Writes PID to `~/li_push.pid`. Every post also links the **original** (pre-enhancement) video — sourced from the CSV `Original` column for `--random-short`, or parsed from the short's YouTube description (`Original: <url>`) for direct-URL inputs — appended to the LinkedIn commentary.
+Rust binary (`li_push`) using LinkedIn Videos API + Posts API. OAuth2 auth with OpenID Connect (person ID from JWT id_token). Local callback on port 8092. 4-step upload: initialize → chunked upload (4MB parts with ETags) → finalize → create post. Supports YouTube URL/ID as input — auto-downloads via yt-dlp with title/description. Pre-checks duration (max 30 min) and filesize (max 500MB) — the size check passes the download format string to `--dump-json`, because without `-f` yt-dlp reports `filesize_approx` for its *own* default pick (`bestvideo+bestaudio` = the 2160p rendition on these Enhanced 4K uploads) rather than the ≤1080p VP9 one actually fetched, which made the gate reject videos that download fine (measured on `0m3zbyA2mvA`: 578.6 MB reported vs 90.0 MB real). `--low-quality` for 1080p fallback. Shows post URL after publish. Upload log in `~/li_push_log.jsonl` prevents duplicate uploads. `--random-short` picks a random unuploaded short from `csv/davaz_enhanced_list.csv`, and once those run out falls back to the full-length videos in the same file (see "Long videos: post the first 30 minutes"). `--list` shows all previous uploads. Credentials in `linkedin_credentials.json`, token in `linkedin_token.json`. Writes PID to `~/li_push.pid`. Every post also links the **original** (pre-enhancement) video — sourced from the CSV `Original` column for `--random-short`, or parsed from the short's YouTube description (`Original: <url>`) for direct-URL inputs — appended to the LinkedIn commentary.
+
+### Long videos: post the first 30 minutes
+
+All 118 shorts in `csv/davaz_enhanced_list.csv` were on LinkedIn by 2026-08-31, so
+`--random-short` had nothing left to pick and exited. It now falls back to the CSV's
+full-length rows — 122 of them still unposted, 47 running past LinkedIn's 30-minute
+ceiling.
+
+An over-length pick is trimmed rather than skipped. `LINKEDIN_TRIM_SECS` is 1790, not
+1800: ffmpeg cuts on frame boundaries and `--force-keyframes-at-cuts` can land slightly
+past the mark, and a file a few frames over 30:00 is refused at *post creation* — after
+the whole upload has already gone up. The cut happens at download time via yt-dlp
+`--download-sections "*0-1790"`, not afterwards, so the discarded footage never costs
+anything against YouTube's per-IP byte allowance. The pre-download `filesize_approx`
+gate is skipped for these, since the reported size is the whole video's; the
+post-download size check still measures the real file.
+
+The commentary then gains two lines:
+
+```
+<description>
+
+First 29 minutes — full video: <Enhanced 4K link>
+
+Original: <original link>
+```
+
+"Full video" points at the **Enhanced 4K upload, not the pre-enhancement original** —
+someone who just watched half an hour wants the rest of *that* edit, and the original is
+a different, lower-quality one. It is still credited on its own line. Eight of the
+remaining rows carry an `Original` identical to their `Enhanced 4K` URL (no separate
+original exists); the duplicate-link guard drops the redundant second line there.
+
+Trimming applies only to `--random-short`. A video named explicitly on the command line
+still aborts above 30 minutes — quietly posting a fraction of what was asked for would be
+the wrong surprise.
 
 ### LinkedIn's commentary field is not plain text
 

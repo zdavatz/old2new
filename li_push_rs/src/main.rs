@@ -121,6 +121,15 @@ const LINKEDIN_VERSION: &str = "202603";
 /// disturbing the version the working upload path is pinned to.
 const LINKEDIN_ANALYTICS_VERSION: &str = "202608";
 
+/// LinkedIn refuses a video longer than this.
+const LINKEDIN_MAX_DURATION_SECS: f64 = 1800.0;
+
+/// What an over-length video gets trimmed to. Ten seconds under the limit
+/// because ffmpeg cuts on frame boundaries and `--force-keyframes-at-cuts`
+/// can land a little past the requested mark — a file a few frames over 30:00
+/// is refused at post creation, after the whole upload has already gone up.
+const LINKEDIN_TRIM_SECS: u64 = 1790;
+
 /// LinkedIn refuses an upload above this. Also the budget `ensure_h264` encodes
 /// against, so the H.264 re-encode cannot overshoot what the upload accepts.
 const LINKEDIN_MAX_BYTES: u64 = 500 * 1024 * 1024;
@@ -693,6 +702,12 @@ async fn main() {
     // YouTube description.
     let mut original_link: Option<String> = None;
 
+    // Set when the picked video is longer than LinkedIn accepts: the download
+    // is cut to `LINKEDIN_TRIM_SECS` and the commentary says so, pointing at
+    // the full Enhanced 4K upload for the rest.
+    let mut trim_secs: Option<u64> = None;
+    let mut full_video_link: Option<String> = None;
+
     // --random-short: pick a random Enhanced 4K short from CSV
     let video_input = if cli.random_short {
         // Read shorts from csv/davaz_enhanced_list.csv
@@ -766,8 +781,34 @@ async fn main() {
             }
         }
 
+        // Shorts exhausted → fall back to the full-length Enhanced 4K videos.
+        // There are far more of those than shorts, and most run past LinkedIn's
+        // 30-minute ceiling; those are posted as the first 30 minutes with the
+        // full video linked, rather than skipped.
+        let picked_short = !candidates.is_empty();
+        if !picked_short {
+            eprintln!(
+                "All shorts already uploaded — falling back to full-length videos."
+            );
+            for line in csv_data.lines().skip(1) {
+                let fields = parse_csv_line(line);
+                if fields.len() >= 5 && fields[4].trim() != "yes" {
+                    let id = id_of(&fields[2]);
+                    if id.is_empty() || uploaded_ids.contains(&id) {
+                        continue;
+                    }
+                    candidates.push((
+                        id,
+                        fields[0].to_string(),
+                        fields[3].trim().parse().unwrap_or(0),
+                        fields[1].trim().to_string(),
+                    ));
+                }
+            }
+        }
+
         if candidates.is_empty() {
-            eprintln!("All {} shorts already uploaded to LinkedIn!", uploaded_ids.len());
+            eprintln!("All {} videos already uploaded to LinkedIn!", uploaded_ids.len());
             std::process::exit(0);
         }
 
@@ -789,12 +830,24 @@ async fn main() {
         };
         let (id, title, duration, original_url) = &candidates[idx];
         eprintln!("Selected: {} — {} ({}s)", id, title, duration);
-        eprintln!("({} shorts available, {} already uploaded)", candidates.len(), uploaded_ids.len());
+        eprintln!(
+            "({} {} available, {} already uploaded)",
+            candidates.len(),
+            if picked_short { "shorts" } else { "full-length videos" },
+            uploaded_ids.len()
+        );
         if !original_url.is_empty() {
             eprintln!("Original video: {}", original_url);
             original_link = Some(original_url.clone());
         }
-        format!("https://www.youtube.com/watch?v={}", id)
+        let enhanced_url = format!("https://www.youtube.com/watch?v={}", id);
+        // The CSV duration is the pre-flight signal; the metadata check below
+        // arms the trim as well, so a missing or stale CSV value still works.
+        if *duration as f64 > LINKEDIN_MAX_DURATION_SECS {
+            trim_secs = Some(LINKEDIN_TRIM_SECS);
+            full_video_link = Some(enhanced_url.clone());
+        }
+        enhanced_url
     } else {
         match &cli.video_file {
             Some(f) => f.clone(),
@@ -875,19 +928,43 @@ async fn main() {
                 eprintln!("YouTube title: {}", yt_title);
                 yt_meta_ref = Some(yt_meta.clone());
 
-                // Check duration (LinkedIn max 30 min)
+                // Check duration (LinkedIn max 30 min). In --random-short the
+                // long-video fallback would otherwise abort on nearly every
+                // pick, so trim there instead of failing; a video named
+                // explicitly on the command line still errors, because
+                // silently posting a fraction of what was asked for would be
+                // the wrong surprise.
                 if let Some(duration) = yt_meta["duration"].as_f64() {
-                    if duration > 1800.0 {
-                        eprintln!("ERROR: Video is {:.0}s ({:.1} min) — LinkedIn max is 30 minutes",
-                            duration, duration / 60.0);
-                        std::process::exit(1);
+                    if duration > LINKEDIN_MAX_DURATION_SECS {
+                        if cli.random_short {
+                            eprintln!(
+                                "Video is {:.0}s ({:.1} min) — over LinkedIn's 30-minute cap; \
+                                 posting the first {}s and linking the full video.",
+                                duration, duration / 60.0, LINKEDIN_TRIM_SECS
+                            );
+                            trim_secs = Some(LINKEDIN_TRIM_SECS);
+                            if full_video_link.is_none() {
+                                full_video_link = yt_meta["webpage_url"]
+                                    .as_str()
+                                    .map(|u| u.to_string())
+                                    .or_else(|| Some(video_input.clone()));
+                            }
+                        } else {
+                            eprintln!("ERROR: Video is {:.0}s ({:.1} min) — LinkedIn max is 30 minutes",
+                                duration, duration / 60.0);
+                            std::process::exit(1);
+                        }
                     }
                 }
             }
         }
 
         // Check estimated filesize before downloading (LinkedIn max 500MB)
+        // A trimmed fetch pulls only the first half hour, so the reported size
+        // of the whole video says nothing about what lands on disk. The
+        // post-download check below measures the real file either way.
         let mut filesize_ok = true;
+        if trim_secs.is_none() {
         if let Some(filesize) = yt_meta_ref.as_ref()
             .and_then(|m| m["filesize_approx"].as_f64().or_else(|| m["filesize"].as_f64()))
         {
@@ -897,6 +974,7 @@ async fn main() {
                 eprintln!("Use --low-quality to download a smaller format (max 1080p)");
                 filesize_ok = false;
             }
+        }
         }
         if !filesize_ok && !cli.low_quality {
             std::process::exit(1);
@@ -930,6 +1008,14 @@ async fn main() {
         // clients pick it up on their own to unlock the HD formats.
         if let Some(browser) = &cookie_browser {
             dl_cmd.args(["--cookies-from-browser", browser]);
+        }
+        // Fetch only the part that will be posted. Downloading the whole file
+        // and cutting afterwards would spend bytes against YouTube's per-IP
+        // allowance for footage that is thrown away immediately.
+        let section;
+        if let Some(secs) = trim_secs {
+            section = format!("*0-{}", secs);
+            dl_cmd.args(["--download-sections", &section, "--force-keyframes-at-cuts"]);
         }
         dl_cmd.arg(&video_input);
         let dl_status = dl_cmd.status().expect("yt-dlp failed");
@@ -1021,6 +1107,7 @@ async fn main() {
             file_size,
             file_size_mb,
             original_link.as_deref(),
+            if trim_secs.is_some() { full_video_link.as_deref() } else { None },
         )
         .await;
     }
@@ -1047,6 +1134,9 @@ async fn upload_to_linkedin(
     file_size: u64,
     file_size_mb: f64,
     original_link: Option<&str>,
+    // Set when the upload is only the first LINKEDIN_TRIM_SECS of a longer
+    // video: the Enhanced 4K upload carrying the rest.
+    trimmed_full_link: Option<&str>,
 ) {
     let creds = load_credentials(&cli.credentials).unwrap_or_else(|e| {
         eprintln!("ERROR: {}", e);
@@ -1224,12 +1314,26 @@ async fn upload_to_linkedin(
     // Step 4: Create Post
     eprintln!("Creating LinkedIn post...");
     // Surface the original-video link in the post text.
-    let commentary = escape_commentary(&match original_link {
-        Some(link) if !link.is_empty() && !description.contains(link) => {
-            format!("{}\n\nOriginal: {}", description, link)
+    let mut body = description.to_string();
+    // A trimmed post promises the rest of the very footage just watched, so
+    // "full video" has to point at the Enhanced 4K upload, not at the
+    // pre-enhancement original — that is a different, lower-quality edit. The
+    // original is still credited on its own line below.
+    if let Some(full) = trimmed_full_link {
+        if !full.is_empty() && !body.contains(full) {
+            body.push_str(&format!(
+                "\n\nFirst {} minutes — full video: {}",
+                LINKEDIN_TRIM_SECS / 60,
+                full
+            ));
         }
-        _ => description.to_string(),
-    });
+    }
+    if let Some(link) = original_link {
+        if !link.is_empty() && !body.contains(link) {
+            body.push_str(&format!("\n\nOriginal: {}", link));
+        }
+    }
+    let commentary = escape_commentary(&body);
     let post_body = serde_json::json!({
         "author": owner,
         "commentary": commentary,
