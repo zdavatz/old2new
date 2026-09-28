@@ -492,13 +492,35 @@ full-length rows — 122 of them still unposted, 47 running past LinkedIn's 30-m
 ceiling.
 
 An over-length pick is trimmed rather than skipped. `LINKEDIN_TRIM_SECS` is 1790, not
-1800: ffmpeg cuts on frame boundaries and `--force-keyframes-at-cuts` can land slightly
-past the mark, and a file a few frames over 30:00 is refused at *post creation* — after
-the whole upload has already gone up. The cut happens at download time via yt-dlp
+1800: the stream-copy cut lands on a packet boundary, which can be slightly past the
+mark, and a file a few frames over 30:00 is refused at *post creation* — after the whole
+upload has already gone up. The cut happens at download time via yt-dlp
 `--download-sections "*0-1790"`, not afterwards, so the discarded footage never costs
 anything against YouTube's per-IP byte allowance. The pre-download `filesize_approx`
 gate is skipped for these, since the reported size is the whole video's; the
 post-download size check still measures the real file.
+
+**Do not add `--force-keyframes-at-cuts`.** It looks harmless but makes yt-dlp re-encode
+the section itself — libx264 at CRF 23, preset medium — so the file arrives already H.264.
+`ensure_h264` then used to return early on "already h264", and nothing enforced the 500 MB
+budget: two trimmed posts died at the size gate (1109 MB on 2026-09-25, 663 MB on
+2026-09-28). The first was misdiagnosed as a missing container duration; the libx264 log
+line `crf=23.0` is what gave it away, since `ensure_h264` encodes at CRF 18 / veryfast.
+Without the flag the section is a plain stream copy — exact at the start, since a cut at
+0 always sits on a keyframe — and stays VP9, so `ensure_h264` does the one budgeted encode.
+Verified on a 60 s section of the failing video: `vp9`, 60.0 s.
+
+`ensure_h264` was hardened alongside, so the size guarantee no longer depends on which
+codec happens to arrive:
+
+- An H.264 input over 500 MB is re-encoded within budget instead of passed through.
+- `probe_duration_secs` falls back to the video stream's duration when the container has
+  none, so the bitrate ceiling is not silently dropped.
+- The ceiling it applies is logged (`bitrate ceiling 3125 kbit/s over 1288s`), which makes
+  the next failure diagnosable from the output alone.
+- If the converted file is *still* over the limit, it is encoded once more against a hard
+  `-b:v` target computed from the converted file's own duration — always readable, since
+  ffmpeg just wrote that container.
 
 The commentary then gains two lines:
 

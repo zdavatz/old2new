@@ -414,19 +414,35 @@ fn build_tweet_caption(title: &str, link: Option<&str>) -> String {
 /// the container carries no duration. Callers must treat None as "unknown", not
 /// "short" — the X trim below only kicks in on a confirmed over-length video.
 fn probe_duration_secs(path: &Path) -> Option<f64> {
-    let out = std::process::Command::new("ffprobe")
-        .args([
-            "-v", "error",
-            "-show_entries", "format=duration",
+    // Ask the container first, then the video stream. A remux — which is what
+    // yt-dlp hands back after `--download-sections` — can leave `format=duration`
+    // empty or "N/A", and a None there silently disables the bitrate budget in
+    // ensure_h264, which is how a 1109 MB file once reached LinkedIn's 500 MB gate.
+    for entries in ["format=duration", "stream=duration"] {
+        let mut cmd = std::process::Command::new("ffprobe");
+        cmd.args(["-v", "error"]);
+        if entries.starts_with("stream") {
+            cmd.args(["-select_streams", "v:0"]);
+        }
+        cmd.args([
+            "-show_entries", entries,
             "-of", "default=noprint_wrappers=1:nokey=1",
-        ])
-        .arg(path)
-        .output()
-        .ok()?;
-    if !out.status.success() {
-        return None;
+        ]);
+        cmd.arg(path);
+        if let Ok(out) = cmd.output() {
+            if out.status.success() {
+                if let Some(d) = String::from_utf8_lossy(&out.stdout)
+                    .lines()
+                    .find_map(|l| l.trim().parse::<f64>().ok())
+                {
+                    if d > 0.0 {
+                        return Some(d);
+                    }
+                }
+            }
+        }
     }
-    String::from_utf8_lossy(&out.stdout).trim().parse::<f64>().ok()
+    None
 }
 
 /// Re-encode `path` to H.264 in place when it holds some other codec.
@@ -452,11 +468,19 @@ fn ensure_h264(path: &Path) {
         // safer than re-encoding something that may already be H.264.
         _ => return,
     };
-    if codec == "h264" {
+    // H.264 that already fits is uploaded untouched. H.264 that does *not* fit
+    // still goes through the budgeted encode below: the size guarantee must not
+    // depend on which codec happened to arrive.
+    let oversize_input = fs::metadata(path).map(|m| m.len() > LINKEDIN_MAX_BYTES).unwrap_or(false);
+    if codec == "h264" && !oversize_input {
         return;
     }
 
-    eprintln!("Converting {} video to H.264 for LinkedIn...", codec);
+    if codec == "h264" {
+        eprintln!("H.264 download is over 500 MB — re-encoding within LinkedIn's budget...");
+    } else {
+        eprintln!("Converting {} video to H.264 for LinkedIn...", codec);
+    }
     let converted = path.with_extension("h264.mp4");
 
     // CRF 18 alone can *inflate* the file well past what we downloaded: the VP9
@@ -467,45 +491,98 @@ fn ensure_h264(path: &Path) {
     // at what LinkedIn will still accept. This is a bitrate ceiling at
     // unchanged resolution, not a --low-quality downgrade, and it only binds
     // when CRF 18 would have overshot the limit anyway.
-    let cap_args: Vec<String> = match probe_duration_secs(path) {
+    let duration = probe_duration_secs(path);
+    let cap_args: Vec<String> = match duration {
         // 20 MB of the budget is left to the audio track and container overhead.
         Some(d) if d > 1.0 => {
-            let budget_bits = (LINKEDIN_MAX_BYTES.saturating_sub(20 * 1024 * 1024)) * 8;
-            let maxrate = (budget_bits as f64 / d) as u64;
+            let maxrate = linkedin_budget_bps(d);
+            eprintln!(
+                "  bitrate ceiling {:.0} kbit/s over {:.0}s",
+                maxrate as f64 / 1000.0,
+                d
+            );
             vec![
                 "-maxrate".into(), format!("{}", maxrate),
                 "-bufsize".into(), format!("{}", maxrate * 2),
             ]
         }
         // Unknown duration: no budget can be computed, so leave CRF unconstrained
-        // and let the size gate downstream catch an overshoot.
-        _ => Vec::new(),
+        // and let the oversize retry below catch an overshoot.
+        _ => {
+            eprintln!("  duration unknown — encoding without a bitrate ceiling");
+            Vec::new()
+        }
     };
 
+    if !encode_h264(path, &converted, &cap_args) {
+        eprintln!("WARNING: H.264 conversion failed; uploading the downloaded file as-is.");
+        let _ = fs::remove_file(&converted);
+        return;
+    }
+
+    // The ceiling is only as good as the duration it was computed from, and CRF
+    // 18 without one can overshoot by more than 2x. Measure the real output and,
+    // if it is still too big, re-encode against a hard target derived from the
+    // *converted* file — whose duration ffprobe can always read, because ffmpeg
+    // just wrote the container itself.
+    let oversize = fs::metadata(&converted).map(|m| m.len() > LINKEDIN_MAX_BYTES).unwrap_or(false);
+    if oversize {
+        let d = probe_duration_secs(&converted).or(duration).unwrap_or(0.0);
+        if d > 1.0 {
+            let target = linkedin_budget_bps(d);
+            eprintln!(
+                "Converted file is still over 500 MB — re-encoding at {:.0} kbit/s.",
+                target as f64 / 1000.0
+            );
+            let retry = path.with_extension("h264.capped.mp4");
+            let hard_cap = vec![
+                "-b:v".to_string(), format!("{}", target),
+                "-maxrate".into(), format!("{}", target),
+                "-bufsize".into(), format!("{}", target * 2),
+            ];
+            if encode_h264(&converted, &retry, &hard_cap) {
+                let _ = fs::remove_file(&converted);
+                let _ = fs::rename(&retry, path);
+                return;
+            }
+            let _ = fs::remove_file(&retry);
+        }
+    }
+
+    let _ = fs::rename(&converted, path);
+}
+
+/// Bits per second that fit `secs` of video into LinkedIn's 500 MB ceiling,
+/// leaving 20 MB for the audio track and container overhead.
+fn linkedin_budget_bps(secs: f64) -> u64 {
+    let budget_bits = (LINKEDIN_MAX_BYTES.saturating_sub(20 * 1024 * 1024)) * 8;
+    (budget_bits as f64 / secs) as u64
+}
+
+/// One libx264 pass from `src` to `dst` with `rate_args` controlling the size.
+/// Returns whether `dst` was written.
+fn encode_h264(src: &Path, dst: &Path, rate_args: &[String]) -> bool {
     let mut cmd = std::process::Command::new("ffmpeg");
     cmd.args([
         "-y",
-        "-i", path.to_str().unwrap_or_default(),
+        "-i", src.to_str().unwrap_or_default(),
         "-c:v", "libx264",
         "-profile:v", "high",
         "-pix_fmt", "yuv420p",
         "-preset", "veryfast",
-        "-crf", "18",
     ]);
-    cmd.args(&cap_args);
+    // A hard -b:v target replaces CRF; a ceiling alongside CRF only constrains it.
+    if !rate_args.iter().any(|a| a == "-b:v") {
+        cmd.args(["-crf", "18"]);
+    }
+    cmd.args(rate_args);
     cmd.args([
         "-c:a", "aac",
         "-b:a", "128k",
         "-movflags", "+faststart",
-        converted.to_str().unwrap_or_default(),
+        dst.to_str().unwrap_or_default(),
     ]);
-    let status = cmd.output();
-    if matches!(&status, Ok(o) if o.status.success()) && converted.exists() {
-        let _ = fs::rename(&converted, path);
-    } else {
-        eprintln!("WARNING: H.264 conversion failed; uploading the downloaded file as-is.");
-        let _ = fs::remove_file(&converted);
-    }
+    matches!(cmd.output(), Ok(o) if o.status.success()) && dst.exists()
 }
 
 /// Metrics fetched per post. IMPRESSION is what the UI calls views;
@@ -1012,10 +1089,17 @@ async fn main() {
         // Fetch only the part that will be posted. Downloading the whole file
         // and cutting afterwards would spend bytes against YouTube's per-IP
         // allowance for footage that is thrown away immediately.
+        //
+        // No --force-keyframes-at-cuts: it makes yt-dlp re-encode the section
+        // itself (libx264 CRF 23, preset medium), so the file arrived already
+        // H.264, ensure_h264 skipped it, and nothing enforced the 500 MB budget
+        // — 663 MB and 1109 MB rejections on 2026-09-25/28. The cut starts at 0,
+        // where there is always a keyframe, so a stream copy is exact there and
+        // lands on a packet boundary at the end, which is all we need.
         let section;
         if let Some(secs) = trim_secs {
             section = format!("*0-{}", secs);
-            dl_cmd.args(["--download-sections", &section, "--force-keyframes-at-cuts"]);
+            dl_cmd.args(["--download-sections", &section]);
         }
         dl_cmd.arg(&video_input);
         let dl_status = dl_cmd.status().expect("yt-dlp failed");
