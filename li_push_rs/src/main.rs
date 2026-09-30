@@ -493,7 +493,7 @@ fn ensure_h264(path: &Path) {
     // when CRF 18 would have overshot the limit anyway.
     let duration = probe_duration_secs(path);
     let cap_args: Vec<String> = match duration {
-        // 20 MB of the budget is left to the audio track and container overhead.
+        // linkedin_budget_bps reserves the audio track and a 5% margin.
         Some(d) if d > 1.0 => {
             let maxrate = linkedin_budget_bps(d);
             eprintln!(
@@ -552,11 +552,17 @@ fn ensure_h264(path: &Path) {
     let _ = fs::rename(&converted, path);
 }
 
-/// Bits per second that fit `secs` of video into LinkedIn's 500 MB ceiling,
-/// leaving 20 MB for the audio track and container overhead.
+/// Video bits per second that fit `secs` into LinkedIn's 500 MB ceiling.
+///
+/// The audio track is subtracted at its real rate: a flat 20 MB reserve was
+/// too small once trimmed posts reached 29:50, where 128 kbit/s of AAC alone
+/// is ~27 MB — 050c BORN to MOVE came out at 506 MB on 2026-09-29 even after
+/// the hard -b:v retry. A 5% margin then absorbs container overhead and the
+/// fact that a single-pass encode never lands exactly on its target.
 fn linkedin_budget_bps(secs: f64) -> u64 {
-    let budget_bits = (LINKEDIN_MAX_BYTES.saturating_sub(20 * 1024 * 1024)) * 8;
-    (budget_bits as f64 / secs) as u64
+    const AUDIO_BPS: f64 = 128_000.0;
+    let total_bps = LINKEDIN_MAX_BYTES as f64 * 8.0 * 0.95 / secs;
+    (total_bps - AUDIO_BPS).max(100_000.0) as u64
 }
 
 /// One libx264 pass from `src` to `dst` with `rate_args` controlling the size.
