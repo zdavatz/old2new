@@ -75,6 +75,10 @@ struct Cli {
     #[arg(long)]
     random_short: bool,
 
+    /// Don't git-pull the post logs before picking or commit+push them after posting
+    #[arg(long)]
+    no_log_sync: bool,
+
     /// List all previously uploaded videos
     #[arg(long)]
     list: bool,
@@ -165,9 +169,88 @@ fn save_token(path: &str, token: &Token) {
     fs::write(path, json).expect("write token");
 }
 
-fn upload_log_path() -> PathBuf {
+/// Root of the old2new checkout, if li_push is being run from one: the
+/// working directory when it looks like the repo, else the nearest ancestor of
+/// the binary that carries a `.git`.
+fn repo_root() -> Option<PathBuf> {
+    if let Ok(cwd) = env::current_dir() {
+        if cwd.join("csv/davaz_enhanced_list.csv").exists() && cwd.join(".git").exists() {
+            return Some(cwd);
+        }
+    }
+    let exe = env::current_exe().ok()?;
+    exe.ancestors()
+        .find(|a| a.join(".git").exists() && a.join("li_push_rs").exists())
+        .map(|a| a.to_path_buf())
+}
+
+/// Where a post log lives. The logs are the dedup state — which videos are
+/// already on LinkedIn / X — so they are kept in the repo (`logs/`) and pushed
+/// after every post: a clone on another machine then continues where this one
+/// stopped instead of re-posting everything. They used to sit in `$HOME`,
+/// invisible to git; that location remains the fallback when the binary runs
+/// outside a checkout.
+fn log_path(name: &str) -> PathBuf {
+    if let Some(root) = repo_root() {
+        let dir = root.join("logs");
+        if fs::create_dir_all(&dir).is_ok() {
+            return dir.join(name);
+        }
+    }
     let home = env::var("HOME").unwrap_or_else(|_| "/root".to_string());
-    PathBuf::from(home).join("li_push_log.jsonl")
+    PathBuf::from(home).join(name)
+}
+
+/// Run git in the checkout; true when it exited successfully.
+fn git(root: &Path, args: &[&str]) -> bool {
+    std::process::Command::new("git")
+        .arg("-C")
+        .arg(root)
+        .args(args)
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false)
+}
+
+/// Fetch the logs another machine may have pushed, before picking a video.
+/// Fast-forward only, and a failure is a warning: a stale log risks a duplicate
+/// post, but refusing to post over a flaky network would be worse.
+fn pull_logs() {
+    if let Some(root) = repo_root() {
+        if !git(&root, &["pull", "--ff-only", "--quiet"]) {
+            eprintln!("WARNING: git pull failed — post logs may be behind another machine's.");
+        }
+    }
+}
+
+/// Commit and push the post logs, and nothing else: the pathspec keeps any
+/// other work in the tree out of the commit.
+fn push_logs(title: &str) {
+    let Some(root) = repo_root() else { return };
+    let files = ["logs/li_push_log.jsonl", "logs/li_push_twitter_log.jsonl"];
+    let present: Vec<&str> = files.iter().copied().filter(|f| root.join(f).exists()).collect();
+    if present.is_empty() {
+        return;
+    }
+    let mut add = vec!["add", "--"];
+    add.extend(&present);
+    git(&root, &add);
+    let msg = format!("li_push log: {}", title);
+    let mut commit = vec!["commit", "--quiet", "-m", &msg, "--"];
+    commit.extend(&present);
+    if !git(&root, &commit) {
+        // Nothing new to record (e.g. the post failed before logging).
+        return;
+    }
+    if git(&root, &["push", "--quiet"]) {
+        eprintln!("Post logs committed and pushed.");
+    } else {
+        eprintln!("WARNING: post logs committed but git push failed — push manually.");
+    }
+}
+
+fn upload_log_path() -> PathBuf {
+    log_path("li_push_log.jsonl")
 }
 
 /// Parse one CSV line into fields, honoring double-quoted fields that may
@@ -265,8 +348,7 @@ fn append_upload_log(youtube_id: &str, title: &str, post_id: &str, post_url: &st
 }
 
 fn twitter_log_path() -> PathBuf {
-    let home = env::var("HOME").unwrap_or_else(|_| "/root".to_string());
-    PathBuf::from(home).join("li_push_twitter_log.jsonl")
+    log_path("li_push_twitter_log.jsonl")
 }
 
 fn load_twitter_uploaded_ids() -> std::collections::HashSet<String> {
@@ -772,6 +854,12 @@ async fn main() {
     let do_twitter = cli.twitter || cli.twitter_only;
     let do_linkedin = !cli.twitter_only;
 
+    // The post logs live in the repo so another machine can carry on; make
+    // sure we have that machine's latest entries before deciding what is new.
+    if !cli.no_log_sync {
+        pull_logs();
+    }
+
     // Dedup set: in twitter-only mode dedup against the X log, otherwise the
     // LinkedIn log (the primary gate for the combined / LinkedIn-only flows).
     let uploaded_ids = if cli.twitter_only {
@@ -951,7 +1039,7 @@ async fn main() {
     // Duplicate check for YouTube videos
     if let Some(yt_id) = extract_youtube_id(&video_input) {
         if uploaded_ids.contains(&yt_id) {
-            eprintln!("SKIP: {} already uploaded to LinkedIn. See ~/li_push_log.jsonl", yt_id);
+            eprintln!("SKIP: {} already uploaded to LinkedIn. See logs/li_push_log.jsonl", yt_id);
             std::process::exit(0);
         }
     }
@@ -1210,6 +1298,10 @@ async fn main() {
     if let Some(tmp) = temp_file {
         let _ = fs::remove_file(&tmp);
         eprintln!("Cleaned up temp file: {}", tmp.display());
+    }
+
+    if !cli.no_log_sync {
+        push_logs(&title);
     }
 }
 

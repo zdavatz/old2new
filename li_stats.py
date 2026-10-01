@@ -5,7 +5,7 @@ LinkedIn's `memberCreatorPostAnalytics` API would give these numbers directly,
 but the `r_member_postAnalytics` scope is only granted to applications LinkedIn
 approves, so the export from Analytics & Tools -> Export is the way in for now.
 It identifies posts by their public slug URL, which embeds the ugcPost id we
-already record in ~/li_push_log.jsonl — so the join is exact, not fuzzy, and
+already record in logs/li_push_log.jsonl — so the join is exact, not fuzzy, and
 each row can be reported against the video it came from.
 
 Stdlib only (an .xlsx is a zip of XML), matching the other tools here.
@@ -23,7 +23,11 @@ import zipfile
 from xml.etree import ElementTree as ET
 
 NS = {"m": "http://schemas.openxmlformats.org/spreadsheetml/2006/main"}
-LOG = os.path.join(os.path.expanduser("~"), "li_push_log.jsonl")
+# The post log moved into the repo (logs/) so it travels with a clone; the old
+# home-directory location is kept as a fallback.
+LOG = os.path.join(os.path.dirname(os.path.abspath(__file__)), "logs", "li_push_log.jsonl")
+if not os.path.exists(LOG):
+    LOG = os.path.join(os.path.expanduser("~"), "li_push_log.jsonl")
 
 
 def col_index(ref):

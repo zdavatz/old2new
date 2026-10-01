@@ -85,7 +85,7 @@ pub fn is_signed_in() -> bool {
 /// append-only, one JSON object per line, in `linkedin_posts.jsonl` (same
 /// pattern as `uploads.jsonl`) — this is what makes the "✅ Posted to
 /// LinkedIn" state survive an app restart, the GUI's counterpart to the
-/// CLI's `~/li_push_log.jsonl` dedup log.
+/// CLI's `logs/li_push_log.jsonl` dedup log.
 #[derive(Clone, Serialize, Deserialize)]
 pub struct PostRecord {
     pub timestamp: String,
