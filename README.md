@@ -514,6 +514,15 @@ git clone https://github.com/zdavatz/old2new && cd old2new
 Don't post from two machines at the same moment: the pull happens before the pick, so two
 simultaneous runs can still choose the same video.
 
+Three things a second machine got wrong on 2026-10-07, each silent until the post failed:
+
+- **A stale binary.** `target/` is not in the repo, so an old build keeps whatever flags it
+  was compiled with — the one found there predated `--twitter` altogether. Rebuild first.
+- **No PO-token provider.** Without it the download 403s after ~10 MB (see "YouTube 403
+  bot-detection" below); the provider is a per-machine install, not part of the checkout.
+- **Expired tokens.** A LinkedIn token lasts 60 days and carries no refresh token, so one
+  left over from an earlier session answers 401 and needs `li_push --auth` again.
+
 ### Long videos: post the first 30 minutes
 
 All 118 shorts in `csv/davaz_enhanced_list.csv` were on LinkedIn by 2026-08-31, so
@@ -571,6 +580,16 @@ original exists); the duplicate-link guard drops the redundant second line there
 Trimming applies only to `--random-short`. A video named explicitly on the command line
 still aborts above 30 minutes — quietly posting a fraction of what was asked for would be
 the wrong surprise.
+
+The one exception is `--twitter-only` with an explicit video: nothing goes to LinkedIn, so
+its ceiling does not apply, and X only ever gets the first two minutes anyway. There the
+download is cut to `TWITTER_ONLY_FETCH_SECS` (130s — just past the 120s mark, so the probe
+in `post_to_twitter` still labels the post as an excerpt) instead of aborting. This is how
+a long video that `--random-short` already put on LinkedIn gets its X post afterwards:
+
+```bash
+./li_push_rs/target/release/li_push VIDEO_ID --twitter-only
+```
 
 ### LinkedIn's commentary field is not plain text
 
@@ -691,6 +710,10 @@ First 2 minutes — full video: <link>
 where that link is the **Enhanced 4K upload, not the pre-enhancement original**. Everywhere else the convention is to always credit the original, but a trimmed post promises the full version of the excerpt the viewer just watched — pointing "full video" at a different, lower-quality edit would be misleading. Untrimmed posts keep the original-link convention, and the LinkedIn commentary carries the `Original:` link either way. If the transcode itself fails on an over-length video, the native attempt is skipped rather than uploading a file X is certain to reject.
 
 Verified 2026-08-21: `TzMvazqITUk` (286s) published natively after trimming, where the untrimmed 5:23 and 4:17 videos had both 403'd at tweet creation.
+
+**Don't use the token the X console generates.** The console's "Generate" button for OAuth 2.0 user tokens hands out an access + refresh token with a fixed scope list that has **no `media.write`** (and no `offline.access`). Such a token reads the account fine (`GET /2/users/me` → 200) and could tweet text, but every media upload — video *and* the fallback image — answers a bare `403 {"title":"Forbidden","detail":"Forbidden"}` with nothing naming the missing scope. The scope list is shown under the token in the console; if `media.write` is not in it, the token cannot post video. Only the `--auth-twitter` browser flow requests the right scopes, and it needs the client secret. X shows that secret once, at creation; afterwards it is masked and can only be regenerated, which invalidates every other machine's `twitter_credentials.json`.
+
+**`402 credits depleted`** means the developer account that owns the app has no credits left — the upload is accepted segment by segment and the refusal comes at `finalize` (and again at `POST /2/tweets` for the image fallback). Reads keep working, so a 200 from `/2/users/me` proves nothing. Top up at https://console.x.com on the account that owns the app whose client ID is in `twitter_credentials.json`, then simply rerun; seen 2026-08-31 and again 2026-10-07.
 
 The batch-of-N anti-pattern (`wait` for all 4 GPUs, then start next 4) wastes GPU time — fast-finishing GPUs sit idle waiting for the slowest one. On a 4x RTX 5090 instance at $1.35/hr, this caused 3 GPUs to idle for 2+ hours (~$2.70 wasted). The flock-based queue keeps all GPUs busy continuously.
 

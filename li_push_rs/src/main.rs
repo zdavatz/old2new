@@ -134,6 +134,12 @@ const LINKEDIN_MAX_DURATION_SECS: f64 = 1800.0;
 /// is refused at post creation, after the whole upload has already gone up.
 const LINKEDIN_TRIM_SECS: u64 = 1790;
 
+/// What an X-only post fetches of a video past LinkedIn's 30-minute ceiling.
+/// `post_to_twitter` cuts to 118s anyway, so a little over two minutes is all
+/// that is ever used — enough that the probe still sees ">120s" and labels the
+/// post as an excerpt.
+const TWITTER_ONLY_FETCH_SECS: u64 = 130;
+
 /// LinkedIn refuses an upload above this. Also the budget `ensure_h264` encodes
 /// against, so the H.264 re-encode cannot overshoot what the upload accepts.
 const LINKEDIN_MAX_BYTES: u64 = 500 * 1024 * 1024;
@@ -1120,6 +1126,14 @@ async fn main() {
                                     .map(|u| u.to_string())
                                     .or_else(|| Some(video_input.clone()));
                             }
+                        } else if cli.twitter_only {
+                            // Nothing goes to LinkedIn, so its ceiling does not
+                            // apply; X gets the first two minutes regardless.
+                            eprintln!(
+                                "Video is {:.0}s ({:.1} min) — X-only post, fetching just the first {}s.",
+                                duration, duration / 60.0, TWITTER_ONLY_FETCH_SECS
+                            );
+                            trim_secs = Some(TWITTER_ONLY_FETCH_SECS);
                         } else {
                             eprintln!("ERROR: Video is {:.0}s ({:.1} min) — LinkedIn max is 30 minutes",
                                 duration, duration / 60.0);
