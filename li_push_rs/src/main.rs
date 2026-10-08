@@ -1443,13 +1443,33 @@ async fn upload_to_linkedin(
             chunk_len as f64 / (1024.0 * 1024.0)
         );
 
-        let resp = client
-            .put(upload_url)
-            .header("Content-Type", "application/octet-stream")
-            .body(buf)
-            .send()
-            .await
-            .expect("chunk upload failed");
+        // A dropped connection on one PUT used to panic and throw away the
+        // whole upload (chunk 67 of 104 on 2026-10-08, "Broken pipe"). Each
+        // chunk is an idempotent PUT to its own URL, so resend it instead.
+        let mut attempt = 1;
+        let resp = loop {
+            match client
+                .put(upload_url)
+                .header("Content-Type", "application/octet-stream")
+                .body(buf.clone())
+                .send()
+                .await
+            {
+                Ok(r) => break r,
+                Err(e) if attempt < 4 => {
+                    eprintln!(
+                        "\nWARNING: chunk {} transport error (attempt {}/4): {} — retrying",
+                        i + 1, attempt, e
+                    );
+                    tokio::time::sleep(std::time::Duration::from_secs(5 * attempt)).await;
+                    attempt += 1;
+                }
+                Err(e) => {
+                    eprintln!("\nERROR: chunk {} upload failed after 4 attempts: {}", i + 1, e);
+                    std::process::exit(1);
+                }
+            }
+        };
 
         if !resp.status().is_success() {
             let status = resp.status();

@@ -523,6 +523,17 @@ Three things a second machine got wrong on 2026-10-07, each silent until the pos
 - **Expired tokens.** A LinkedIn token lasts 60 days and carries no refresh token, so one
   left over from an earlier session answers 401 and needs `li_push --auth` again.
 
+Two ways a `--random-short` run can end without posting, both seen on 2026-10-08:
+
+- **An age-restricted pick.** YouTube answers `Sign in to confirm your age` and the
+  signed-out download is refused (`zkASrGEeX2Q`, "011a BUTIRSKAYA PRISON"). Nothing is
+  posted and nothing is logged, so the video stays in the pool and a later run can draw it
+  again — just rerun. Posting it needs `--cookies-from-browser <browser>` with an
+  age-verified account, at the price of the per-session byte cap described below.
+- **A dropped connection during the LinkedIn upload.** One `Broken pipe` on a single chunk
+  (67 of 104) used to panic and discard the whole upload. Each chunk is an idempotent PUT to
+  its own URL, so it is now resent up to four times with a growing pause before giving up.
+
 ### Long videos: post the first 30 minutes
 
 All 118 shorts in `csv/davaz_enhanced_list.csv` were on LinkedIn by 2026-08-31, so
