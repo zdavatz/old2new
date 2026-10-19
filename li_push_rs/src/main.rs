@@ -79,6 +79,12 @@ struct Cli {
     #[arg(long)]
     no_log_sync: bool,
 
+    /// For an explicitly named video over 30 min: post the first 29:50 to
+    /// LinkedIn (linking the full video) instead of aborting. --random-short
+    /// always trims; this opts a hand-picked video into the same behaviour.
+    #[arg(long)]
+    trim: bool,
+
     /// List all previously uploaded videos
     #[arg(long)]
     list: bool,
@@ -1113,7 +1119,11 @@ async fn main() {
                 // the wrong surprise.
                 if let Some(duration) = yt_meta["duration"].as_f64() {
                     if duration > LINKEDIN_MAX_DURATION_SECS {
-                        if cli.random_short {
+                        // --trim opts an explicitly named video into the same
+                        // behaviour, e.g. an age-gated pick that --random-short
+                        // could not fetch signed-out and that is retried by ID
+                        // with --cookies-from-browser.
+                        if cli.random_short || cli.trim {
                             eprintln!(
                                 "Video is {:.0}s ({:.1} min) — over LinkedIn's 30-minute cap; \
                                  posting the first {}s and linking the full video.",
@@ -1168,6 +1178,19 @@ async fn main() {
         // Download video to temp file
         let tmp_dir = env::temp_dir();
         let tmp_path = tmp_dir.join("li_push_yt_download.mp4");
+        // Clear leftovers from a run that died before its cleanup — e.g. a
+        // finished 466 MB download whose LinkedIn upload then failed with 401.
+        // yt-dlp tripped over that stale file on the next run (2026-10-19) and
+        // aborted with "No such file or directory: ….mp4.part", although
+        // --force-overwrites was set. Removing every li_push_yt_download.*
+        // first makes each run start from a clean slate.
+        if let Ok(entries) = fs::read_dir(&tmp_dir) {
+            for e in entries.flatten() {
+                if e.file_name().to_string_lossy().starts_with("li_push_yt_download") {
+                    let _ = fs::remove_file(e.path());
+                }
+            }
+        }
         eprintln!("Downloading best quality...");
         // YouTube now enforces a per-IP byte allowance per download and 403s the
         // moment it is exceeded — chunking, rate limiting and resuming all fail
@@ -1243,6 +1266,24 @@ async fn main() {
         }
         p
     };
+
+    // A video named by ID never went through the --random-short CSV pass, but
+    // it may still be a CSV row: take its Original column, so a hand-picked
+    // post credits the original exactly like a random one.
+    if original_link.is_none() {
+        if let Some(id) = extract_youtube_id(&video_input) {
+            if let Ok(csv_data) = fs::read_to_string("csv/davaz_enhanced_list.csv") {
+                for line in csv_data.lines().skip(1) {
+                    let f = parse_csv_line(line);
+                    if f.len() >= 3 && f[2].contains(&format!("v={}", id)) && !f[1].trim().is_empty() {
+                        original_link = Some(f[1].trim().to_string());
+                        eprintln!("Original video (from CSV): {}", f[1].trim());
+                        break;
+                    }
+                }
+            }
+        }
+    }
 
     // Fallback: if we don't have the original link from the CSV, look for it in
     // the short's YouTube description (create_short appends "Original: <url>").

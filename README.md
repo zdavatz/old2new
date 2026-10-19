@@ -528,11 +528,28 @@ Two ways a `--random-short` run can end without posting, both seen on 2026-10-08
 - **An age-restricted pick.** YouTube answers `Sign in to confirm your age` and the
   signed-out download is refused (`zkASrGEeX2Q`, "011a BUTIRSKAYA PRISON"). Nothing is
   posted and nothing is logged, so the video stays in the pool and a later run can draw it
-  again — just rerun. Posting it needs `--cookies-from-browser <browser>` with an
-  age-verified account, at the price of the per-session byte cap described below.
+  again — just rerun. To post it anyway, name it by ID with the browser's login and
+  `--trim` (2026-10-19, `-rNd-pElc6s`, "fucking good KAMCHATKA", 33:38):
+
+  ```bash
+  li_push --twitter --trim --cookies-from-browser chrome -- -rNd-pElc6s
+  ```
+
+  The browser must be signed in to YouTube with an age-verified account. The per-session
+  byte cap described below did *not* bite that time — 372 MiB came down in 30 s — so it is
+  worth trying before assuming it will. `--` keeps an ID that starts with a dash from being
+  read as a flag. `--trim` is needed because a video named on the command line otherwise
+  aborts above 30 minutes; with it, it gets the same 29:50 cut and "full video" line as a
+  `--random-short` pick. A video named by ID now also takes its `Original:` link from the
+  CSV row, so the post credits the original exactly like a random one.
 - **A dropped connection during the LinkedIn upload.** One `Broken pipe` on a single chunk
   (67 of 104) used to panic and discard the whole upload. Each chunk is an idempotent PUT to
   its own URL, so it is now resent up to four times with a growing pause before giving up.
+- **A leftover temp file.** A run that dies after downloading — on 2026-10-19 a 466 MB file
+  whose LinkedIn upload hit an expired token — left `li_push_yt_download.mp4` in the temp
+  dir, and the next run's yt-dlp aborted with `No such file or directory: ….mp4.part` despite
+  `--force-overwrites`. `li_push` now deletes every `li_push_yt_download.*` before it
+  downloads.
 
 ### Long videos: post the first 30 minutes
 
