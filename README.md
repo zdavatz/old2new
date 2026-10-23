@@ -581,6 +581,9 @@ Verified on a 60 s section of the failing video: `vp9`, 60.0 s.
 codec happens to arrive:
 
 - An H.264 input over 500 MB is re-encoded within budget instead of passed through.
+- The pre-download size estimate no longer aborts (2026-10-23): it is printed as a note,
+  because the conversion squeezes any sub-30-minute video under 500 MB and the check on the
+  finished file is what decides. It had rejected a 29:13 video estimated at 721 MB.
 - `probe_duration_secs` falls back to the video stream's duration when the container has
   none, so the bitrate ceiling is not silently dropped.
 - The ceiling it applies is logged (`bitrate ceiling 3125 kbit/s over 1288s`), which makes

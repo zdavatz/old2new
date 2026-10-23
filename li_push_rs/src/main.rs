@@ -1154,25 +1154,22 @@ async fn main() {
             }
         }
 
-        // Check estimated filesize before downloading (LinkedIn max 500MB)
-        // A trimmed fetch pulls only the first half hour, so the reported size
-        // of the whole video says nothing about what lands on disk. The
-        // post-download check below measures the real file either way.
-        let mut filesize_ok = true;
+        // The estimated size is informational only. ensure_h264 re-encodes any
+        // download over 500 MB at a bitrate sized to fit (duration is already
+        // capped at 30 min above), and the post-download check measures the
+        // real file. Aborting here rejected videos that would have posted fine
+        // (2026-10-23: 060b LAZAC ÉS MACKO, ~721 MB estimated at 1080p).
+        // A trimmed fetch pulls only the first half hour, so the whole-video
+        // estimate is meaningless there and is not even printed.
         if trim_secs.is_none() {
-        if let Some(filesize) = yt_meta_ref.as_ref()
-            .and_then(|m| m["filesize_approx"].as_f64().or_else(|| m["filesize"].as_f64()))
-        {
-            let size_mb = filesize / (1024.0 * 1024.0);
-            if filesize > 500.0 * 1024.0 * 1024.0 {
-                eprintln!("ERROR: Video is ~{:.0} MB — LinkedIn max is 500 MB", size_mb);
-                eprintln!("Use --low-quality to download a smaller format (max 1080p)");
-                filesize_ok = false;
+            if let Some(filesize) = yt_meta_ref.as_ref()
+                .and_then(|m| m["filesize_approx"].as_f64().or_else(|| m["filesize"].as_f64()))
+            {
+                if filesize > LINKEDIN_MAX_BYTES as f64 {
+                    eprintln!("Note: video is ~{:.0} MB before conversion; it will be re-encoded to fit LinkedIn's 500 MB",
+                        filesize / (1024.0 * 1024.0));
+                }
             }
-        }
-        }
-        if !filesize_ok && !cli.low_quality {
-            std::process::exit(1);
         }
 
         // Download video to temp file
