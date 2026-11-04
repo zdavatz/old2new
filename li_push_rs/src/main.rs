@@ -890,6 +890,9 @@ async fn main() {
     // the full Enhanced 4K upload for the rest.
     let mut trim_secs: Option<u64> = None;
     let mut full_video_link: Option<String> = None;
+    // The CSV's duration for a --random-short pick, checked against YouTube's
+    // own figure once the metadata is in (see the sanity check there).
+    let mut csv_duration: Option<u64> = None;
 
     // --random-short: pick a random Enhanced 4K short from CSV
     let video_input = if cli.random_short {
@@ -1024,6 +1027,9 @@ async fn main() {
             original_link = Some(original_url.clone());
         }
         let enhanced_url = format!("https://www.youtube.com/watch?v={}", id);
+        if *duration > 0 {
+            csv_duration = Some(*duration);
+        }
         // The CSV duration is the pre-flight signal; the metadata check below
         // arms the trim as well, so a missing or stale CSV value still works.
         if *duration as f64 > LINKEDIN_MAX_DURATION_SECS {
@@ -1118,6 +1124,24 @@ async fn main() {
                 // silently posting a fraction of what was asked for would be
                 // the wrong surprise.
                 if let Some(duration) = yt_meta["duration"].as_f64() {
+                    // A CSV row can point at the wrong upload: on 2026-11-04 the
+                    // 830s "Pick and Pen" row carried _j7GCIgrCIU, a duplicate
+                    // upload of the 15s short, and that short was posted to
+                    // both platforms as if it were the film. Stale CSV
+                    // durations exist too (gY_wU9Pj8ts: 1291s listed, 820s
+                    // served, posted correctly), so only a gross mismatch —
+                    // under half the listed length — aborts.
+                    if let Some(listed) = csv_duration {
+                        if duration < listed as f64 * 0.5 {
+                            eprintln!(
+                                "ERROR: YouTube reports {:.0}s for {}, but the CSV lists {}s — \
+                                 the row in csv/davaz_enhanced_list.csv probably points at the \
+                                 wrong upload. Not posting.",
+                                duration, video_input, listed
+                            );
+                            std::process::exit(1);
+                        }
+                    }
                     if duration > LINKEDIN_MAX_DURATION_SECS {
                         // --trim opts an explicitly named video into the same
                         // behaviour, e.g. an age-gated pick that --random-short
@@ -1240,6 +1264,30 @@ async fn main() {
         // The VP9 stream preferred above downloads in half the bytes but LinkedIn
         // expects H.264, so convert when that is what we actually got.
         ensure_h264(&tmp_path);
+
+        // Refuse a download that came back much shorter than YouTube says it
+        // should be (a stream cut off mid-way still exits 0 and would be
+        // posted as a fragment). Expected = YouTube's duration, or the trim
+        // target when only a section was fetched. The slack absorbs packet-
+        // boundary cuts and rounding.
+        let meta_secs = yt_meta_ref.as_ref().and_then(|m| m["duration"].as_f64());
+        let expected = match (meta_secs, trim_secs) {
+            (Some(d), Some(t)) => Some(d.min(t as f64)),
+            (Some(d), None) => Some(d),
+            (None, Some(t)) => Some(t as f64),
+            (None, None) => None,
+        };
+        if let (Some(exp), Some(got)) = (expected, probe_duration_secs(&tmp_path)) {
+            if got < exp * 0.9 - 2.0 {
+                eprintln!(
+                    "ERROR: downloaded file is {:.0}s but {:.0}s was expected — \
+                     the download was cut short. Not posting.",
+                    got, exp
+                );
+                let _ = fs::remove_file(&tmp_path);
+                std::process::exit(1);
+            }
+        }
 
         // Verify file size after download
         if let Ok(fmeta) = fs::metadata(&tmp_path) {
