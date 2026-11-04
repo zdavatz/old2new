@@ -550,6 +550,14 @@ Two ways a `--random-short` run can end without posting, both seen on 2026-10-08
   dir, and the next run's yt-dlp aborted with `No such file or directory: ….mp4.part` despite
   `--force-overwrites`. `li_push` now deletes every `li_push_yt_download.*` before it
   downloads.
+- **A CSV row that points at the wrong upload.** On 2026-11-04 the 830 s "Pick and Pen"
+  row carried `_j7GCIgrCIU`, which is a duplicate Enhanced 4K upload of the 15 s *short*,
+  and that clip went to LinkedIn and X as if it were the film. (The 13:50 original,
+  `d6ph7n4k35Y`, was never enhanced; the row's Enhanced column is now empty, which the
+  picker skips.) `li_push` now aborts a `--random-short` pick before downloading when
+  YouTube's duration is under half the CSV's — a merely stale value, like `gY_wU9Pj8ts`
+  listed at 1291 s but served at 820 s, still passes — and discards any download whose
+  probed length is more than 10% short of YouTube's duration or the trim target.
 
 ### Long videos: post the first 30 minutes
 
