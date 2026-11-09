@@ -30,7 +30,9 @@ def get_authenticated_service(client_secret_file, token_file):
 
     creds = None
     if os.path.exists(token_file):
-        creds = Credentials.from_authorized_user_file(token_file, SCOPES)
+        # Use the scopes stored in the token: forcing SCOPES here makes the refresh
+        # request scopes the token was never granted -> RefreshError invalid_scope.
+        creds = Credentials.from_authorized_user_file(token_file)
 
     if not creds or not creds.valid:
         if creds and creds.expired and creds.refresh_token:
