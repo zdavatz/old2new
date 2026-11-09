@@ -154,6 +154,12 @@ Each instance runs a Rust dashboard binary (`status_server`) on port 8080, showi
 
 Access via `http://<ssh-host>:<ssh-port+1>` on vast.ai. The dashboard auto-scans `~/jobs/` for live status and `~/json/` for the video queue — no manual `video_queue.json` needed. Each video has a compare view (`/compare/<id>`) showing original vs enhanced frames side by side — `upscale.py` keeps the last 10 input frames for this purpose.
 
+**Deploying from a Mac — three traps hit on 2026-11-09** (re-enhancing `Hqa_G12v0Bw`, whose Enhanced 4K upload `wAin2xQtLKs` had come out at 7:35 of 28:52):
+
+- **`grep -P` does not exist in macOS grep.** `deploy.sh new` parsed the instance id with it, got nothing, and reported `ERROR: Failed to create instance` — while vast.ai had in fact created the instance and was billing for it. The local parsers (instance id, `VAST_API_KEY` from `~/.zshrc`) now use `sed -E`; the two remaining `grep -oP` calls run on the Linux instance and are fine. After any such error, check `vastai show instances` before retrying, or you pay for two.
+- **The compat image (`realesrgan-benchmark-compat`) does *not* contain the Rust workers.** `/usr/local/bin` holds only ffmpeg, ffprobe and deno, so `deploy.sh update` aborts on glibc 2.35 and `--instance` queues a JSON that no worker ever picks up. What worked: copy `enhance.sh` + `upscale.py` + `youtube_upload.py` and start the Bash pipeline directly (`nohup ./enhance.sh "<url>" 4 --job-name "<title>"`) — it needs only the image's Python/torch/ffmpeg/yt-dlp.
+- **Each machine's SSH key must be registered with vast.ai**, otherwise validation prints empty GPU/CPU/RAM/disk values and `Only GB free` (SSH answers `Permission denied (publickey)`). `vastai create ssh-key "$(cat ~/.ssh/id_ed25519.pub)"` for new instances, plus `vastai attach ssh <ID> "<key>"` for one already running.
+
 ### Legacy: Single Video (vast.ai)
 
 The `vast_batch.sh` script also works for single videos:
@@ -305,7 +311,7 @@ After the pre-flight check, a **pre-download disk estimate** fetches video metad
 - **RTX 5090** (Blackwell): Needs PyTorch 2.6+ with CUDA 12.8. PyTorch 2.10 tested — no speedup over 2.7 for Real-ESRGAN.
 - **Pre-built Docker images** — **always use the slim image** for new setups on vast.ai, TensorDock, RunPod, Packet.ai. No pip install, no patching needed = 5-8 min faster per instance:
   - `ghcr.io/zdavatz/realesrgan-benchmark:latest` — **slim ~4.5GB (default, driver ≥570)**
-  - `ghcr.io/zdavatz/realesrgan-benchmark-compat:latest` — **compat ~4.5GB (CUDA 12.1, driver ≥530)** — auto-selected by `deploy.sh` when host driver <570. Includes pre-built Rust binaries.
+  - `ghcr.io/zdavatz/realesrgan-benchmark-compat:latest` — **compat ~4.5GB (CUDA 12.1, driver ≥530)** — auto-selected by `deploy.sh` when host driver <570. ~~Includes pre-built Rust binaries~~ — it does **not** (checked 2026-11-09: `/usr/local/bin` has only ffmpeg/ffprobe/deno); see the Mac deploy notes below.
   - `ghcr.io/zdavatz/realesrgan-benchmark-full:latest` — full ~8GB (+ TensorRT, ONNX Runtime, for benchmarks only)
   - Built from `nvidia/cuda:12.8.0-runtime-ubuntu24.04` (important: `runtime` not `base` — base lacks CUDA libs)
 - **yt-dlp JS challenge**: Since ~March 2026, YouTube requires JS challenge solving. yt-dlp needs `--remote-components ejs:github` and `deno` installed, otherwise it falsely reports "This video is not available". The slim Docker image includes deno. `enhance_gpu.py` adds this flag automatically.

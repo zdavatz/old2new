@@ -131,7 +131,7 @@ if pgrep -x status_server > /dev/null; then echo "status_server restarted"; else
                 # Deploy vast.ai API key for auto-destroy
                 VAST_KEY="${VAST_API_KEY:-}"
                 if [[ -z "$VAST_KEY" ]]; then
-                    VAST_KEY=$(grep VAST_API_KEY ~/.zshrc ~/.bashrc 2>/dev/null | grep -oP "(?<==)['\"]?[a-f0-9]+['\"]?" | tr -d "'" | head -1)
+                    VAST_KEY=$(grep VAST_API_KEY ~/.zshrc ~/.bashrc 2>/dev/null | sed -nE "s/.*VAST_API_KEY=['\"]?([a-f0-9]+).*/\1/p" | head -1)
                 fi
                 if [[ -n "$VAST_KEY" ]]; then
                     $SOFT_SSH "echo '$VAST_KEY' > /root/.vast_api_key && chmod 600 /root/.vast_api_key" 2>/dev/null
@@ -1067,7 +1067,9 @@ CREATE_RESULT=$(vastai create instance "$OFFER_ID" \
 
 echo "$CREATE_RESULT"
 # Parse instance ID — vastai outputs "Started. {'new_contract': 12345, ...}" (Python dict, not JSON)
-INSTANCE_ID=$(echo "$CREATE_RESULT" | grep -oP "new_contract['\"]?:\s*(\K[0-9]+)" 2>/dev/null)
+# sed, not grep -P: macOS grep has no -P, which left INSTANCE_ID empty while the
+# instance was in fact created and billing (2026-11-09)
+INSTANCE_ID=$(echo "$CREATE_RESULT" | sed -nE "s/.*new_contract['\"]?:[[:space:]]*([0-9]+).*/\1/p" | head -1)
 
 if [[ -z "$INSTANCE_ID" ]]; then
     echo "ERROR: Failed to create instance"
@@ -1395,7 +1397,7 @@ done
 # vast.ai API key (for auto-destroy when queue is empty)
 VAST_KEY="${VAST_API_KEY:-}"
 if [[ -z "$VAST_KEY" ]]; then
-    VAST_KEY=$(grep VAST_API_KEY ~/.zshrc ~/.bashrc 2>/dev/null | grep -oP "(?<==)['\"]?[a-f0-9]+['\"]?" | tr -d "'" | head -1)
+    VAST_KEY=$(grep VAST_API_KEY ~/.zshrc ~/.bashrc 2>/dev/null | sed -nE "s/.*VAST_API_KEY=['\"]?([a-f0-9]+).*/\1/p" | head -1)
 fi
 if [[ -n "$VAST_KEY" ]]; then
     $SSH "echo '$VAST_KEY' > /root/.vast_api_key && chmod 600 /root/.vast_api_key" 2>/dev/null
